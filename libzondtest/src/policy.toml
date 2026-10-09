@@ -1,0 +1,45 @@
+runtime_dir = "@RUNTIME@"
+[approvals]
+enabled = true
+timeout_secs = 4
+max_pending = 2
+[limits]
+command_timeout_secs = 2
+max_output_bytes = 1024
+max_connections = 4
+max_running = 2
+[principals.exec]
+bridge_uid = @BRIDGE_UID@
+run_uid = @RUN_UID@
+run_gid = @RUN_GID@
+cwd = "/tmp"
+allow_exec = true
+default = "ask"
+[[principals.exec.rules]]
+program = "/usr/bin/printf"
+args = ["%s", "hello"]
+decision = "allow"
+[[principals.exec.rules]]
+program = "/usr/bin/id"
+args = ["-u"]
+decision = "allow"
+[[principals.exec.rules]]
+program = "/usr/bin/false"
+decision = "deny"
+[[principals.exec.rules]]
+program = "/usr/bin/sleep"
+decision = "allow"
+[[principals.exec.rules]]
+program = "/usr/bin/yes"
+decision = "allow"
+[principals.ops]
+bridge_uid = @BRIDGE_UID@
+run_uid = @RUN_UID@
+run_gid = @RUN_GID@
+cwd = "/tmp"
+operations = ["greet"]
+[operations.greet]
+program = "/usr/bin/printf"
+fixed_args = ["hello %s"]
+arguments = [{name = "who", choices = ["world", "λ"]}]
+decision = "allow"

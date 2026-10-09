@@ -1,5 +1,5 @@
 [workspace]
-members = ["libzond", "libzondctl", "zondd", "zondctl"]
+members = ["libzond", "libzondctl", "zondd", "zondctl", "libzondtest"]
 resolver = "2"
 
 [workspace.package]

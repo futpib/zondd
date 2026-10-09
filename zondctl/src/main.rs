@@ -104,7 +104,12 @@ async fn run(cli: Cli) -> Result<u8> {
             std::io::stdin().is_terminal(),
             "review requires an interactive terminal; use pending/approve/deny for scripting"
         );
-        return review(&cli).await;
+        return tokio::select! {
+            result = review(&cli) => result,
+            // Keep one signal subscription alive across queue reads and resolutions.
+            // Exiting also stops the otherwise uncancellable blocking terminal read.
+            _ = tokio::signal::ctrl_c() => std::process::exit(130),
+        };
     }
     let request = match &cli.command {
         Action::Exec { argv } => Request::Run {
@@ -192,10 +197,7 @@ async fn review(cli: &Cli) -> Result<u8> {
             bail!("expected approval queue");
         };
         if requests.is_empty() {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                _ = tokio::signal::ctrl_c() => return Ok(130),
-            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
         for request in requests {
@@ -208,11 +210,7 @@ async fn review(cli: &Cli) -> Result<u8> {
                 std::io::stdin().read_line(&mut line)?;
                 Ok(line)
             });
-            let answer = tokio::select! {
-                answer = input => answer.context("read approval answer")??,
-                // A blocked terminal read cannot be cancelled by dropping its task.
-                _ = tokio::signal::ctrl_c() => std::process::exit(130),
-            };
+            let answer = input.await.context("read approval answer")??;
             let approve = match answer.trim() {
                 "a" => true,
                 "d" => false,

@@ -22,25 +22,51 @@ The workspace follows slopd's shared-library/daemon/client split:
 - `libzondctl`: asynchronous Unix-socket and OpenSSH client.
 - `zondd`: root daemon and forced-command bridge.
 - `zondctl`: sending CLI and local approval interface.
+- `libzondtest`: shared isolated process fixtures and a Rust subprocess probe,
+  following slopd's `libsloptest` pattern.
 
 ## Build and test
 
 ```sh
-cargo build --workspace
+cargo build --workspace --bins
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
-sudo python3 scripts/smoke-test.py --bridge-user "$USER"
-# Also exercise the installed iroh-ssh transport with real discovery:
-sudo python3 scripts/smoke-test.py --bridge-user "$USER" --iroh
 ```
 
-The smoke test requires Linux, Python 3, OpenSSH client/server, an existing
-non-root login account, and the `nobody` account. It creates temporary keys,
-configuration, binaries and sockets beneath `/run`, starts an isolated sshd on
-loopback and an unprivileged port, then removes its processes and files. It does
-not edit accounts, installed services, SSH configuration, or authorized keys.
-The optional Iroh check needs working discovery/relay connectivity.
+Named integration tests live in `zondd/tests/integration.rs` and
+`zondctl/tests/integration.rs`. Tests that need root have explicit `#[ignore]`
+reasons and are reported as ignored by ordinary `cargo test`; missing
+prerequisites fail when those tests are selected. The unprivileged protocol,
+policy, CLI argument, and harness cleanup tests run normally.
+
+Build the binaries first as your normal user, as above. On x86_64 Linux, use
+Cargo's runner to elevate only the test executables, keeping Cargo and build
+artifacts under your normal account:
+
+```sh
+# Daemon, real sshd, CLI, and PTY tests; no Iroh connectivity required.
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -n' \
+  cargo test --workspace -- --ignored --skip iroh_ssh
+
+# All privileged tests, including the installed Iroh transport and discovery.
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -n' \
+  cargo test --workspace -- --ignored
+```
+
+For another target, replace the runner variable's target triple with your
+`rustc -vV` host triple, uppercased with underscores. The tests require Linux,
+OpenSSH client/server, an existing non-root login account (taken from
+`SUDO_UID`), and the `nobody` account. When executing tests directly as root,
+set `ZONDD_TEST_BRIDGE_USER` to the intended non-root login account.
+
+Each fixture creates temporary keys, configuration, binaries and sockets
+beneath `/run`, starts its own daemon and, where needed, an isolated sshd on a
+loopback port. Rust drop guards clean up processes and files on success and
+assertion failures, and print daemon logs on failure. Tests do not edit
+accounts, installed services, SSH configuration, or authorized keys. Iroh
+tests additionally require `iroh-ssh` and working discovery/relay connectivity.
+They check pipe EOF after completion to catch orphaned proxy processes.
 
 ## Configure the receiver
 

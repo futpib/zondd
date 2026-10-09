@@ -1,0 +1,16 @@
+[package]
+name = "libzondtest"
+publish = false
+description = "Isolated process fixtures for zondd and zondctl integration tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+nix = { version = "0.31.3", features = ["signal", "user", "term", "poll", "fs"] }
+serde_json = "1.0.151"
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
