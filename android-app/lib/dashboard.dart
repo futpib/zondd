@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:toml/toml.dart';
 import 'control.dart';
 import 'ui.dart';
+import 'history.dart';
 
 class Dashboard extends StatefulWidget {
   const Dashboard({
@@ -26,6 +27,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   int tab = 0;
   String? revision;
   final config = TextEditingController();
+  final historyKey = GlobalKey<HistoryPageState>();
   String? loadedConfig;
   String configPath = '';
   bool editing = false, loaded = false;
@@ -234,8 +236,10 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                       refresh();
                     } else if (tab == 1) {
                       loadConfig();
-                    } else {
+                    } else if (tab == 2) {
                       service('status');
+                    } else {
+                      historyKey.currentState?.fetch();
                     }
                   },
             icon: const Icon(Icons.refresh),
@@ -269,6 +273,10 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
             icon: Icon(Icons.settings_power),
             label: 'Service',
           ),
+          const NavigationDestination(
+            icon: Icon(Icons.history),
+            label: 'History',
+          ),
         ],
       ),
       body: Column(
@@ -295,7 +303,9 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 ? approvals()
                 : tab == 1
                 ? policy()
-                : servicePanel(),
+                : tab == 2
+                ? servicePanel()
+                : HistoryPage(key: historyKey, api: widget.api),
           ),
         ],
       ),
@@ -412,6 +422,15 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                     style: mono,
                   ),
                 ),
+                if (request['cwd'] != null)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Working directory'),
+                    subtitle: SelectableText(
+                      jsonEncode(request['cwd']),
+                      style: mono,
+                    ),
+                  ),
                 const Text(
                   'Approval applies once to this exact request. It does not change policy.',
                 ),
@@ -471,12 +490,15 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       'revision': revision,
     });
     final cancelled = result['cancelled_approvals'] as int;
+    final retained = result['retained_approvals'] as int? ?? 0;
+    final allowed = result['allowed_approvals'] as int? ?? 0;
+    final refreshed = result['refreshed_approvals'] as int? ?? 0;
     if (mounted) {
       setState(() {
         applyRequired = false;
-        message = cancelled == 0
+        message = cancelled + retained + allowed + refreshed == 0
             ? 'Policy applied.'
-            : 'Policy applied. $cancelled pending ${cancelled == 1 ? 'approval' : 'approvals'} rejected.';
+            : 'Policy applied. $retained waiting, $allowed allowed, $refreshed need fresh review, $cancelled rejected or expired.';
       });
     }
   }
@@ -604,7 +626,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                             ),
                             const SizedBox(height: 8),
                             const Text(
-                              'Running commands continue. Pending approvals are rejected when policy changes.',
+                              'Running commands continue. Waiting requests are re-evaluated under the new policy.',
                             ),
                             const SizedBox(height: 12),
                             FilledButton.icon(

@@ -37,8 +37,9 @@ they remain pending until their existing deadline, disconnection, or a decision.
 Expired/disconnected requests cannot be approved. All decisions apply once.
 Policy saves validate and check for concurrent edits, then atomically replace the
 file. **Save & apply** then reloads that exact saved revision without restarting.
-Running commands finish; pending approvals are rejected so callers must resubmit
-under the new policy. Invalid reloads leave the active policy intact. If saving
+Running commands finish. Waiting requests are re-evaluated: unchanged approvals
+keep their ID/expiry, newly allowed commands run, and newly denied requests are
+rejected. Changed commands or working directories require fresh review. Invalid reloads leave the active policy intact. If saving
 succeeds but applying fails, **Apply now** retries the saved revision; refresh
 before applying if another editor changed the file. A stopped daemon loads the
 saved policy when started. Changing `runtime_dir` still requires a restart.
@@ -48,6 +49,13 @@ The policy overview shows the saved callers, ordered rules, and named operations
 survive tab changes, validation errors, and stale-save errors. Command arguments
 in approvals are individually JSON-quoted so boundaries and control characters
 remain visible; the display is not a shell command to copy and execute.
+
+The **History** tab keeps every request outcome, including rejection, denial,
+expiry, cancellation and interruption. Details show command/context, output,
+exit status and approval events. **Run again** creates a new request through the
+current policy and never reuses an approval. It remains owned by the daemon if
+you close the app. **Activity** shows the persistent daemon action log. Both lists
+support loading earlier entries, and history survives service restarts.
 
 ## Architecture
 

@@ -138,6 +138,30 @@ void main() {
                 isTrue,
               );
               expect(jsonDecode(events.current)['body']['type'], 'pending');
+              if (approve) {
+                final pending = jsonDecode(events.current)['body']['request'];
+                final config = await api.request({'method': 'read_config'});
+                final saved = await api.request({
+                  'method': 'save_config',
+                  'content':
+                      '${config['content']}\n# Keep the caller connected\n',
+                  'revision': config['revision'],
+                });
+                final applied = await api.request({
+                  'method': 'reload_config',
+                  'revision': saved['revision'],
+                });
+                expect(applied['retained_approvals'], 1);
+                final queue =
+                    (await api.request({'method': 'pending'}))['requests']
+                        as List;
+                expect(queue.single['approval_id'], pending['approval_id']);
+                expect(
+                  queue.single['expires_unix_ms'],
+                  pending['expires_unix_ms'],
+                );
+              }
+
               await tester.pumpWidget(
                 MaterialApp(
                   home: Dashboard(api: api, name: profile(iroh).name),
@@ -222,6 +246,46 @@ void main() {
             'action': 'status',
           });
           expect(service['output'], contains('LoadState='));
+          final history =
+              (await api.request({'method': 'history'}))['requests'] as List;
+          expect(history.any((r) => r['status'] == 'completed'), isTrue);
+          expect(history.any((r) => r['status'] == 'denied'), isTrue);
+          final original = history.firstWhere(
+            (r) => r['status'] == 'completed',
+          );
+          final retry = await api.request({
+            'method': 'retry',
+            'request_id': original['request_id'],
+          });
+          Map<String, dynamic>? queued;
+          for (var i = 0; i < 100 && queued == null; i++) {
+            final entries =
+                (await api.request({'method': 'pending'}))['requests'] as List;
+            for (final entry in entries) {
+              if (entry['request_id'] == retry['request_id']) {
+                queued = entry as Map<String, dynamic>;
+              }
+            }
+            if (queued == null) {
+              await tester.pump(const Duration(milliseconds: 100));
+            }
+          }
+          expect(queued, isNotNull);
+          expect(queued!['approval_id'], isNot(original['approval_id']));
+          await api.request({
+            'method': 'resolve',
+            'approval_id': queued['approval_id'],
+            'approve': false,
+          });
+          final detail = await api.request({
+            'method': 'request_detail',
+            'request_id': retry['request_id'],
+          });
+          expect(detail['request']['retry_of'], original['request_id']);
+          expect(detail['request']['status'], 'denied');
+          final actions =
+              (await api.request({'method': 'actions'}))['actions'] as List;
+          expect(actions.any((a) => a['action'] == 'approval_denied'), isTrue);
         } finally {
           await api.close();
         }

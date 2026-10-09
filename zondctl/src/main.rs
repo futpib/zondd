@@ -72,6 +72,30 @@ enum Action {
     Status,
     /// Apply the daemon's saved configuration without interrupting running commands.
     Reload,
+    /// Show recent requests, including completed and rejected requests.
+    History {
+        #[arg(long)]
+        before: Option<u64>,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Inspect a request and its action history.
+    Request {
+        id: String,
+    },
+    /// Submit a completed request again under current policy.
+    Retry {
+        id: String,
+    },
+    /// Show the daemon action log.
+    Actions {
+        #[arg(long)]
+        request_id: Option<String>,
+        #[arg(long)]
+        before: Option<u64>,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Trusted management JSON over stdio; invoke through a normal SSH login.
     Control {
         #[arg(long, default_value_os_t = libzond::paths::config_path())]
@@ -162,6 +186,25 @@ async fn run(cli: Cli) -> Result<u8> {
         },
         Action::Status => Request::Status,
         Action::Reload => Request::Reload { revision: None },
+        Action::History { before, limit } => Request::History {
+            before: *before,
+            limit: *limit,
+        },
+        Action::Request { id } => Request::RequestDetail {
+            request_id: id.clone(),
+        },
+        Action::Retry { id } => Request::Retry {
+            request_id: id.clone(),
+        },
+        Action::Actions {
+            request_id,
+            before,
+            limit,
+        } => Request::Actions {
+            request_id: request_id.clone(),
+            before: *before,
+            limit: *limit,
+        },
         Action::Review | Action::Control { .. } => unreachable!(),
     };
     let mut client = cli.connect().await?;
@@ -178,8 +221,8 @@ async fn run(cli: Cli) -> Result<u8> {
             Event::Pending { request } => {
                 if !cli.json {
                     eprintln!(
-                        "Pending approval {} (principal {})",
-                        request.approval_id, request.principal
+                        "Request {} (principal {}): {} [approval {}]",
+                        request.request_id, request.principal, request.reason, request.approval_id
                     );
                 }
             }

@@ -129,11 +129,21 @@ and limits take effect without restarting. Changing `runtime_dir` requires a
 restart. `zondctl status` includes the active config's SHA-256 revision.
 
 Commands already admitted keep running with their original policy and limits.
-Pending approvals are rejected with “policy reloaded; submit the request again”;
-new requests use the new policy. Lower capacity limits do not terminate existing
-work. Applying the same revision is a no-op and preserves pending approvals.
-Removed principal sockets stop accepting new connections while running commands
-finish. Reload is available only through the administration endpoint.
+Reload re-evaluates waiting requests without disconnecting their callers:
+
+- Requests that still need approval keep their approval ID and original expiry.
+- Newly allowed requests execute using the new policy and limits, waiting for
+  capacity if necessary. Their original expiry still applies.
+- Newly denied requests, removed principals/operations, and requests needing
+  disabled approvals are rejected with the specific reason.
+- A changed executable, argv, or working directory requires fresh review, even
+  if the new rule allows it. The caller receives another `pending` event with a
+  new approval ID and the same request ID/deadline. Old approvals cannot apply.
+
+Reload, review decisions, and execution admission share the same lock. A denial
+can supersede an approval that is still waiting for capacity. Lower limits do
+not kill admitted commands. Removing a principal closes its listening socket
+while existing callers receive their outcomes. Reload requires admin authority.
 
 ## Send operations
 
@@ -198,7 +208,7 @@ zondctl status
 control characters escaped, and asks for approve/deny/skip/quit. Approval is
 bound to that one immutable request, consumed once, and never adds a permanent
 allowlist rule. A full queue rejects new requests. Expiry, client disconnect,
-policy reload, or daemon restart cancels pending requests. Admin connections
+or daemon restart cancels pending requests. Admin connections
 have separate capacity so pending remote requests cannot block review.
 Restarting or stopping the daemon also cancels active work.
 
@@ -213,6 +223,42 @@ command finishes. The CLI reproduces those bytes and the command's exit status;
 rejection uses 126 and protocol/infrastructure failures use 125. `--json` prints
 all protocol events instead. Request bodies and decisions are logged to stderr;
 avoid passing secrets in argv if those logs are retained.
+
+## Request history and action log
+
+The daemon records every execution request, including policy rejections, manual
+approvals/denials, expiration, disconnection, execution failures and results.
+History retains exact input, resolved executable/argv, working directory, output,
+exit status and action timestamps. SQLite storage is private (0600), survives
+restarts, and is scoped to the config: `config.toml` uses the adjacent
+`config.history.sqlite3` database. Its WAL/SHM files belong with that database;
+use SQLite backup tooling for a consistent live backup. History is retained
+until explicitly removed by the account owner. Unfinished records on startup
+are marked interrupted; they are never automatically replayed.
+
+```sh
+zondctl history --limit 30
+zondctl request REQUEST_ID
+zondctl retry REQUEST_ID
+zondctl actions --limit 50
+zondctl actions --request-id REQUEST_ID
+```
+
+History and activity use descending sequence cursors (`--before`) for paging.
+The Android **History** tab includes all outcomes, request details, output,
+approval events, daemon activity and **Run again**. Run again submits the original
+structured request as a new request under the same principal's current policy;
+operation arguments are validated/expanded again and past approvals never carry
+over. Its `retry_of` points to the original. The daemon owns this new request,
+so closing the controller does not cancel it. Requests that still need permission
+appear in Approvals and can also be reviewed from their history details.
+
+The persistent action log covers lifecycle, requests, policy evaluations,
+reloads, reviews, execution and protocol errors. The management helper reports
+config/service actions when the daemon is reachable; ordinary external file
+edits and actions performed while it is stopped are outside daemon logging.
+Actions are also emitted through tracing to stderr/the user service journal.
+History, retry and activity are available only on the admin endpoint.
 
 ## Android management
 
@@ -238,13 +284,17 @@ Responses are `{ "version": 1, "ok": true, "result": ... }` or
 without requiring stdin EOF. Methods:
 
 - `pending`, `status`, `resolve` (`approval_id`, `approve`): local admin requests.
+- `history` (`before`, `limit`), `request_detail` (`request_id`), `retry`
+  (`request_id`), `actions` (`before`, `limit`, optional `request_id`): history,
+  results, resubmission and the persistent action log.
 - `read_config`: returns `path`, `content`, SHA-256 `revision`.
 - `validate_config` (`content`): parse and validate without saving.
 - `save_config` (`content`, `revision`): validate, check the current revision,
   atomically replace with mode 0600. Concurrent helper saves are serialized;
   stale edits fail. External editors do not participate in the helper's lock.
 - `reload_config` (`revision`): apply that saved revision through the admin
-  socket. Returns `revision` and `cancelled_approvals` after applying; stale
+  socket. Returns `revision` and counts for retained, newly allowed, refreshed,
+  and cancelled approvals after applying; stale
   revisions fail. A lost connection can leave the result unknown; check `status`
   before retrying. Reloading the same revision is harmless.
 - `service` (`action`: `status`, `start`, `stop`, `restart`): `systemctl --user`

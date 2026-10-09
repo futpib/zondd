@@ -265,6 +265,36 @@ void main() {
       await capture('13-queue-empty');
       await pending(true);
       await pending(false);
+      await tap(find.text('History'));
+      await waitFor(find.text('Denied · exec'));
+      await capture('32-history');
+      await tap(find.text('Denied · exec').first);
+      await waitFor(find.text('Run again'));
+      await capture('33-denied-request');
+      await tap(find.text('Run again'));
+      await waitFor(find.text('Approve once'));
+      await capture('34-rerun-pending');
+      await tap(find.text('Approve once'));
+      await waitFor(find.text('Finished'));
+      expect(find.text('Hello from zondd'), findsOneWidget);
+      await capture('35-rerun-completed');
+      await tester.scrollUntilVisible(
+        find.text('approval granted'),
+        300,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await settle();
+      await capture('36-request-activity');
+      await tester.pageBack();
+      await settle();
+      await tester.scrollUntilVisible(
+        find.text('Activity'),
+        -300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tap(find.text('Activity'));
+      await waitFor(find.text('admin request'));
+      await capture('37-daemon-activity');
       await tap(find.text('Policy'));
       await waitFor(find.textContaining('Manual approvals enabled'));
       await capture('18-policy');

@@ -37,6 +37,25 @@ pub enum Request {
         #[serde(default)]
         revision: Option<String>,
     },
+    History {
+        before: Option<u64>,
+        limit: Option<usize>,
+    },
+    RequestDetail {
+        request_id: String,
+    },
+    Retry {
+        request_id: String,
+    },
+    Actions {
+        request_id: Option<String>,
+        before: Option<u64>,
+        limit: Option<usize>,
+    },
+    Audit {
+        action: String,
+        detail: serde_json::Value,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,6 +84,48 @@ pub struct Pending {
     pub operation: Option<String>,
     pub reason: String,
     pub expires_unix_ms: u64,
+    #[serde(default)]
+    pub request_id: String,
+    #[serde(default)]
+    pub cwd: std::path::PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequestRecord {
+    pub sequence: u64,
+    pub request_id: String,
+    pub retry_of: Option<String>,
+    #[serde(default)]
+    pub approval_id: Option<String>,
+    pub principal: String,
+    pub input: Request,
+    pub command: Option<Command>,
+    pub cwd: Option<std::path::PathBuf>,
+    pub status: String,
+    pub authorization: Option<String>,
+    pub reason: String,
+    pub created_unix_ms: u64,
+    pub updated_unix_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+}
+
+impl RequestRecord {
+    pub fn is_terminal(&self) -> bool {
+        !matches!(
+            self.status.as_str(),
+            "received" | "pending" | "approved" | "allowed" | "running"
+        )
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionRecord {
+    pub sequence: u64,
+    pub time_unix_ms: u64,
+    pub request_id: Option<String>,
+    pub action: String,
+    pub detail: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,7 +171,27 @@ pub enum Event {
     Reloaded {
         revision: String,
         cancelled_approvals: usize,
+        retained_approvals: usize,
+        allowed_approvals: usize,
+        refreshed_approvals: usize,
     },
+    History {
+        requests: Vec<RequestRecord>,
+        next_before: Option<u64>,
+    },
+    RequestDetail {
+        request: Box<RequestRecord>,
+        actions: Vec<ActionRecord>,
+        next_before: Option<u64>,
+    },
+    Submitted {
+        request_id: String,
+    },
+    Actions {
+        actions: Vec<ActionRecord>,
+        next_before: Option<u64>,
+    },
+    Audited,
 }
 
 impl Event {

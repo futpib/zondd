@@ -20,16 +20,43 @@ use std::{
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 enum Control {
     Pending {},
-    Resolve { approval_id: String, approve: bool },
+    Resolve {
+        approval_id: String,
+        approve: bool,
+    },
     Status {},
+    History {
+        before: Option<u64>,
+        limit: Option<usize>,
+    },
+    RequestDetail {
+        request_id: String,
+    },
+    Retry {
+        request_id: String,
+    },
+    Actions {
+        request_id: Option<String>,
+        before: Option<u64>,
+        limit: Option<usize>,
+    },
     ReadConfig {},
-    ValidateConfig { content: String },
-    SaveConfig { content: String, revision: String },
-    ReloadConfig { revision: String },
-    Service { action: ServiceAction },
+    ValidateConfig {
+        content: String,
+    },
+    SaveConfig {
+        content: String,
+        revision: String,
+    },
+    ReloadConfig {
+        revision: String,
+    },
+    Service {
+        action: ServiceAction,
+    },
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ServiceAction {
     Status,
@@ -85,18 +112,47 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
             approve,
         },
         Control::Status {} => Request::Status,
+        Control::History { before, limit } => Request::History { before, limit },
+        Control::RequestDetail { request_id } => Request::RequestDetail { request_id },
+        Control::Retry { request_id } => Request::Retry { request_id },
+        Control::Actions {
+            request_id,
+            before,
+            limit,
+        } => Request::Actions {
+            request_id,
+            before,
+            limit,
+        },
         Control::ReloadConfig { revision } => Request::Reload {
             revision: Some(revision),
         },
-        Control::ReadConfig {} => return read_config(config),
+        Control::ReadConfig {} => {
+            let result = read_config(config);
+            audit_control(runtime, "read_config", &result).await;
+            return result;
+        }
         Control::ValidateConfig { content } => {
-            Config::parse(&content)?;
-            return Ok(json!({"valid":true}));
+            let result = Config::parse(&content).map(|_| json!({"valid":true}));
+            audit_control(runtime, "validate_config", &result).await;
+            return result;
         }
         Control::SaveConfig { content, revision } => {
-            return save_config(config, &content, &revision);
+            let result = save_config(config, &content, &revision);
+            audit_control(runtime, "save_config", &result).await;
+            return result;
         }
-        Control::Service { action } => return service(action).await,
+        Control::Service { action } => {
+            audit_control(
+                runtime,
+                "service_requested",
+                &Ok(json!({"action":format!("{action:?}")})),
+            )
+            .await;
+            let result = service(action).await;
+            audit_control(runtime, "service_finished", &result).await;
+            return result;
+        }
     };
     let event = Client::local(&runtime.join("admin.sock"))
         .await?
@@ -106,6 +162,29 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
         bail!("{message}");
     }
     Ok(serde_json::to_value(event)?)
+}
+
+async fn audit_control(runtime: &Path, action: &str, result: &Result<Value>) {
+    let detail = match result {
+        Ok(value) => {
+            json!({"ok":true,"revision":value.get("revision"),"action":value.get("action")})
+        }
+        Err(error) => json!({"ok":false,"error":error.to_string()}),
+    };
+    // File editing also works while the daemon is stopped; no daemon action exists to log then.
+    if let Ok(mut client) = Client::local(&runtime.join("admin.sock")).await {
+        match client
+            .request(Request::Audit {
+                action: action.into(),
+                detail,
+            })
+            .await
+        {
+            Ok(libzond::Event::Audited) => {}
+            Ok(event) => eprintln!("Could not record management action: {event:?}"),
+            Err(error) => eprintln!("Could not record management action: {error}"),
+        }
+    }
 }
 
 fn content(path: &Path) -> Result<String> {
