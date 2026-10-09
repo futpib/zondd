@@ -4,7 +4,7 @@ mod control;
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
-use libzond::{Command, Event, Request};
+use libzond::{CheckInput, Command, Event, Request};
 use libzondctl::{Client, SshOptions};
 use std::{
     io::{IsTerminal, Write},
@@ -63,6 +63,13 @@ enum Action {
         args: Vec<String>,
     },
     Operations,
+    /// Inspect this caller's rules, named operations, approvals, and limits.
+    Permissions,
+    /// Evaluate a command or operation without executing or requesting approval.
+    Check {
+        #[command(subcommand)]
+        input: CheckAction,
+    },
     Pending,
     Approve {
         id: String,
@@ -103,6 +110,19 @@ enum Action {
     Control {
         #[arg(long, default_value_os_t = libzond::paths::config_path())]
         config: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum CheckAction {
+    Exec {
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        argv: Vec<String>,
+    },
+    Invoke {
+        operation: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -185,6 +205,21 @@ async fn run(cli: Cli) -> Result<u8> {
             args: args.clone(),
         },
         Action::Operations => Request::ListOperations,
+        Action::Permissions => Request::Permissions {},
+        Action::Check { input } => Request::Check {
+            input: match input {
+                CheckAction::Exec { argv } => CheckInput::Run {
+                    command: Command {
+                        program: argv[0].clone(),
+                        args: argv[1..].to_vec(),
+                    },
+                },
+                CheckAction::Invoke { operation, args } => CheckInput::Invoke {
+                    operation: operation.clone(),
+                    args: args.clone(),
+                },
+            },
+        },
         Action::Pending => Request::Pending,
         Action::Approve { id } => Request::Resolve {
             approval_id: id.clone(),

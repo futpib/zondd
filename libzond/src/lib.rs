@@ -27,6 +27,10 @@ pub enum Request {
         args: Vec<String>,
     },
     ListOperations,
+    Permissions {},
+    Check {
+        input: CheckInput,
+    },
     Pending,
     Resolve {
         approval_id: String,
@@ -56,6 +60,48 @@ pub enum Request {
         action: String,
         detail: serde_json::Value,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CheckInput {
+    Run {
+        command: Command,
+    },
+    Invoke {
+        operation: String,
+        args: Vec<String>,
+    },
+}
+
+impl From<CheckInput> for Request {
+    fn from(input: CheckInput) -> Self {
+        match input {
+            CheckInput::Run { command } => Self::Run { command },
+            CheckInput::Invoke { operation, args } => Self::Invoke { operation, args },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CallerPermissions {
+    pub principal: String,
+    pub revision: String,
+    pub policy: config::Principal,
+    pub approvals: config::Approvals,
+    pub limits: config::Limits,
+    pub operations: std::collections::BTreeMap<String, config::Operation>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PolicyCheck {
+    pub principal: String,
+    pub revision: String,
+    pub decision: config::Decision,
+    pub policy_decision: Option<config::Decision>,
+    pub reason: String,
+    pub command: Option<Command>,
+    pub cwd: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -162,6 +208,12 @@ pub enum Event {
     },
     Operations {
         operations: Vec<OperationInfo>,
+    },
+    Permissions {
+        permissions: Box<CallerPermissions>,
+    },
+    Checked {
+        check: Box<PolicyCheck>,
     },
     Status {
         pending: usize,

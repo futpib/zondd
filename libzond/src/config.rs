@@ -30,7 +30,7 @@ pub struct Config {
     pub operations: BTreeMap<String, Operation>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Approvals {
     pub enabled: bool,
@@ -47,7 +47,7 @@ impl Default for Approvals {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
     pub command_timeout_secs: u64,
@@ -75,7 +75,7 @@ pub enum Decision {
     Ask,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Principal {
     pub cwd: PathBuf,
@@ -89,7 +89,7 @@ pub struct Principal {
     pub rules: Vec<Rule>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub program: String,
@@ -97,7 +97,7 @@ pub struct Rule {
     pub decision: Decision,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Operation {
     #[serde(default)]

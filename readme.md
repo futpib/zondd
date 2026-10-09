@@ -233,6 +233,42 @@ zondctl --principal monitor invoke service-status slopd.service
 # An explicit --socket /path/to/PRINCIPAL.sock also works.
 ```
 
+## Inspect caller permissions
+
+Use the same caller key or local principal that will submit the operation:
+
+```sh
+zondctl --host alice@server --identity ~/.ssh/caller permissions
+zondctl --host alice@server --identity ~/.ssh/caller check exec /usr/bin/uptime
+zondctl --principal monitor check invoke service-status slopd.service
+zondctl --principal default --json check exec /usr/bin/id -u
+```
+
+These commands also work with `--iroh`. `permissions` returns only the
+authenticated principal's policy: its working directory, `allow_exec`, default
+decision, ordered command rules, and assigned named operations with executable,
+fixed arguments, argument choices, and decisions. It also includes the active
+policy revision, approval settings, and execution limits. Other principals and
+unassigned operations are not exposed. Rules are first-match-wins; `args: null`
+matches any arguments, while `args: []` matches no arguments. If `allow_exec` is
+false, raw commands are denied regardless of rules. Operation decisions are
+independent of raw-command rules.
+
+`check exec` and `check invoke` use the execution policy evaluator, without
+executing, creating request history, or adding an approval request. The daemon
+still audits the query. The response includes `decision` (`allow`, `ask`, or
+`deny`), `policy_decision`, a reason, the resolved command when valid, working
+directory, and policy revision. With approvals disabled, a configured `ask`
+produces effective `deny`; malformed commands and unauthorized operations also
+produce `deny`. A successful check returns CLI exit status 0 for all three
+decisions; use `--json` and inspect `check.decision` in scripts.
+
+Checks describe the current policy, not a reservation or an execution guarantee.
+Submission evaluates the policy again; queue capacity, executable availability,
+and runtime failures are not tested. With no policy file, the built-in `default`
+principal reports `ask` for valid commands. Local use requires `--principal`
+or a principal `--socket`; the admin endpoint has no caller identity.
+
 ## Policy and approval
 
 Raw `exec` requires `allow_exec = true`. Rules match the literal absolute
@@ -406,11 +442,19 @@ Or a named operation:
 Each connection carries **one request**. Keep its writing side open until the
 terminal response; EOF or additional request bytes cancel it. Responses echo
 the version and ID. An optional `pending` event precedes one terminal event:
-`completed`, `rejected`, `error`, `operations`, `queue`, `resolved`, or `status`.
+`completed`, `rejected`, `error`, `operations`, `permissions`, `checked`,
+`queue`, `resolved`, or `status`.
 `completed.stdout` and `.stderr` are base64 strings so arbitrary output bytes
 survive JSON transport; `code` or `signal` describes termination.
 
-Principal methods: `run`, `invoke`, `list_operations`. Local admin methods:
+Principal methods: `run`, `invoke`, `list_operations`, `permissions`, `check`.
+The `check` body wraps a `run` or `invoke` as `input`, for example:
+
+```json
+{"version":1,"id":1,"body":{"method":"check","input":{"method":"run","command":{"program":"/usr/bin/uptime","args":[]}}}}
+```
+
+Neither introspection method accepts a principal selector. Local admin methods:
 `pending`, `resolve` (`approval_id`, boolean `approve`), `status`. Neither
 endpoint accepts the other endpoint's methods. Request types reject unknown
 fields. Requests are limited to 64 KiB including LF; responses to 4 MiB. The

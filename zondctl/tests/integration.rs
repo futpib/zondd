@@ -24,6 +24,91 @@ fn cli_version_and_argument_errors() {
 }
 
 #[test]
+fn local_caller_inspects_permissions_and_checks_both_input_types() {
+    let env = TestEnv::new();
+    for (principal, args, field, expected) in [
+        (
+            "exec",
+            vec!["permissions"],
+            "/permissions/principal",
+            "exec",
+        ),
+        (
+            "exec",
+            vec!["check", "exec", "/usr/bin/id", "-u"],
+            "/check/decision",
+            "allow",
+        ),
+        (
+            "exec",
+            vec!["check", "exec", "/usr/bin/id"],
+            "/check/decision",
+            "ask",
+        ),
+        (
+            "exec",
+            vec!["check", "exec", "/usr/bin/false"],
+            "/check/decision",
+            "deny",
+        ),
+        (
+            "ops",
+            vec!["check", "invoke", "greet", "world"],
+            "/check/decision",
+            "allow",
+        ),
+        (
+            "ops",
+            vec!["check", "invoke", "greet", "--", "--help"],
+            "/check/decision",
+            "deny",
+        ),
+    ] {
+        let result = checked(
+            env.cli()
+                .args(["--principal", principal, "--json"])
+                .args(args),
+            0,
+        );
+        let event: libzondtest::serde_json::Value =
+            libzondtest::serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(event.pointer(field).unwrap(), expected, "{event}");
+    }
+    assert!(env.queue().is_empty());
+}
+
+#[test]
+#[ignore = "requires OpenSSH client/server"]
+fn restricted_ssh_callers_can_only_introspect_their_own_permissions() {
+    let ssh = SshEnv::new();
+    for principal in ["exec", "ops"] {
+        let result = checked(ssh.remote(principal).args(["--json", "permissions"]), 0);
+        let event: libzondtest::serde_json::Value =
+            libzondtest::serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(event["permissions"]["principal"], principal);
+        assert_eq!(
+            event["permissions"]["policy"]["allow_exec"],
+            principal == "exec"
+        );
+    }
+    for (principal, args, expected) in [
+        ("exec", vec!["exec", "/usr/bin/id", "-u"], "allow"),
+        ("exec", vec!["exec", "/usr/bin/id"], "ask"),
+        ("ops", vec!["exec", "/usr/bin/id", "-u"], "deny"),
+        ("ops", vec!["invoke", "greet", "world"], "allow"),
+    ] {
+        let result = checked(
+            ssh.remote(principal).args(["--json", "check"]).args(args),
+            0,
+        );
+        let event: libzondtest::serde_json::Value =
+            libzondtest::serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(event["check"]["decision"], expected, "{event}");
+    }
+    assert!(ssh.env.queue().is_empty());
+}
+
+#[test]
 #[ignore = "requires OpenSSH client/server"]
 fn ssh_keys_select_policy_and_reject_custom_commands() {
     let ssh = SshEnv::new();
@@ -149,6 +234,31 @@ fn iroh_ssh_operation_completes_and_proxy_exits() {
             "{result:?}"
         );
         std::thread::sleep(Duration::from_secs(1));
+    }
+    for args in [
+        vec!["permissions"],
+        vec!["check", "invoke", "greet", "world"],
+    ] {
+        let result = pipe_output(
+            Command::new(&ssh.env.ctl)
+                .arg("--host")
+                .arg(format!("{}@{endpoint}", ssh.env.user.name))
+                .arg("--iroh")
+                .arg("--identity")
+                .arg(ssh.env.dir.path().join("ops-key"))
+                .arg("--ssh-config")
+                .arg(&ssh.config)
+                .arg("--json")
+                .args(args),
+        );
+        assert!(result.status.success(), "{result:?}");
+        let event: libzondtest::serde_json::Value =
+            libzondtest::serde_json::from_slice(&result.stdout).unwrap();
+        match event["type"].as_str().unwrap() {
+            "permissions" => assert_eq!(event["permissions"]["principal"], "ops"),
+            "checked" => assert_eq!(event["check"]["decision"], "allow"),
+            other => panic!("unexpected event: {other}"),
+        }
     }
 }
 

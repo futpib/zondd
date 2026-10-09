@@ -5,7 +5,8 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use libzond::{
-    Command, Envelope, Event, MAX_REQUEST_BYTES, Pending, Request, RequestRecord, VERSION,
+    CallerPermissions, Command, Envelope, Event, MAX_REQUEST_BYTES, Pending, PolicyCheck, Request,
+    RequestRecord, VERSION,
     config::{Config, Decision, Principal, validate_command},
     wire,
 };
@@ -561,14 +562,67 @@ async fn dispatch(
     let Some(p) = active.config.principals.get(&name) else {
         return Ok(reject("principal is no longer configured"));
     };
-    if matches!(request, Request::ListOperations) {
-        Ok(Event::Operations {
+    match request {
+        Request::ListOperations => Ok(Event::Operations {
             operations: active.config.operations_for(p),
-        })
-    } else {
-        Ok(reject(
+        }),
+        Request::Permissions {} => Ok(Event::Permissions {
+            permissions: Box::new(CallerPermissions {
+                principal: name,
+                revision: active.revision.clone(),
+                policy: p.clone(),
+                approvals: active.config.approvals.clone(),
+                limits: active.config.limits.clone(),
+                operations: p
+                    .operations
+                    .iter()
+                    .filter_map(|name| {
+                        active
+                            .config
+                            .operations
+                            .get(name)
+                            .map(|op| (name.clone(), op.clone()))
+                    })
+                    .collect(),
+            }),
+        }),
+        Request::Check { input } => {
+            let mut check = PolicyCheck {
+                principal: name.clone(),
+                revision: active.revision.clone(),
+                decision: Decision::Deny,
+                policy_decision: None,
+                reason: String::new(),
+                command: None,
+                cwd: p.cwd.clone(),
+            };
+            match evaluate(&active.config, &name, &input.into()) {
+                Ok((command, _, decision)) => {
+                    check.command = Some(command);
+                    check.policy_decision = Some(decision);
+                    let (effective, reason) = match decision {
+                        Decision::Allow => (Decision::Allow, "allowed by policy"),
+                        Decision::Deny => (Decision::Deny, "command denied by policy"),
+                        Decision::Ask if active.config.approvals.enabled => {
+                            (Decision::Ask, "command requires one-time approval")
+                        }
+                        Decision::Ask => (
+                            Decision::Deny,
+                            "approval required, but approvals are disabled",
+                        ),
+                    };
+                    check.decision = effective;
+                    check.reason = reason.into();
+                }
+                Err(error) => check.reason = error.to_string(),
+            }
+            Ok(Event::Checked {
+                check: Box::new(check),
+            })
+        }
+        _ => Ok(reject(
             "administration is unavailable on principal endpoints",
-        ))
+        )),
     }
 }
 
