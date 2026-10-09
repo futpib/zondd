@@ -1,0 +1,51 @@
+# Install as /etc/zondd/config.toml, owned by root and not group/world-writable.
+# Replace numeric identities with dedicated local accounts before starting.
+runtime_dir = "/run/zondd"
+admin_uid = 0
+
+[approvals]
+enabled = false
+# Set enabled = true to make "ask" requests wait for local review.
+timeout_secs = 300
+max_pending = 64
+
+[limits]
+command_timeout_secs = 60
+max_output_bytes = 1048576
+max_running = 8
+max_connections = 128
+
+[principals.automation]
+bridge_uid = 1001
+run_uid = 1002
+run_gid = 1002
+cwd = "/var/lib/zondd-work"
+allow_exec = true
+default = "ask"
+operations = ["service-status"]
+
+# First matching rule wins. args is an exact argv match; omission means any argv.
+[[principals.automation.rules]]
+program = "/usr/bin/uptime"
+args = []
+decision = "allow"
+
+# A hard denial never enters the approval queue.
+[[principals.automation.rules]]
+program = "/bin/sh"
+decision = "deny"
+
+[principals.monitor]
+bridge_uid = 1003
+run_uid = 1004
+run_gid = 1004
+cwd = "/"
+allow_exec = false
+operations = ["service-status"]
+
+[operations.service-status]
+description = "Check the state of an explicitly listed service"
+program = "/usr/bin/systemctl"
+fixed_args = ["is-active", "--"]
+arguments = [{ name = "service", choices = ["sshd.service", "zondd.service"] }]
+decision = "allow"

@@ -1,0 +1,17 @@
+[Unit]
+Description=SSH-authenticated operations and approval daemon
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/zondd serve --config /etc/zondd/config.toml
+Restart=on-failure
+RuntimeDirectory=zondd
+RuntimeDirectoryMode=0711
+UMask=0077
+NoNewPrivileges=yes
+KillMode=control-group
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
