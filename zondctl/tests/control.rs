@@ -117,3 +117,28 @@ fn local_principal_runs_the_same_caller_protocol() {
     libzondtest::checked(env.cli().args(["--principal", "ops", "pending"]), 126);
     libzondtest::checked(env.cli().args(["--principal", "../admin", "pending"]), 125);
 }
+
+#[test]
+fn missing_policy_is_editable_without_creating_it_on_read() {
+    let env = TestEnv::new();
+    std::fs::remove_file(&env.config).unwrap();
+    let result = control(&env, json!({"version":1,"method":"read_config"}));
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["result"]["revision"], libzond::config::revision(""));
+    let content = result["result"]["content"].as_str().unwrap();
+    assert!(
+        libzond::config::Config::parse(content)
+            .unwrap()
+            .approvals
+            .enabled
+    );
+    assert!(!env.config.exists());
+    assert_eq!(
+        control(
+            &env,
+            json!({"version":1,"method":"save_config","content":content,"revision":result["result"]["revision"]})
+        )["ok"],
+        true
+    );
+    assert!(env.config.exists());
+}

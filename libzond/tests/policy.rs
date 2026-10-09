@@ -27,6 +27,30 @@ decision = "allow"
 "#;
 
 #[test]
+fn defaults_require_review_and_explicit_policies_keep_their_boundaries() {
+    for text in ["".to_owned(), libzond::config::default_policy()] {
+        let c = Config::parse(&text).unwrap();
+        assert!(c.approvals.enabled);
+        let p = &c.principals["default"];
+        assert!(p.allow_exec);
+        assert_eq!(
+            p.decision(&Command {
+                program: "/bin/sh".into(),
+                args: vec![]
+            }),
+            Decision::Ask
+        );
+        assert!(c.operations.is_empty());
+    }
+    let c = Config::parse("[principals.closed]\ncwd = \"/\"").unwrap();
+    assert!(c.approvals.enabled);
+    assert!(!c.principals.contains_key("default"));
+    assert!(!c.principals["closed"].allow_exec);
+    assert_eq!(c.principals["closed"].default, Decision::Deny);
+    assert!(Config::parse("[principals]").unwrap().principals.is_empty());
+}
+
+#[test]
 fn exact_argv_and_explicit_shell_denial() {
     let c = Config::parse(POLICY).unwrap();
     let p = &c.principals["test"];

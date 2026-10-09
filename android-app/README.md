@@ -6,7 +6,8 @@ systemd user-service controls. GPL-3.0-or-later; see [LICENSE](../LICENSE).
 ## Connect
 
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host
-   using the [receiver instructions](../readme.md#configure-the-receiver).
+   using the [receiver instructions](../readme.md#configure-the-receiver). No policy
+   file is needed: the built-in caller requires manual approval for every command.
 2. Open **SSH keys**. Import a PEM/OpenSSH private key from a file or paste it,
    including its passphrase if encrypted. Or generate an Ed25519 key and copy
    its public key to the server. Identities are reusable across connections.

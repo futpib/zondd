@@ -9,32 +9,7 @@ use std::{
 };
 use tokio::net::UnixListener;
 
-pub fn trusted_path(path: &Path) -> Result<()> {
-    ensure!(path.is_absolute(), "trusted path must be absolute");
-    for ancestor in path.ancestors() {
-        let meta = fs::symlink_metadata(ancestor)
-            .with_context(|| format!("inspect {}", ancestor.display()))?;
-        ensure!(
-            !meta.file_type().is_symlink(),
-            "symlink in trusted path {}",
-            ancestor.display()
-        );
-        ensure!(
-            meta.uid() == libzond::paths::current_uid() || meta.uid() == 0,
-            "{} is owned by another user",
-            ancestor.display()
-        );
-        // In a sticky root-owned ancestor such as /tmp, other users cannot replace our child.
-        let sticky_parent =
-            ancestor != path && meta.is_dir() && meta.uid() == 0 && meta.mode() & 0o1000 != 0;
-        ensure!(
-            meta.mode() & 0o022 == 0 || sticky_parent,
-            "{} is writable by other users",
-            ancestor.display()
-        );
-    }
-    Ok(())
-}
+pub use libzond::paths::trusted_path;
 
 pub struct Runtime {
     _lock: File,

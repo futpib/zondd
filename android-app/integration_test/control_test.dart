@@ -82,6 +82,60 @@ void main() {
   );
 
   testWidgets(
+    'built-in policy and omitted defaults are visible over real SSH',
+    (tester) async {
+      final api = await SshControl.connect(
+        profile(false),
+        (_, fp) async => fp == fixture['fingerprint'],
+      );
+      final original = await api.request({'method': 'read_config'});
+      try {
+        for (final content in ['', '[approvals]\nenabled = false\n']) {
+          final current = await api.request({'method': 'read_config'});
+          final saved = await api.request({
+            'method': 'save_config',
+            'content': content,
+            'revision': current['revision'],
+          });
+          await api.request({
+            'method': 'reload_config',
+            'revision': saved['revision'],
+          });
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Dashboard(key: UniqueKey(), api: api, name: 'Defaults'),
+            ),
+          );
+          await tester.pump();
+          await tester.tap(find.text('Policy'));
+          final label = content.isEmpty
+              ? 'Manual approvals enabled'
+              : 'Manual approvals disabled';
+          for (var i = 0; i < 200 && find.text(label).evaluate().isEmpty; i++) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          expect(find.text(label), findsOneWidget);
+          expect(find.text('Callers · 1'), findsOneWidget);
+          expect(find.text('default'), findsOneWidget);
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+      } finally {
+        final current = await api.request({'method': 'read_config'});
+        final saved = await api.request({
+          'method': 'save_config',
+          'content': original['content'],
+          'revision': current['revision'],
+        });
+        await api.request({
+          'method': 'reload_config',
+          'revision': saved['revision'],
+        });
+        await api.close();
+      }
+    },
+  );
+
+  testWidgets(
     'approve and reject through real Android SSH and Iroh transports',
     (tester) async {
       for (final iroh in [false, true]) {

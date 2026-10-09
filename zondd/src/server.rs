@@ -1,7 +1,7 @@
 use crate::{
     execution,
     history::{History, now},
-    security::{self, Runtime},
+    security::Runtime,
 };
 use anyhow::{Context, Result, ensure};
 use libzond::{
@@ -12,7 +12,6 @@ use libzond::{
 use serde_json::json;
 use std::{
     collections::BTreeMap,
-    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -220,12 +219,7 @@ fn reload(
     endpoints: &mut Endpoints,
     listeners: &mut JoinSet<Result<()>>,
 ) -> Result<Event> {
-    security::trusted_path(path)?;
-    let mut text = String::new();
-    std::fs::File::open(path)?
-        .take(512 * 1024 + 1)
-        .read_to_string(&mut text)?;
-    ensure!(text.len() <= 512 * 1024, "config exceeds 512 KiB");
+    let text = libzond::config::read(path)?;
     let config = Arc::new(Config::parse(&text)?);
     let revision = libzond::config::revision(&text);
     ensure!(

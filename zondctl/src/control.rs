@@ -188,19 +188,19 @@ async fn audit_control(runtime: &Path, action: &str, result: &Result<Value>) {
 }
 
 fn content(path: &Path) -> Result<String> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) => ensure!(meta.is_file(), "config must be a regular file"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-        Err(e) => return Err(e.into()),
-    }
-    let content = fs::read_to_string(path)?;
-    ensure!(content.len() <= 512 * 1024, "config exceeds 512 KiB");
-    Ok(content)
+    libzond::config::read(&std::path::absolute(path)?)
 }
 
 fn read_config(path: &Path) -> Result<Value> {
     let content = content(path)?;
-    Ok(json!({"path":path,"revision":revision(&content),"content":content}))
+    let displayed = if content.is_empty() {
+        libzond::config::default_policy()
+    } else {
+        content.clone()
+    };
+    Ok(
+        json!({"path":path,"revision":revision(&content),"content":displayed,"defaults":libzond::config::default_policy()}),
+    )
 }
 
 fn save_config(path: &Path, text: &str, expected: &str) -> Result<Value> {

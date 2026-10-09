@@ -32,6 +32,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   String configPath = '';
   bool editing = false, loaded = false;
   Map<String, String> serviceState = {};
+  Map defaultPrincipals = {};
   bool applyRequired = false;
   @override
   void initState() {
@@ -154,6 +155,12 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       }
       if (!mounted) return;
       setState(() {
+        defaultPrincipals =
+            TomlDocument.parse(
+                  result['defaults'] as String? ?? '',
+                ).toMap()['principals']
+                as Map? ??
+            {};
         config.text = result['content'] as String;
         loadedConfig = config.text;
         revision = result['revision'] as String;
@@ -510,7 +517,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     } catch (_) {
       /* Keep invalid drafts editable. */
     }
-    final principals = parsed?['principals'] as Map? ?? {};
+    final principals = parsed?['principals'] as Map? ?? defaultPrincipals;
     final operations = parsed?['operations'] as Map? ?? {};
     final approvals = parsed?['approvals'] as Map? ?? {};
     return Column(
@@ -643,17 +650,17 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                   Card(
                     child: ListTile(
                       leading: Icon(
-                        approvals['enabled'] == true
+                        approvals['enabled'] != false
                             ? Icons.verified_user_outlined
                             : Icons.block,
                       ),
                       title: Text(
-                        approvals['enabled'] == true
+                        approvals['enabled'] != false
                             ? 'Manual approvals enabled'
                             : 'Manual approvals disabled',
                       ),
                       subtitle: Text(
-                        approvals['enabled'] == true
+                        approvals['enabled'] != false
                             ? 'Requests expire after ${approvals['timeout_secs'] ?? 300} seconds'
                             : 'Commands cannot wait for manual review',
                       ),

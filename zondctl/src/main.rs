@@ -1,3 +1,4 @@
+mod authorize;
 mod control;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -48,6 +49,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    /// Preview and confirm a restricted caller key in this account's authorized_keys.
+    AuthorizeKey(authorize::Options),
     /// Execute an absolute program with argv, subject to policy. No implicit shell.
     Exec {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
@@ -143,6 +146,13 @@ async fn run(cli: Cli) -> Result<u8> {
             "invalid caller principal"
         );
     }
+    if let Action::AuthorizeKey(options) = &cli.command {
+        ensure!(
+            cli.host.is_none() && cli.socket.is_none() && cli.principal.is_none(),
+            "authorize-key runs on the receiving host; use a normal SSH login with a terminal"
+        );
+        return authorize::run(options).await;
+    }
     if let Action::Control { config } = &cli.command {
         ensure!(
             cli.host.is_none() && cli.socket.is_none() && cli.principal.is_none(),
@@ -205,7 +215,7 @@ async fn run(cli: Cli) -> Result<u8> {
             before: *before,
             limit: *limit,
         },
-        Action::Review | Action::Control { .. } => unreachable!(),
+        Action::Review | Action::Control { .. } | Action::AuthorizeKey(_) => unreachable!(),
     };
     let mut client = cli.connect().await?;
     client.send(request).await?;

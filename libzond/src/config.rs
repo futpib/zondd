@@ -1,9 +1,10 @@
 use crate::{Command, OperationInfo};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -23,6 +24,7 @@ pub struct Config {
     pub approvals: Approvals,
     #[serde(default)]
     pub limits: Limits,
+    #[serde(default = "default_principals")]
     pub principals: BTreeMap<String, Principal>,
     #[serde(default)]
     pub operations: BTreeMap<String, Operation>,
@@ -38,7 +40,7 @@ pub struct Approvals {
 impl Default for Approvals {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             timeout_secs: 300,
             max_pending: 64,
         }
@@ -148,10 +150,6 @@ impl Config {
         ensure!(
             self.runtime_dir.is_absolute(),
             "runtime_dir must be absolute"
-        );
-        ensure!(
-            !self.principals.is_empty(),
-            "at least one principal is required"
         );
         ensure!(
             (1..=1024).contains(&self.approvals.max_pending),
@@ -264,4 +262,42 @@ impl Principal {
             })
             .map_or(self.default, |r| r.decision)
     }
+}
+
+fn default_principals() -> BTreeMap<String, Principal> {
+    BTreeMap::from([(
+        "default".into(),
+        Principal {
+            cwd: crate::paths::home_dir(),
+            allow_exec: true,
+            default: Decision::Ask,
+            operations: Vec::new(),
+            rules: Vec::new(),
+        },
+    )])
+}
+
+/// An editable representation of the policy used when no policy file exists.
+pub fn default_policy() -> String {
+    format!(
+        "# Built-in policy: every command requires approval.\n[approvals]\nenabled = true\ntimeout_secs = 300\n\n[principals.default]\ncwd = {}\nallow_exec = true\ndefault = \"ask\"\n",
+        serde_json::to_string(&crate::paths::home_dir()).expect("home path")
+    )
+}
+
+/// Absence uses built-in defaults; unreadable or malformed files never do.
+pub fn read(path: &Path) -> Result<String> {
+    crate::paths::trusted_location(path)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => ensure!(meta.is_file(), "config must be a regular file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error.into()),
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .with_context(|| format!("read {}", path.display()))?
+        .take(512 * 1024 + 1)
+        .read_to_string(&mut text)?;
+    ensure!(text.len() <= 512 * 1024, "config exceeds 512 KiB");
+    Ok(text)
 }

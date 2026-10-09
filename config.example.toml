@@ -3,8 +3,8 @@
 # runtime_dir = "/run/user/1000/zondd" # optional override
 
 [approvals]
-enabled = false
-# Set enabled = true to make "ask" requests wait for local review.
+enabled = true
+# Set enabled = false to reject "ask" requests immediately; allow rules still work.
 timeout_secs = 300
 max_pending = 64
 

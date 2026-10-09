@@ -221,6 +221,14 @@ fn restart_discards_pending_requests_and_disabled_approvals_fail_closed() {
         env.request("exec", command("/usr/bin/printf", &["disabled"]))["type"],
         "rejected"
     );
+    assert_eq!(
+        env.request("exec", command("/usr/bin/id", &["-u"]))["code"],
+        0
+    );
+    assert_eq!(
+        env.request("exec", command("/usr/bin/false", &[]))["type"],
+        "rejected"
+    );
 }
 
 #[test]

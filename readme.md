@@ -68,14 +68,30 @@ Install the binaries and [zondd.service](zondd.service) as a **user service**:
 ```sh
 cargo install --locked --path zondd
 cargo install --locked --path zondctl
-mkdir -p ~/.config/zondd ~/.config/systemd/user
-cp config.example.toml ~/.config/zondd/config.toml
+mkdir -p ~/.config/systemd/user
 cp zondd.service ~/.config/systemd/user/zondd.service
-# Edit ~/.config/zondd/config.toml for your operations and working directories.
 zondd check
 systemctl --user daemon-reload
 systemctl --user enable --now zondd.service
 ```
+
+No policy file is required. Without one, the built-in `default` principal
+accepts command requests with **nothing automatically allowed**: every valid
+command waits for one-time approval, expires after five minutes, and runs in
+the user's home directory only after approval. No named operations are enabled.
+The daemon creates its private history storage, but does not create a policy file.
+
+Approvals are enabled by default. Setting `[approvals] enabled = false` makes
+`ask` requests reject immediately; explicit `allow` rules still run and explicit
+`deny` rules remain hard denials. It never enables unrestricted SSH access.
+
+A policy file is optional customization. The Android policy editor shows editable
+built-in settings when the file is missing; saving creates the file. An omitted
+`principals` section uses the built-in principal. Explicit principal tables replace
+it, and `[principals]` with no entries disables every caller. Existing explicit
+principals retain their default-deny behavior unless `default = "ask"` is set.
+Malformed, unreadable, or untrusted files cause errors instead of falling back.
+For a richer example, see [config.example.toml](config.example.toml).
 
 The unit runs `%h/.cargo/bin/zondd serve`, installs into `default.target`, and
 uses a private runtime directory. To run in the foreground, use `zondd serve`.
@@ -93,12 +109,32 @@ Config and its ancestors must be owned by that user or root and protected from
 other users' writes. The runtime directory belongs to the daemon user (0700),
 and sockets are owner-only (0600); trusted paths reject symlinks.
 
-Bind selected keys in that account's `authorized_keys` to fixed principals.
-Use the actual absolute path to your installed binary:
+Enroll a caller public key on the receiver, as the daemon's Unix user:
+
+```sh
+zondctl authorize-key /path/to/caller.pub
+# To select a principal already defined in a custom policy:
+zondctl authorize-key /path/to/caller.pub --principal automation
+```
+
+The helper validates the key with `ssh-keygen`, prints a unified diff of
+`~/.ssh/authorized_keys`, and asks **Apply this authorized_keys change? [y/N]**.
+It requires an interactive terminal; through SSH, use a normal login with `ssh -t`.
+Declining leaves the target untouched. Acceptance atomically installs a restricted
+forced-command entry; sshd needs no restart. Ordinary entries for the same key
+are converted, including duplicates. Unrelated keys and comments are preserved.
+A key already carrying different SSH options is refused so existing restrictions
+are not silently lost. Concurrent changes during review abort the write.
+
+Options include `--authorized-keys PATH`, `--config PATH`, and `--zondd /absolute/path`.
+The binary defaults to `zondd` beside the running `zondctl`; the runtime directory
+comes from the selected policy/environment. Only authorized_keys is changed;
+the selected principal must already exist, or be the built-in `default`.
+Enrollment is logged when the daemon is reachable. Keep a separate ordinary SSH
+key for management. For manual installation, the equivalent entry is:
 
 ```text
-restrict,command="/home/alice/.cargo/bin/zondd bridge --principal automation" ssh-ed25519 AAAA... automation-key
-restrict,command="/home/alice/.cargo/bin/zondd bridge --principal monitor" ssh-ed25519 AAAA... monitor-key
+restrict,command="/home/alice/.cargo/bin/zondd bridge --principal default" ssh-ed25519 AAAA... caller-key
 ```
 
 For a custom runtime directory, add `--runtime-dir /absolute/path` to the fixed
@@ -148,7 +184,8 @@ while existing callers receive their outcomes. Reload requires admin authority.
 ## Send operations
 
 ```sh
-zondctl --host alice@server --identity ~/.ssh/automation exec /usr/bin/uptime
+zondctl --host alice@server --identity ~/.ssh/caller exec /usr/bin/uptime
+# With the built-in policy this waits for approval; review with zondctl review.
 zondctl --host alice@server --identity ~/.ssh/monitor operations
 zondctl --host alice@server --identity ~/.ssh/monitor invoke service-status slopd.service
 ```

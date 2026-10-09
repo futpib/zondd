@@ -21,6 +21,9 @@ pub struct History(Connection);
 impl History {
     pub fn open(config: &Path) -> Result<Self> {
         let path = config.with_extension("history.sqlite3");
+        libzond::paths::create_private_dir_all(
+            path.parent().context("history path has no parent")?,
+        )?;
         OpenOptions::new()
             .write(true)
             .create(true)

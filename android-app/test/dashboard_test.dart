@@ -41,6 +41,8 @@ class EditableControl implements ControlApi {
       case 'read_config':
         return {
           'content': content,
+          'defaults':
+              '[principals.default]\ncwd = "/"\nallow_exec = true\ndefault = "ask"\n',
           'revision': 'before',
           'path': 'config.toml',
         };
@@ -61,6 +63,41 @@ class EditableControl implements ControlApi {
 }
 
 void main() {
+  testWidgets(
+    'policy overview includes the built-in caller only when principals are omitted',
+    (tester) async {
+      for (final content in [
+        '[approvals]\nenabled = false\n',
+        '[principals]\n',
+      ]) {
+        final api = EditableControl()..content = content;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Dashboard(api: api, name: 'test'),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Policy'));
+        await tester.pumpAndSettle();
+        expect(
+          find.text(
+            content.startsWith('[approvals]') ? 'Callers · 1' : 'Callers · 0',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            content.startsWith('[approvals]')
+                ? 'Manual approvals disabled'
+                : 'Manual approvals enabled',
+          ),
+          findsOneWidget,
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+    },
+  );
+
   testWidgets('a saved policy can be applied again after a reload failure', (
     tester,
   ) async {
@@ -73,6 +110,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Policy'));
     await tester.pumpAndSettle();
+    expect(find.text('Manual approvals enabled'), findsOneWidget);
     await tester.tap(find.text('Edit TOML'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '${api.content}\n# edited');
