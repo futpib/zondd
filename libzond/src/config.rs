@@ -9,9 +9,8 @@ use std::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default = "crate::paths::runtime_dir")]
     pub runtime_dir: PathBuf,
-    #[serde(default)]
-    pub admin_uid: u32,
     #[serde(default)]
     pub approvals: Approvals,
     #[serde(default)]
@@ -69,9 +68,6 @@ pub enum Decision {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Principal {
-    pub bridge_uid: u32,
-    pub run_uid: u32,
-    pub run_gid: u32,
     pub cwd: PathBuf,
     #[serde(default)]
     pub allow_exec: bool,
@@ -176,24 +172,6 @@ impl Config {
         for (name, p) in &self.principals {
             ensure!(valid_name(name), "invalid principal name {name}");
             ensure!(name != "admin", "admin is a reserved principal name");
-            ensure!(
-                p.bridge_uid != 0 && p.bridge_uid != self.admin_uid,
-                "bridge UID must be unprivileged and differ from approval UID"
-            );
-            ensure!(
-                p.run_uid != 0 && p.run_gid != 0,
-                "execution identity must be unprivileged"
-            );
-            ensure!(
-                p.run_uid != self.admin_uid,
-                "execution UID must differ from approval UID"
-            );
-            ensure!(
-                self.principals
-                    .values()
-                    .all(|other| p.run_uid != other.bridge_uid),
-                "execution UID must differ from every bridge UID"
-            );
             ensure!(p.cwd.is_absolute(), "cwd must be absolute");
             for op in &p.operations {
                 ensure!(self.operations.contains_key(op), "unknown operation {op}");

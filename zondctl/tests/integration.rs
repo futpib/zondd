@@ -24,7 +24,7 @@ fn cli_version_and_argument_errors() {
 }
 
 #[test]
-#[ignore = "requires root and OpenSSH client/server"]
+#[ignore = "requires OpenSSH client/server"]
 fn ssh_keys_select_policy_and_reject_custom_commands() {
     let ssh = SshEnv::new();
     assert_eq!(
@@ -50,7 +50,7 @@ fn ssh_keys_select_policy_and_reject_custom_commands() {
 }
 
 #[test]
-#[ignore = "requires root and OpenSSH client/server"]
+#[ignore = "requires OpenSSH client/server"]
 fn ssh_command_waits_for_local_cli_approval() {
     let ssh = SshEnv::new();
     let mut remote = Process::spawn(
@@ -75,7 +75,7 @@ fn ssh_command_waits_for_local_cli_approval() {
 }
 
 #[test]
-#[ignore = "requires root and OpenSSH client/server"]
+#[ignore = "requires OpenSSH client/server"]
 fn forced_bridge_exits_even_while_ssh_stdin_remains_open() {
     let ssh = SshEnv::new();
     let mut remote = Process::spawn(
@@ -98,7 +98,6 @@ fn forced_bridge_exits_even_while_ssh_stdin_remains_open() {
 }
 
 #[test]
-#[ignore = "requires root and a PTY"]
 fn review_approves_and_denies_through_a_real_terminal() {
     let env = TestEnv::new();
     for (answer, expected) in [(b"a\n", "completed"), (b"d\n", "rejected")] {
@@ -122,7 +121,7 @@ fn review_approves_and_denies_through_a_real_terminal() {
 }
 
 #[test]
-#[ignore = "requires root, OpenSSH, iroh-ssh, and working discovery/relay connectivity"]
+#[ignore = "requires OpenSSH, iroh-ssh, and working discovery/relay connectivity"]
 fn iroh_ssh_operation_completes_and_proxy_exits() {
     let ssh = SshEnv::new();
     let endpoint = ssh.start_iroh();
@@ -131,7 +130,7 @@ fn iroh_ssh_operation_completes_and_proxy_exits() {
         let result = pipe_output(
             Command::new(&ssh.env.ctl)
                 .arg("--host")
-                .arg(format!("{}@{endpoint}", ssh.env.bridge.name))
+                .arg(format!("{}@{endpoint}", ssh.env.user.name))
                 .arg("--iroh")
                 .arg("--identity")
                 .arg(ssh.env.dir.path().join("ops-key"))

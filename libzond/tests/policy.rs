@@ -8,9 +8,6 @@ use tokio::io::{AsyncWriteExt, BufReader};
 const POLICY: &str = r#"
 runtime_dir = "/run/zondd"
 [principals.test]
-bridge_uid = 1001
-run_uid = 1002
-run_gid = 1002
 cwd = "/tmp"
 allow_exec = true
 default = "ask"
@@ -73,9 +70,10 @@ fn operation_arguments_are_closed_and_positional() {
 #[test]
 fn invalid_trust_boundaries_and_unknown_fields_are_rejected() {
     for (from, to) in [
-        ("bridge_uid = 1001", "bridge_uid = 0"),
-        ("run_uid = 1002", "run_uid = 1001"),
-        ("run_gid = 1002", "run_gid = 0"),
+        ("[principals.test]", "[principals.test]\nbridge_uid = 1001"),
+        ("[principals.test]", "[principals.test]\nrun_uid = 1002"),
+        ("[principals.test]", "[principals.test]\nrun_gid = 1002"),
+        ("[principals.test]", "admin_uid = 1000\n[principals.test]"),
         ("principals.test", "principals.admin"),
         ("allow_exec = true", "allow_exce = true"),
     ] {

@@ -4,7 +4,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use nix::{
     poll::{PollFd, PollFlags, poll},
     sys::signal::{Signal, kill, killpg},
-    unistd::{Pid, Uid, User, chown},
+    unistd::{Pid, Uid, User},
 };
 use serde_json::{Value, json};
 use std::{
@@ -258,8 +258,7 @@ pub struct TestEnv {
     pub ctl: PathBuf,
     pub probe: PathBuf,
     pub config: PathBuf,
-    pub bridge: User,
-    pub execution: User,
+    pub user: User,
     pub policy: String,
     processes: RefCell<Vec<Process>>,
 }
@@ -273,30 +272,18 @@ impl Default for TestEnv {
 impl TestEnv {
     pub fn new() -> Self {
         assert!(
-            Uid::effective().is_root(),
-            "this ignored test requires the sudo Cargo runner documented in readme.md"
+            !Uid::effective().is_root(),
+            "run these user-daemon tests without sudo"
         );
-        let bridge = if let Ok(name) = std::env::var("ZONDD_TEST_BRIDGE_USER") {
-            User::from_name(&name)
-                .unwrap()
-                .expect("unknown ZONDD_TEST_BRIDGE_USER")
-        } else {
-            let uid = std::env::var("SUDO_UID")
-                .expect("set ZONDD_TEST_BRIDGE_USER when running directly as root");
-            User::from_uid(Uid::from_raw(uid.parse().unwrap()))
-                .unwrap()
-                .unwrap()
-        };
-        let execution = User::from_name("nobody")
-            .unwrap()
-            .expect("nobody account required");
-        assert!(!bridge.uid.is_root() && bridge.uid != execution.uid);
+        let user = User::from_uid(Uid::effective()).unwrap().unwrap();
         let dir = tempfile::Builder::new()
-            .prefix("zondd-test-")
-            .tempdir_in("/run")
+            .prefix(".zondd-test-")
+            .tempdir_in(&user.dir)
             .unwrap();
-        fs::set_permissions(dir.path(), Permissions::from_mode(0o755)).unwrap();
-        let runtime = dir.path().join("run");
+        fs::set_permissions(dir.path(), Permissions::from_mode(0o700)).unwrap();
+        let runtime_base = dir.path().join("run");
+        fs::create_dir(&runtime_base).unwrap();
+        let runtime = runtime_base.join("zondd");
         let copy = |name| {
             let path = dir.path().join(name);
             fs::copy(cargo_bin(name), &path).expect("first run cargo build --workspace --bins");
@@ -306,12 +293,9 @@ impl TestEnv {
         let daemon = copy("zondd");
         let ctl = copy("zondctl");
         let probe = copy("zond-test-command");
-        let config = dir.path().join("config.toml");
-        let policy = include_str!("policy.toml")
-            .replace("@RUNTIME@", runtime.to_str().unwrap())
-            .replace("@BRIDGE_UID@", &bridge.uid.to_string())
-            .replace("@RUN_UID@", &execution.uid.to_string())
-            .replace("@RUN_GID@", &execution.gid.to_string());
+        let config = dir.path().join("config/zondd/config.toml");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let policy = include_str!("policy.toml").to_owned();
         fs::write(&config, &policy).unwrap();
         fs::set_permissions(&config, Permissions::from_mode(0o600)).unwrap();
         let env = Self {
@@ -321,8 +305,7 @@ impl TestEnv {
             ctl,
             probe,
             config,
-            bridge,
-            execution,
+            user,
             policy,
             processes: RefCell::default(),
         };
@@ -338,14 +321,17 @@ impl TestEnv {
         processes.len() - 1
     }
     pub fn start_daemon(&self) {
-        self.start(
-            Command::new(&self.daemon)
-                .arg("serve")
-                .arg("--config")
-                .arg(&self.config),
-            "daemon",
-        );
+        self.start(self.daemon_command().arg("serve"), "daemon");
         wait_for(|| self.runtime.join("ops.sock").exists());
+    }
+    pub fn daemon_command(&self) -> Command {
+        let mut cmd = Command::new(&self.daemon);
+        cmd.env(
+            "XDG_CONFIG_HOME",
+            self.config.parent().unwrap().parent().unwrap(),
+        )
+        .env("XDG_RUNTIME_DIR", self.runtime.parent().unwrap());
+        cmd
     }
     pub fn stop_daemon(&self) {
         self.processes.borrow_mut()[0].stop();
@@ -383,12 +369,11 @@ impl TestEnv {
     pub fn owned_workdir(&self) -> PathBuf {
         let path = self.dir.path().join("work");
         fs::create_dir(&path).unwrap();
-        chown(&path, Some(self.execution.uid), Some(self.execution.gid)).unwrap();
         path
     }
     pub fn cli(&self) -> Command {
         let mut cmd = Command::new(&self.ctl);
-        cmd.arg("--socket").arg(self.runtime.join("admin.sock"));
+        cmd.env("XDG_RUNTIME_DIR", self.runtime.parent().unwrap());
         cmd
     }
 }
@@ -453,7 +438,7 @@ impl SshEnv {
             .unwrap()
             .port();
         let sshd_config = env.dir.path().join("sshd_config");
-        fs::write(&sshd_config, format!("Port {port}\nListenAddress 127.0.0.1\nHostKey {}/host\nPidFile {}/sshd.pid\nAuthorizedKeysFile {}\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitRootLogin no\nStrictModes yes\nAllowUsers {}\nLogLevel VERBOSE\n", env.dir.path().display(), env.dir.path().display(), keys.display(), env.bridge.name)).unwrap();
+        fs::write(&sshd_config, format!("Port {port}\nListenAddress 127.0.0.1\nHostKey {}/host\nPidFile {}/sshd.pid\nAuthorizedKeysFile {}\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitRootLogin no\nStrictModes yes\nAllowUsers {}\nLogLevel VERBOSE\n", env.dir.path().display(), env.dir.path().display(), keys.display(), env.user.name)).unwrap();
         let sshd = ["/usr/sbin/sshd", "/usr/bin/sshd"]
             .into_iter()
             .find(|p| Path::new(p).exists())
@@ -482,7 +467,7 @@ impl SshEnv {
     pub fn remote(&self, key: &str) -> Command {
         let mut cmd = Command::new(&self.env.ctl);
         cmd.arg("--host")
-            .arg(format!("{}@127.0.0.1", self.env.bridge.name))
+            .arg(format!("{}@127.0.0.1", self.env.user.name))
             .arg("--port")
             .arg(self.port.to_string())
             .arg("--ssh-config")
@@ -500,7 +485,7 @@ impl SshEnv {
             .arg("-i")
             .arg(self.env.dir.path().join("exec-key"))
             .args(["-T", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"])
-            .arg(format!("{}@127.0.0.1", self.env.bridge.name));
+            .arg(format!("{}@127.0.0.1", self.env.user.name));
         cmd
     }
     pub fn start_iroh(&self) -> String {

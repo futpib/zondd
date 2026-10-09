@@ -1,7 +1,6 @@
-# Install as /etc/zondd/config.toml, owned by root and not group/world-writable.
-# Replace numeric identities with dedicated local accounts before starting.
-runtime_dir = "/run/zondd"
-admin_uid = 0
+# Install as ~/.config/zondd/config.toml. The daemon, commands, and approver
+# all run as your user. Defaults follow XDG_CONFIG_HOME and XDG_RUNTIME_DIR.
+# runtime_dir = "/run/user/1000/zondd" # optional override
 
 [approvals]
 enabled = false
@@ -16,10 +15,7 @@ max_running = 8
 max_connections = 128
 
 [principals.automation]
-bridge_uid = 1001
-run_uid = 1002
-run_gid = 1002
-cwd = "/var/lib/zondd-work"
+cwd = "/"
 allow_exec = true
 default = "ask"
 operations = ["service-status"]
@@ -36,9 +32,6 @@ program = "/bin/sh"
 decision = "deny"
 
 [principals.monitor]
-bridge_uid = 1003
-run_uid = 1004
-run_gid = 1004
 cwd = "/"
 allow_exec = false
 operations = ["service-status"]
@@ -46,6 +39,6 @@ operations = ["service-status"]
 [operations.service-status]
 description = "Check the state of an explicitly listed service"
 program = "/usr/bin/systemctl"
-fixed_args = ["is-active", "--"]
-arguments = [{ name = "service", choices = ["sshd.service", "zondd.service"] }]
+fixed_args = ["--user", "is-active", "--"]
+arguments = [{ name = "service", choices = ["slopd.service", "zondd.service"] }]
 decision = "allow"

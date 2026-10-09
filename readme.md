@@ -11,7 +11,7 @@ implementation is needed.
 ```text
 zondctl → ssh [→ iroh-ssh proxy] → sshd → zondd bridge
                                               ↓ principal Unix socket
-                                         zondd serve → unprivileged command
+                                         zondd serve → command as the same user
                                               ↑ separate admin Unix socket
                                          zondctl review
 ```
@@ -20,7 +20,7 @@ The workspace follows slopd's shared-library/daemon/client split:
 
 - `libzond`: wire types, bounded framing, policy and operation schemas.
 - `libzondctl`: asynchronous Unix-socket and OpenSSH client.
-- `zondd`: root daemon and forced-command bridge.
+- `zondd`: user daemon and forced-command bridge.
 - `zondctl`: sending CLI and local approval interface.
 - `libzondtest`: shared isolated process fixtures and a Rust subprocess probe,
   following slopd's `libsloptest` pattern.
@@ -34,94 +34,92 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
 ```
 
-Named integration tests live in `zondd/tests/integration.rs` and
-`zondctl/tests/integration.rs`. Tests that need root have explicit `#[ignore]`
-reasons and are reported as ignored by ordinary `cargo test`; missing
-prerequisites fail when those tests are selected. The unprivileged protocol,
-policy, CLI argument, and harness cleanup tests run normally.
+Named Rust integration tests live in `zondd/tests/integration.rs` and
+`zondctl/tests/integration.rs`, with shared fixtures in `libzondtest`.
+The normal suite starts real user daemons, tests approval through a PTY,
+and verifies that commands retain the user's UID, GID, supplementary groups,
+and local approval authority. Run it as your normal user, without sudo.
 
-Build the binaries first as your normal user, as above. On x86_64 Linux, use
-Cargo's runner to elevate only the test executables, keeping Cargo and build
-artifacts under your normal account:
+Additional integration tests have explicit `#[ignore]` reasons because they
+require OpenSSH client/server, Iroh connectivity, or a running systemd user
+manager. After building the binaries, select them with Cargo:
 
 ```sh
-# Daemon, real sshd, CLI, and PTY tests; no Iroh connectivity required.
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -n' \
-  cargo test --workspace -- --ignored --skip iroh_ssh
-
-# All privileged tests, including the installed Iroh transport and discovery.
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -n' \
-  cargo test --workspace -- --ignored
+# Real OpenSSH transport tests:
+cargo test -p zondctl --test integration -- --ignored --skip iroh_ssh
+# Also exercise the installed Iroh transport and real discovery:
+cargo test -p zondctl --test integration -- --ignored
+# Start and stop an isolated instance of the shipped systemd user service:
+cargo test -p zondd --test integration shipped_user_service -- --ignored
 ```
 
-For another target, replace the runner variable's target triple with your
-`rustc -vV` host triple, uppercased with underscores. The tests require Linux,
-OpenSSH client/server, an existing non-root login account (taken from
-`SUDO_UID`), and the `nobody` account. When executing tests directly as root,
-set `ZONDD_TEST_BRIDGE_USER` to the intended non-root login account.
-
-Each fixture creates temporary keys, configuration, binaries and sockets
-beneath `/run`, starts its own daemon and, where needed, an isolated sshd on a
-loopback port. Rust drop guards clean up processes and files on success and
-assertion failures, and print daemon logs on failure. Tests do not edit
-accounts, installed services, SSH configuration, or authorized keys. Iroh
-tests additionally require `iroh-ssh` and working discovery/relay connectivity.
-They check pipe EOF after completion to catch orphaned proxy processes.
+Fixtures create private temporary directories under the user's home (so SSH
+StrictModes can remain enabled), ephemeral keys, and isolated loopback sshd
+processes running as the current user. Drop guards clean up processes and files
+on success and assertion failures, and print logs on failure. The systemd test
+uses a uniquely named temporary unit and runtime directory, and removes both.
+Tests do not change your installed services or authorized keys. Iroh tests
+check pipe EOF after completion to catch orphaned proxy processes.
 
 ## Configure the receiver
 
-Build release binaries and install `zondd` and `zondctl` into `/usr/local/bin`
-as root-owned executables. Adapt [config.example.toml](config.example.toml),
-install it as `/etc/zondd/config.toml`, then validate it:
+Install the binaries and [zondd.service](zondd.service) as a **user service**:
 
 ```sh
-zondd check --config /etc/zondd/config.toml
-sudo zondd serve --config /etc/zondd/config.toml
+cargo install --locked --path zondd
+cargo install --locked --path zondctl
+mkdir -p ~/.config/zondd ~/.config/systemd/user
+cp config.example.toml ~/.config/zondd/config.toml
+cp zondd.service ~/.config/systemd/user/zondd.service
+# Edit ~/.config/zondd/config.toml for your operations and working directories.
+zondd check
+systemctl --user daemon-reload
+systemctl --user enable --now zondd.service
 ```
 
-For service management, install [zondd.service](zondd.service) as a system
-service. The daemon starts as root and drops supplementary groups, GID, and UID
-for each execution; commands cannot run as root. Configuration, its ancestors,
-and the runtime directory must be root-owned and protected from other users'
-writes. Symlinks in these paths are rejected.
+The unit runs `%h/.cargo/bin/zondd serve`, installs into `default.target`, and
+uses a private runtime directory. To run in the foreground, use `zondd serve`.
+Config defaults to `$XDG_CONFIG_HOME/zondd/config.toml` (normally
+`~/.config/zondd/config.toml`); sockets default to `$XDG_RUNTIME_DIR/zondd`.
+When an SSH session lacks `XDG_RUNTIME_DIR`, the bridge uses `/run/user/<uid>/zondd`
+if available, otherwise a private `zondd-<uid>` directory in the temporary
+directory. The daemon and CLI use the same resolution. `--config`,
+`--runtime-dir`, and the config's optional `runtime_dir` support explicit paths.
 
-Use dedicated bridge accounts with a real shell so sshd can launch the forced
-command. Their `bridge_uid` values must match the SSH login accounts. Execution
-accounts (`run_uid`/`run_gid`) must be separate from every bridge UID and from
-the approval UID. Give execution accounts only the filesystem/service access
-their operations require. Set up each configured `cwd` yourself; zondd does not
-create accounts or work directories.
+Daemon, execution, and approval all use the same Unix account. There are no
+`admin_uid`, `bridge_uid`, `run_uid`, or `run_gid` settings; remove these fields
+from older configurations. Commands inherit the daemon's UID, GID, and groups.
+Config and its ancestors must be owned by that user or root and protected from
+other users' writes. The runtime directory belongs to the daemon user (0700),
+and sockets are owner-only (0600); trusted paths reject symlinks.
 
-In the appropriate bridge account's `authorized_keys`, bind each selected key
-to a fixed principal:
+Bind selected keys in that account's `authorized_keys` to fixed principals.
+Use the actual absolute path to your installed binary:
 
 ```text
-restrict,command="/usr/local/bin/zondd bridge --principal automation" ssh-ed25519 AAAA... automation-key
-restrict,command="/usr/local/bin/zondd bridge --principal monitor" ssh-ed25519 AAAA... monitor-key
+restrict,command="/home/alice/.cargo/bin/zondd bridge --principal automation" ssh-ed25519 AAAA... automation-key
+restrict,command="/home/alice/.cargo/bin/zondd bridge --principal monitor" ssh-ed25519 AAAA... monitor-key
 ```
 
-These example principals use different SSH accounts in the example config.
-For a non-default runtime directory, add `--runtime-dir /absolute/path` to the
-fixed command. `restrict` disables forwarding, PTY allocation, agent/X11
-forwarding, and user SSH rc execution for that key. Protect the accounts' shell
-startup files and authorized keys, disable password login for these accounts,
-and do not grant them an unrestricted login through another key. The bridge
-rejects nonempty `SSH_ORIGINAL_COMMAND`; clients start a session without a shell
-command and write only protocol frames.
+For a custom runtime directory, add `--runtime-dir /absolute/path` to the fixed
+command. `restrict` disables forwarding, PTYs, agent/X11 forwarding and user
+SSH rc execution for that key. The bridge rejects nonempty
+`SSH_ORIGINAL_COMMAND`; the caller opens a session without a shell command and
+writes protocol frames. Other keys can retain their normal SSH access.
 
-The daemon trusts the principal socket and kernel peer UID, never a principal
-name submitted in the protocol. Multiple keys can map to one principal. If
-several principals share a bridge UID, local code running as that UID can access
-all of those principals' sockets. Use separate bridge UIDs where local isolation
-between principals matters. Root and the configured admin UID are trusted to
-approve commands; approved commands run as their configured execution UID.
+The forced command binds the key to a principal socket; the daemon also checks
+the local peer UID. The remote protocol cannot select another principal or
+invoke approval methods. Local code running as the daemon user has that user's
+full authority, including approval. This also applies to programs authorized
+to run as that user. Use separate Unix accounts and separate user daemons when
+OS-level isolation between users is needed.
 
 ## Send operations
 
 ```sh
-zondctl --host zond-automation@server --identity ~/.ssh/automation exec /usr/bin/uptime
-zondctl --host zond-monitor@server --identity ~/.ssh/monitor operations
-zondctl --host zond-monitor@server --identity ~/.ssh/monitor invoke service-status sshd.service
+zondctl --host alice@server --identity ~/.ssh/automation exec /usr/bin/uptime
+zondctl --host alice@server --identity ~/.ssh/monitor operations
+zondctl --host alice@server --identity ~/.ssh/monitor invoke service-status slopd.service
 ```
 
 `--port` and `--ssh-config` select an alternate sshd port or SSH configuration.
@@ -131,8 +129,8 @@ connection sharing and configured remote commands for its own session.
 For an existing Iroh SSH server forwarding to sshd:
 
 ```sh
-zondctl --iroh --host zond-monitor@<64-hex-endpoint-id> \
-  --identity ~/.ssh/monitor invoke service-status sshd.service
+zondctl --iroh --host alice@<64-hex-endpoint-id> \
+  --identity ~/.ssh/monitor invoke service-status slopd.service
 ```
 
 This runs OpenSSH with `ProxyCommand=iroh-ssh proxy %h`. For a custom Iroh proxy
@@ -141,7 +139,7 @@ configuration, put it in your SSH config and use `--host` without `--iroh`.
 Local execution is also possible via an explicitly selected principal socket:
 
 ```sh
-zondctl --socket /run/zondd/automation.sock exec /usr/bin/uptime
+zondctl --socket "$XDG_RUNTIME_DIR/zondd/automation.sock" exec /usr/bin/uptime
 ```
 
 ## Policy and approval
@@ -163,14 +161,14 @@ the caller supplies exactly one value for each positional `arguments` entry,
 chosen from that entry's explicit `choices`. Operation decisions are separate
 from raw-exec rules. There is no template expansion or implicit shell.
 
-On the receiving machine:
+On the receiving machine, as the same user who runs the commands (no sudo):
 
 ```sh
-sudo zondctl pending
-sudo zondctl approve <approval-id>
-sudo zondctl deny <approval-id>
-sudo zondctl review
-sudo zondctl status
+zondctl pending
+zondctl approve <approval-id>
+zondctl deny <approval-id>
+zondctl review
+zondctl status
 ```
 
 `review` displays the principal, exact argv, expiry and request ID, with terminal
@@ -181,8 +179,12 @@ or daemon restart cancels pending requests. Admin connections have separate
 capacity so pending remote requests cannot block review. Policy is loaded at
 startup; restart to apply changes, which also cancels active work.
 
-Commands have null stdin, no PTY, a configured working directory, and a cleared
-environment containing only `PATH=/usr/bin:/bin`, `HOME=<cwd>`, and `LANG=C.UTF-8`.
+Commands have null stdin, no PTY, and a configured working directory. Their
+environment starts with `PATH=/usr/bin:/bin`, `HOME=<cwd>`, and `LANG=C.UTF-8`,
+then inherits the daemon's `HOME`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` when set. This lets user
+operations reach their own files and session bus; callers cannot supply environment
+variables through the protocol.
 Stdout/stderr are collected under a combined byte limit and returned when the
 command finishes. The CLI reproduces those bytes and the command's exit status;
 rejection uses 126 and protocol/infrastructure failures use 125. `--json` prints
@@ -195,18 +197,17 @@ This is authorization for the requested top-level executable and argv. It is
 not a shell/interpreter sandbox or a recursive Bash/JavaScript policy engine.
 Allowing an interpreter, a writable executable, a script that changes after
 review, or an executable with arbitrary command/file-loading options grants
-whatever that program can do as the execution UID. A deny rule for `/bin/sh`
-does not match another shell path. Prefer named operations with root-owned
+whatever that program can do as the daemon user. A deny rule for `/bin/sh`
+does not match another shell path. Prefer named operations with trusted
 executables/scripts and explicit argument choices for narrow capabilities.
 
-Commands have `no_new_privs`, no supplementary groups, a 077 umask and disabled
-core dumps. There are limits on frame size, connections, queue size, running
+Commands have `no_new_privs`, a 077 umask and disabled core dumps.
+There are limits on frame size, connections, queue size, running
 commands, wall time and collected output. Disconnect and timeout kill the
 command process group. A deliberately hostile descendant can escape its
 process group; there is no per-request cgroup, filesystem or network sandbox.
-Execution accounts also share whatever resources their OS permissions allow;
-use separate execution UIDs where needed. The supplied systemd service cleans
-its entire cgroup on shutdown. Treat these distinctions as part of configuring
+The supplied systemd user service cleans its entire cgroup on shutdown.
+Treat these distinctions as part of configuring
 what an approved command is allowed to do.
 
 ## Protocol version 1
@@ -220,7 +221,7 @@ One UTF-8 JSON object followed by LF per frame. Requests use an envelope:
 Or a named operation:
 
 ```json
-{"version":1,"id":1,"body":{"method":"invoke","operation":"service-status","args":["sshd.service"]}}
+{"version":1,"id":1,"body":{"method":"invoke","operation":"service-status","args":["slopd.service"]}}
 ```
 
 Each connection carries **one request**. Keep its writing side open until the

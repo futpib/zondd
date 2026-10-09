@@ -31,6 +31,9 @@ struct Cli {
     /// Local principal socket for execution, or admin socket for approvals.
     #[arg(long)]
     socket: Option<PathBuf>,
+    /// Runtime directory for the current user's local approval socket.
+    #[arg(long, default_value_os_t = libzond::paths::runtime_dir())]
+    runtime_dir: PathBuf,
     /// Print protocol events as JSON instead of command output.
     #[arg(long)]
     json: bool,
@@ -79,7 +82,7 @@ impl Cli {
                 &self
                     .socket
                     .clone()
-                    .unwrap_or_else(|| "/run/zondd/admin.sock".into()),
+                    .unwrap_or_else(|| self.runtime_dir.join("admin.sock")),
             )
             .await
         }

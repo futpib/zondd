@@ -41,18 +41,15 @@ impl Drop for PendingGuard {
 pub async fn serve(config: Config) -> Result<()> {
     let mut runtime = Runtime::create(&config.runtime_dir)?;
     let mut endpoints = vec![(
-        runtime.listen(config.runtime_dir.join("admin.sock"), config.admin_uid)?,
+        runtime.listen(config.runtime_dir.join("admin.sock"))?,
         None,
-        config.admin_uid,
+        libzond::paths::current_uid(),
     )];
-    for (name, p) in &config.principals {
+    for name in config.principals.keys() {
         endpoints.push((
-            runtime.listen(
-                config.runtime_dir.join(format!("{name}.sock")),
-                p.bridge_uid,
-            )?,
+            runtime.listen(config.runtime_dir.join(format!("{name}.sock")))?,
             Some(name.clone()),
-            p.bridge_uid,
+            libzond::paths::current_uid(),
         ));
     }
     let connections = Arc::new(Semaphore::new(config.limits.max_connections));
@@ -97,7 +94,7 @@ async fn accept(
             connection = listener.accept() => {
                 let (socket, _) = connection?;
                 let peer = socket.peer_cred()?;
-                if peer.uid() != uid && peer.uid() != 0 { continue; }
+                if peer.uid() != uid { continue; }
                 let Ok(permit) = connections.clone().try_acquire_owned() else { continue; };
                 let state = state.clone();
                 let principal = principal.clone();

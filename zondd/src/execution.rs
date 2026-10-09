@@ -38,19 +38,25 @@ pub async fn execute(command: &Command, principal: &Principal, limits: &Limits) 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // User operations such as systemctl --user need the daemon's home and session bus.
+    // These values come from the local daemon, never from a remote request.
+    for name in [
+        "HOME",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            cmd.env(name, value);
+        }
+    }
     cmd.as_std_mut().process_group(0);
-    let uid = principal.run_uid;
-    let gid = principal.run_gid;
-    // SAFETY: the post-fork closure calls only async-signal-safe credential/limit syscalls,
-    // captures plain integers, and does not allocate or acquire application locks.
+    // SAFETY: the post-fork closure calls only async-signal-safe limit syscalls,
+    // does not allocate or acquire application locks.
     unsafe {
         cmd.pre_exec(move || {
-            if libc::setgroups(0, std::ptr::null()) != 0
-                || libc::setgid(gid) != 0
-                || libc::setuid(uid) != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 return Err(io::Error::last_os_error());
             }

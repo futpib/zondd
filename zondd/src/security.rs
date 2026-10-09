@@ -19,9 +19,14 @@ pub fn trusted_path(path: &Path) -> Result<()> {
             "symlink in trusted path {}",
             ancestor.display()
         );
-        ensure!(meta.uid() == 0, "{} must be root-owned", ancestor.display());
-        // A sticky root-owned ancestor such as /tmp cannot replace a root-owned child.
-        let sticky_parent = ancestor != path && meta.is_dir() && meta.mode() & 0o1000 != 0;
+        ensure!(
+            meta.uid() == libzond::paths::current_uid() || meta.uid() == 0,
+            "{} is owned by another user",
+            ancestor.display()
+        );
+        // In a sticky root-owned ancestor such as /tmp, other users cannot replace our child.
+        let sticky_parent =
+            ancestor != path && meta.is_dir() && meta.uid() == 0 && meta.mode() & 0o1000 != 0;
         ensure!(
             meta.mode() & 0o022 == 0 || sticky_parent,
             "{} is writable by other users",
@@ -38,17 +43,16 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn create(path: &Path) -> Result<Self> {
-        ensure!(
-            // SAFETY: geteuid takes no arguments and has no memory safety requirements.
-            unsafe { libc::geteuid() } == 0,
-            "zondd serve requires root to separate bridge, approval, and execution identities"
-        );
         trusted_path(path.parent().context("runtime_dir has no parent")?)?;
         if !path.exists() {
             fs::create_dir(path)?;
         }
         trusted_path(path)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o711))?;
+        ensure!(
+            fs::symlink_metadata(path)?.uid() == libzond::paths::current_uid(),
+            "runtime directory must belong to the daemon user"
+        );
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -68,14 +72,13 @@ impl Runtime {
         })
     }
 
-    pub fn listen(&mut self, path: PathBuf, uid: u32) -> Result<UnixListener> {
+    pub fn listen(&mut self, path: PathBuf) -> Result<UnixListener> {
         if path.exists() {
             fs::remove_file(&path)?;
         }
         let listener = UnixListener::bind(&path)?;
         self.sockets.push(path.clone());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-        std::os::unix::fs::chown(&path, Some(uid), Some(0))?;
         Ok(listener)
     }
 }

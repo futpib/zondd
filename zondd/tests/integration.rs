@@ -3,23 +3,21 @@ use std::{
     fs,
     io::{Read, Write},
     os::unix::net::UnixStream,
-    process::Command,
     time::Duration,
 };
 
 #[test]
-#[ignore = "requires root; see the E2E Cargo runner in readme.md"]
 fn policy_identity_and_operation_boundaries() {
     let env = TestEnv::new();
     checked(
-        Command::new(&env.daemon)
+        env.daemon_command()
             .arg("check")
             .arg("--config")
             .arg(&env.config),
         0,
     );
     checked(
-        Command::new(&env.daemon)
+        env.daemon_command()
             .arg("serve")
             .arg("--config")
             .arg(&env.config),
@@ -28,7 +26,7 @@ fn policy_identity_and_operation_boundaries() {
     let event = env.request("exec", command("/usr/bin/id", &["-u"]));
     assert_eq!(
         decoded(&event, "stdout"),
-        format!("{}\n", env.execution.uid).as_bytes()
+        format!("{}\n", env.user.uid).as_bytes()
     );
     assert_eq!(
         env.request("exec", command("/usr/bin/false", &[]))["type"],
@@ -61,7 +59,6 @@ fn policy_identity_and_operation_boundaries() {
 }
 
 #[test]
-#[ignore = "requires root"]
 fn approvals_are_bound_to_one_request_and_cannot_be_replayed() {
     let env = TestEnv::new();
     for approve in [true, false] {
@@ -84,7 +81,6 @@ fn approvals_are_bound_to_one_request_and_cannot_be_replayed() {
 }
 
 #[test]
-#[ignore = "requires root"]
 fn disconnect_and_expiry_remove_pending_requests() {
     let env = TestEnv::new();
     let (session, id) = env.pending(command("/usr/bin/printf", &["cancel"]));
@@ -97,7 +93,6 @@ fn disconnect_and_expiry_remove_pending_requests() {
 }
 
 #[test]
-#[ignore = "requires root"]
 fn full_remote_capacity_does_not_block_local_approval() {
     let env = TestEnv::new();
     let mut pending: Vec<_> = (0..2)
@@ -119,7 +114,6 @@ fn full_remote_capacity_does_not_block_local_approval() {
 }
 
 #[test]
-#[ignore = "requires root"]
 fn execution_limits_and_disconnect_kill_the_actual_process() {
     let env = TestEnv::new();
     assert!(
@@ -152,18 +146,32 @@ fn execution_limits_and_disconnect_kill_the_actual_process() {
 }
 
 #[test]
-#[ignore = "requires root"]
-fn approved_children_cannot_reach_control_sockets() {
+fn commands_have_the_same_local_approval_authority_as_the_daemon_user() {
     let env = TestEnv::new();
-    for name in ["admin.sock", "exec.sock"] {
-        let event = env.approved_probe(&["socket", env.runtime.join(name).to_str().unwrap()]);
-        assert_eq!(event["code"], 0, "{event}");
-        assert_eq!(decoded(&event, "stdout"), b"permission denied\n");
-    }
+    let event = env.approved_probe(&["approval", env.runtime.join("admin.sock").to_str().unwrap()]);
+    assert_eq!(event["code"], 0, "{event}");
+    assert_eq!(decoded(&event, "stdout"), b"approval accessible\n");
+    let identity = env.approved_probe(&["identity"]);
+    let actual: libzondtest::serde_json::Value =
+        libzondtest::serde_json::from_slice(&decoded(&identity, "stdout")).unwrap();
+    assert_eq!(actual["uid"], env.user.uid.as_raw());
+    assert_eq!(
+        actual["gid"],
+        libzondtest::nix::unistd::Gid::effective().as_raw()
+    );
+    assert_eq!(
+        actual["groups"],
+        json!(
+            libzondtest::nix::unistd::getgroups()
+                .unwrap()
+                .iter()
+                .map(|g| g.as_raw())
+                .collect::<Vec<_>>()
+        )
+    );
 }
 
 #[test]
-#[ignore = "requires root"]
 fn binary_output_stderr_and_nonzero_exit_status_survive_protocol() {
     let env = TestEnv::new();
     let event = env.approved_probe(&["bytes"]);
@@ -173,7 +181,6 @@ fn binary_output_stderr_and_nonzero_exit_status_survive_protocol() {
 }
 
 #[test]
-#[ignore = "requires root"]
 fn malformed_frames_cannot_spoof_identity_or_execute() {
     let env = TestEnv::new();
     for frame in [
@@ -196,7 +203,6 @@ fn malformed_frames_cannot_spoof_identity_or_execute() {
 }
 
 #[test]
-#[ignore = "requires root"]
 fn restart_discards_pending_requests_and_disabled_approvals_fail_closed() {
     let env = TestEnv::new();
     let (session, id) = env.pending(command("/usr/bin/printf", &["restart"]));
@@ -214,5 +220,166 @@ fn restart_discards_pending_requests_and_disabled_approvals_fail_closed() {
     assert_eq!(
         env.request("exec", command("/usr/bin/printf", &["disabled"]))["type"],
         "rejected"
+    );
+}
+
+#[test]
+fn runtime_and_sockets_are_private_to_the_daemon_user() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let env = TestEnv::new();
+    for (path, mode) in [
+        (env.runtime.clone(), 0o700),
+        (env.runtime.join("admin.sock"), 0o600),
+        (env.runtime.join("exec.sock"), 0o600),
+    ] {
+        let meta = fs::metadata(path).unwrap();
+        assert_eq!(meta.uid(), env.user.uid.as_raw());
+        assert_eq!(meta.permissions().mode() & 0o777, mode);
+    }
+    // Approval uses the same user's default XDG socket, without --socket or sudo.
+    let result = checked(env.cli().arg("pending"), 0);
+    let event: libzondtest::serde_json::Value =
+        libzondtest::serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(event["type"], "queue");
+}
+
+#[test]
+fn daemon_rejects_configuration_writable_by_other_users() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    fs::set_permissions(&env.config, fs::Permissions::from_mode(0o666)).unwrap();
+    let result = checked(env.daemon_command().arg("serve"), 1);
+    assert!(String::from_utf8_lossy(&result.stderr).contains("writable by other users"));
+}
+
+#[test]
+#[ignore = "requires a running systemd user manager"]
+fn shipped_user_service_runs_and_executes_as_the_current_user() {
+    use std::{path::PathBuf, process::Command};
+    struct Service {
+        name: String,
+        unit: PathBuf,
+    }
+    impl Drop for Service {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                let log = libzondtest::output(Command::new("journalctl").args([
+                    "--user",
+                    "-u",
+                    &self.name,
+                    "-n",
+                    "30",
+                    "--no-pager",
+                ]));
+                eprintln!("{}", String::from_utf8_lossy(&log.stdout));
+            }
+            let _ =
+                libzondtest::output(Command::new("systemctl").args(["--user", "stop", &self.name]));
+            let _ = libzondtest::output(Command::new("systemctl").args([
+                "--user",
+                "reset-failed",
+                &self.name,
+            ]));
+            let _ = fs::remove_file(&self.unit);
+            let _ =
+                libzondtest::output(Command::new("systemctl").args(["--user", "daemon-reload"]));
+        }
+    }
+    let env = TestEnv::new();
+    env.stop_daemon();
+    let runtime_base = PathBuf::from(
+        std::env::var_os("XDG_RUNTIME_DIR").expect("user runtime directory required"),
+    );
+    let name = env
+        .dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .trim_start_matches('.');
+    let runtime = runtime_base.join(name);
+    let units = runtime_base.join("systemd/user");
+    fs::create_dir_all(&units).unwrap();
+    let service = Service {
+        name: format!("{name}.service"),
+        unit: units.join(format!("{name}.service")),
+    };
+    let contents = include_str!("../../zondd.service")
+        .replace(
+            "ExecStart=%h/.cargo/bin/zondd serve",
+            &format!(
+                "ExecStart={} serve\nEnvironment=XDG_CONFIG_HOME={}",
+                env.daemon.display(),
+                env.config.parent().unwrap().parent().unwrap().display()
+            ),
+        )
+        .replace(
+            "RuntimeDirectory=zondd",
+            &format!("RuntimeDirectory={name}"),
+        );
+    fs::write(&service.unit, contents).unwrap();
+    fs::write(
+        &env.config,
+        format!("runtime_dir = {:?}\n{}", runtime, env.policy),
+    )
+    .unwrap();
+    checked(
+        Command::new("systemctl").args(["--user", "daemon-reload"]),
+        0,
+    );
+    checked(
+        Command::new("systemctl").args(["--user", "start", &service.name]),
+        0,
+    );
+    libzondtest::wait_for(|| runtime.join("admin.sock").exists());
+    checked(
+        Command::new("systemctl").args(["--user", "is-active", &service.name]),
+        0,
+    );
+    let result = checked(
+        Command::new(&env.ctl)
+            .arg("--socket")
+            .arg(runtime.join("exec.sock"))
+            .args(["exec", "/usr/bin/id", "-u"]),
+        0,
+    );
+    assert_eq!(result.stdout, format!("{}\n", env.user.uid).as_bytes());
+    let status = checked(
+        Command::new(&env.ctl)
+            .arg("--runtime-dir")
+            .arg(&runtime)
+            .arg("status"),
+        0,
+    );
+    assert_eq!(
+        libzondtest::serde_json::from_slice::<libzondtest::serde_json::Value>(&status.stdout)
+            .unwrap()["type"],
+        "status"
+    );
+    let mut session = libzondtest::Session::new(
+        &runtime.join("exec.sock"),
+        command(
+            "/usr/bin/systemctl",
+            &["--user", "is-active", &service.name],
+        ),
+    );
+    let pending = session.event();
+    assert_eq!(pending["type"], "pending");
+    checked(
+        Command::new(&env.ctl)
+            .arg("--runtime-dir")
+            .arg(&runtime)
+            .arg("approve")
+            .arg(pending["request"]["approval_id"].as_str().unwrap()),
+        0,
+    );
+    let result = session.event();
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(decoded(&result, "stdout"), b"active\n");
+    drop(service);
+    assert!(
+        !runtime.exists(),
+        "systemd must clean up the service runtime directory"
     );
 }

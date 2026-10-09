@@ -19,19 +19,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Serve principal sockets and the separate local approval socket (requires root).
+    /// Serve principal sockets and the separate local approval socket as the current user.
     Serve {
-        #[arg(long, default_value = "/etc/zondd/config.toml")]
+        #[arg(long, default_value_os_t = libzond::paths::config_path())]
         config: PathBuf,
     },
     /// Validate policy without running commands or opening sockets.
     Check {
-        #[arg(long, default_value = "/etc/zondd/config.toml")]
+        #[arg(long, default_value_os_t = libzond::paths::config_path())]
         config: PathBuf,
     },
     /// Fixed command for authorized_keys; bridge protocol bytes to a principal socket.
     Bridge {
-        #[arg(long, default_value = "/run/zondd")]
+        #[arg(long, default_value_os_t = libzond::paths::runtime_dir())]
         runtime_dir: PathBuf,
         #[arg(long)]
         principal: String,

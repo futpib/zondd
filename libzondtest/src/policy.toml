@@ -1,4 +1,3 @@
-runtime_dir = "@RUNTIME@"
 [approvals]
 enabled = true
 timeout_secs = 4
@@ -9,9 +8,6 @@ max_output_bytes = 1024
 max_connections = 4
 max_running = 2
 [principals.exec]
-bridge_uid = @BRIDGE_UID@
-run_uid = @RUN_UID@
-run_gid = @RUN_GID@
 cwd = "/tmp"
 allow_exec = true
 default = "ask"
@@ -33,9 +29,6 @@ decision = "allow"
 program = "/usr/bin/yes"
 decision = "allow"
 [principals.ops]
-bridge_uid = @BRIDGE_UID@
-run_uid = @RUN_UID@
-run_gid = @RUN_GID@
 cwd = "/tmp"
 operations = ["greet"]
 [operations.greet]
