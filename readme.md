@@ -46,7 +46,7 @@ manager. After building the binaries, select them with Cargo:
 
 ```sh
 # Real OpenSSH transport tests:
-cargo test -p zondctl --test integration -- --ignored --skip iroh_ssh
+cargo test -p zondctl --test integration -- --ignored --skip iroh_ssh --skip trusted_management
 # Also exercise the installed Iroh transport and real discovery:
 cargo test -p zondctl --test integration -- --ignored
 # Start and stop an isolated instance of the shipped systemd user service:
@@ -136,10 +136,12 @@ zondctl --iroh --host alice@<64-hex-endpoint-id> \
 This runs OpenSSH with `ProxyCommand=iroh-ssh proxy %h`. For a custom Iroh proxy
 configuration, put it in your SSH config and use `--host` without `--iroh`.
 
-Local execution is also possible via an explicitly selected principal socket:
+Local callers select the same policy principal without SSH:
 
 ```sh
-zondctl --socket "$XDG_RUNTIME_DIR/zondd/automation.sock" exec /usr/bin/uptime
+zondctl --principal automation exec /usr/bin/uptime
+zondctl --principal monitor invoke service-status slopd.service
+# An explicit --socket /path/to/PRINCIPAL.sock also works.
 ```
 
 ## Policy and approval
@@ -190,6 +192,48 @@ command finishes. The CLI reproduces those bytes and the command's exit status;
 rejection uses 126 and protocol/infrastructure failures use 125. `--json` prints
 all protocol events instead. Request bodies and decisions are logged to stderr;
 avoid passing secrets in argv if those logs are retained.
+
+## Android management
+
+[The Android app](android-app/README.md) connects through a **normal SSH login**
+as the daemon user, directly or through your existing iroh-ssh server. Give its
+key ordinary SSH access, without a forced caller command. It can review and
+approve/reject requests, read/validate/save policy, and start/stop/restart the
+systemd user service. SSH host keys are verified on both transports.
+
+The app invokes `zondctl control` through SSH exec. This helper exposes trusted
+management on stdin/stdout and talks to the local admin socket; it does not add
+another daemon listener or a separate Iroh identity allowlist. It works locally
+as well:
+
+```sh
+printf '%s\n' '{"version":1,"method":"pending"}' | zondctl control
+printf '%s\n' '{"version":1,"method":"pending"}' | ssh alice@server .cargo/bin/zondctl control
+```
+
+One newline-terminated JSON request per process, with `version: 1` and `method`.
+Responses are `{ "version": 1, "ok": true, "result": ... }` or
+`{ "version": 1, "ok": false, "error": "..." }` (exit 125). The helper exits
+without requiring stdin EOF. Methods:
+
+- `pending`, `status`, `resolve` (`approval_id`, `approve`): local admin requests.
+- `read_config`: returns `path`, `content`, SHA-256 `revision`.
+- `validate_config` (`content`): parse and validate without saving.
+- `save_config` (`content`, `revision`): validate, check the current revision,
+  atomically replace with mode 0600. Concurrent helper saves are serialized;
+  stale edits fail. External editors do not participate in the helper's lock.
+- `service` (`action`: `status`, `start`, `stop`, `restart`): `systemctl --user`
+  for `zondd.service`. Restarting applies saved policy and cancels active work.
+
+Control requests are limited to 1 MiB; configuration content to 512 KiB.
+`zondctl --runtime-dir PATH control --config FILE` supports custom installations.
+Service actions always operate on the installed `zondd.service`; a custom config
+path does not change that unit's ExecStart. Saved configuration is applied only
+on restart. The policy editor works even when the daemon is stopped.
+
+The management login intentionally retains general-purpose SSH privileges.
+Restricted caller keys cannot invoke this helper. Local processes running as
+the daemon user already have equivalent authority.
 
 ## Security scope
 

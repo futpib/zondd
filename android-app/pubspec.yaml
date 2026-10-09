@@ -1,0 +1,28 @@
+name: zondd_control
+description: "SSH-authenticated approvals and control for zondd."
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  dartssh2: ^2.22.5
+  flutter_secure_storage: ^11.2.0
+  ffi: ^2.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+  integration_test:
+    sdk: flutter
+
+flutter:
+
+  uses-material-design: true

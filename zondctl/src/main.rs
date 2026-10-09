@@ -1,3 +1,5 @@
+mod control;
+
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
@@ -31,6 +33,9 @@ struct Cli {
     /// Local principal socket for execution, or admin socket for approvals.
     #[arg(long)]
     socket: Option<PathBuf>,
+    /// Local caller principal; selects PRINCIPAL.sock without SSH.
+    #[arg(long, conflicts_with_all = ["host", "socket"])]
+    principal: Option<String>,
     /// Runtime directory for the current user's local approval socket.
     #[arg(long, default_value_os_t = libzond::paths::runtime_dir())]
     runtime_dir: PathBuf,
@@ -65,6 +70,11 @@ enum Action {
     /// Review pending commands interactively on the local admin socket.
     Review,
     Status,
+    /// Trusted management JSON over stdio; invoke through a normal SSH login.
+    Control {
+        #[arg(long, default_value_os_t = libzond::paths::config_path())]
+        config: PathBuf,
+    },
 }
 
 impl Cli {
@@ -78,12 +88,12 @@ impl Cli {
                 iroh: self.iroh,
             })
         } else {
-            Client::local(
-                &self
-                    .socket
-                    .clone()
-                    .unwrap_or_else(|| self.runtime_dir.join("admin.sock")),
-            )
+            Client::local(&self.socket.clone().unwrap_or_else(|| {
+                self.runtime_dir.join(format!(
+                    "{}.sock",
+                    self.principal.as_deref().unwrap_or("admin")
+                ))
+            }))
             .await
         }
     }
@@ -101,6 +111,19 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<u8> {
+    if let Some(principal) = &cli.principal {
+        ensure!(
+            libzond::config::valid_name(principal) && principal != "admin",
+            "invalid caller principal"
+        );
+    }
+    if let Action::Control { config } = &cli.command {
+        ensure!(
+            cli.host.is_none() && cli.socket.is_none() && cli.principal.is_none(),
+            "control runs locally; invoke it through a normal SSH exec channel"
+        );
+        return control::run(&cli.runtime_dir, config).await;
+    }
     if matches!(cli.command, Action::Review) {
         ensure!(cli.host.is_none(), "review requires the local admin socket");
         ensure!(
@@ -136,7 +159,7 @@ async fn run(cli: Cli) -> Result<u8> {
             approve: false,
         },
         Action::Status => Request::Status,
-        Action::Review => unreachable!(),
+        Action::Review | Action::Control { .. } => unreachable!(),
     };
     let mut client = cli.connect().await?;
     client.send(request).await?;

@@ -1,5 +1,6 @@
 [workspace]
 members = ["libzond", "libzondctl", "zondd", "zondctl", "libzondtest"]
+exclude = ["android-app/native"]
 resolver = "2"
 
 [workspace.package]

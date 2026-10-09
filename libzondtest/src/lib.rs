@@ -411,7 +411,13 @@ impl Default for SshEnv {
 impl SshEnv {
     pub fn new() -> Self {
         let env = TestEnv::new();
-        for key in ["host", "exec-key", "ops-key", "unknown-key"] {
+        for key in [
+            "host",
+            "exec-key",
+            "ops-key",
+            "unknown-key",
+            "management-key",
+        ] {
             checked(
                 Command::new("ssh-keygen")
                     .args(["-q", "-t", "ed25519", "-N", "", "-f"])
@@ -429,6 +435,8 @@ impl SshEnv {
                 env.runtime.display()
             ));
         }
+        authorized
+            .push_str(&fs::read_to_string(env.dir.path().join("management-key.pub")).unwrap());
         let keys = env.dir.path().join("authorized_keys");
         fs::write(&keys, authorized).unwrap();
         fs::set_permissions(&keys, Permissions::from_mode(0o644)).unwrap();

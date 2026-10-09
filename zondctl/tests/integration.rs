@@ -151,3 +151,84 @@ fn iroh_ssh_operation_completes_and_proxy_exits() {
         std::thread::sleep(Duration::from_secs(1));
     }
 }
+
+#[test]
+#[ignore = "requires OpenSSH client/server and iroh-ssh"]
+fn trusted_management_uses_normal_ssh_over_both_transports() {
+    let ssh = SshEnv::new();
+    let endpoint = ssh.start_iroh();
+    for iroh in [false, true] {
+        for approve in [true, false] {
+            let mut calling = if iroh {
+                let mut cmd = Command::new(&ssh.env.ctl);
+                cmd.arg("--iroh")
+                    .arg("--host")
+                    .arg(format!("{}@{endpoint}", ssh.env.user.name))
+                    .arg("--ssh-config")
+                    .arg(&ssh.config)
+                    .arg("--identity")
+                    .arg(ssh.env.dir.path().join("exec-key"));
+                cmd
+            } else {
+                ssh.remote("exec")
+            };
+            let mut caller = Process::spawn(
+                calling
+                    .args(["--json", "exec", "/usr/bin/printf", "%s", "managed"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit()),
+            );
+            let pending = read_json(caller.child.stdout.as_mut().unwrap());
+            assert_eq!(pending["type"], "pending");
+            let id = pending["request"]["approval_id"].as_str().unwrap();
+            let mut cmd = Command::new("ssh");
+            cmd.arg("-F")
+                .arg(&ssh.config)
+                .arg("-i")
+                .arg(ssh.env.dir.path().join("management-key"))
+                .args(["-T", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]);
+            if iroh {
+                cmd.args(["-o", "ProxyCommand=iroh-ssh proxy %h"])
+                    .arg(format!("{}@{endpoint}", ssh.env.user.name));
+            } else {
+                cmd.arg("-p")
+                    .arg(ssh.port.to_string())
+                    .arg(format!("{}@127.0.0.1", ssh.env.user.name));
+            }
+            cmd.arg(format!(
+                "{} --runtime-dir {} control --config {}",
+                ssh.env.ctl.display(),
+                ssh.env.runtime.display(),
+                ssh.env.config.display()
+            ));
+            let mut process = Process::spawn(
+                cmd.stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit()),
+            );
+            let mut stdin = process.child.stdin.take().unwrap();
+            writeln!(
+                stdin,
+                "{}",
+                json!({"version":1,"method":"resolve","approval_id":id,"approve":approve})
+            )
+            .unwrap();
+            let response = read_json(process.child.stdout.as_mut().unwrap());
+            assert_eq!(response["ok"], true, "{response}");
+            assert!(process.wait(Duration::from_secs(5)).success());
+            assert_eq!(
+                read_json(caller.child.stdout.as_mut().unwrap())["type"],
+                if approve { "completed" } else { "rejected" }
+            );
+            assert_eq!(
+                caller.wait(Duration::from_secs(5)).code(),
+                Some(if approve { 0 } else { 126 })
+            );
+        }
+    }
+    let rejected = checked(
+        ssh.ssh().arg(format!("{} control", ssh.env.ctl.display())),
+        1,
+    );
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("protocol only"));
+}
