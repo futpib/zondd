@@ -51,7 +51,14 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Action::Serve { config } => {
             security::trusted_path(&config)?;
-            server::serve(Config::parse(&std::fs::read_to_string(config)?)?).await
+            let content = std::fs::read_to_string(&config)?;
+            ensure!(content.len() <= 512 * 1024, "config exceeds 512 KiB");
+            server::serve(
+                Config::parse(&content)?,
+                config,
+                libzond::config::revision(&content),
+            )
+            .await
         }
         Action::Check { config } => {
             Config::parse(&std::fs::read_to_string(config)?)?;

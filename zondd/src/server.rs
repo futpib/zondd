@@ -1,5 +1,8 @@
-use crate::{execution, security::Runtime};
-use anyhow::{Context, Result, bail, ensure};
+use crate::{
+    execution,
+    security::{self, Runtime},
+};
+use anyhow::{Context, Result, ensure};
 use libzond::{
     Command, Envelope, Event, MAX_REQUEST_BYTES, Pending, Request, VERSION,
     config::{Config, Decision, Principal, validate_command},
@@ -7,13 +10,15 @@ use libzond::{
 };
 use std::{
     collections::BTreeMap,
+    io::Read,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncReadExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{Semaphore, oneshot},
+    sync::{Semaphore, mpsc, oneshot, watch},
     task::JoinSet,
     time::Instant,
 };
@@ -21,12 +26,23 @@ use tokio::{
 struct Entry {
     request: Pending,
     deadline: Instant,
-    decision: oneshot::Sender<bool>,
+    decision: oneshot::Sender<Result<(), String>>,
+}
+struct Active {
+    config: Arc<Config>,
+    revision: String,
+    generation: u64,
+    pending: BTreeMap<String, Entry>,
+    running: usize,
+    connections: usize,
+}
+struct Reload {
+    revision: Option<String>,
+    reply: oneshot::Sender<Result<Event>>,
 }
 struct State {
-    config: Config,
-    pending: Mutex<BTreeMap<String, Entry>>,
-    running: Semaphore,
+    active: Mutex<Active>,
+    reload: mpsc::Sender<Reload>,
 }
 struct PendingGuard {
     state: Arc<State>,
@@ -34,46 +50,77 @@ struct PendingGuard {
 }
 impl Drop for PendingGuard {
     fn drop(&mut self) {
-        self.state.pending.lock().unwrap().remove(&self.id);
+        self.state.active.lock().unwrap().pending.remove(&self.id);
+    }
+}
+struct CapacityGuard {
+    state: Arc<State>,
+    execution: bool,
+}
+impl Drop for CapacityGuard {
+    fn drop(&mut self) {
+        let mut active = self.state.active.lock().unwrap();
+        if self.execution {
+            active.running -= 1;
+        } else {
+            active.connections -= 1;
+        }
     }
 }
 
-pub async fn serve(config: Config) -> Result<()> {
+type Endpoints = BTreeMap<String, watch::Sender<bool>>;
+
+pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Result<()> {
     let mut runtime = Runtime::create(&config.runtime_dir)?;
-    let mut endpoints = vec![(
-        runtime.listen(config.runtime_dir.join("admin.sock"))?,
-        None,
-        libzond::paths::current_uid(),
-    )];
-    for name in config.principals.keys() {
-        endpoints.push((
-            runtime.listen(config.runtime_dir.join(format!("{name}.sock")))?,
-            Some(name.clone()),
-            libzond::paths::current_uid(),
-        ));
-    }
-    let connections = Arc::new(Semaphore::new(config.limits.max_connections));
+    let admin_socket = runtime.listen(config.runtime_dir.join("admin.sock"))?;
+    let (reload_tx, mut reload_rx) = mpsc::channel(16);
     let state = Arc::new(State {
-        running: Semaphore::new(config.limits.max_running),
-        config,
-        pending: Mutex::new(BTreeMap::new()),
+        active: Mutex::new(Active {
+            config: Arc::new(config),
+            revision,
+            generation: 0,
+            pending: BTreeMap::new(),
+            running: 0,
+            connections: 0,
+        }),
+        reload: reload_tx,
     });
     let mut listeners = JoinSet::new();
-    for (listener, principal, uid) in endpoints {
-        // Waiting remote requests must not consume the capacity needed to approve them.
-        let permits = if principal.is_none() {
-            Arc::new(Semaphore::new(16))
-        } else {
-            connections.clone()
-        };
-        listeners.spawn(accept(listener, principal, uid, state.clone(), permits));
+    let (_admin_stop, admin_shutdown) = watch::channel(false);
+    listeners.spawn(accept(admin_socket, None, state.clone(), admin_shutdown));
+    let mut endpoints = Endpoints::new();
+    let config = state.active.lock().unwrap().config.clone();
+    for name in config.principals.keys() {
+        let listener = runtime.listen(config.runtime_dir.join(format!("{name}.sock")))?;
+        start_endpoint(
+            name.clone(),
+            listener,
+            &state,
+            &mut endpoints,
+            &mut listeners,
+        );
     }
-    tracing::info!(runtime = %state.config.runtime_dir.display(), "zondd ready");
+    tracing::info!(runtime = %config.runtime_dir.display(), "zondd ready");
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let outcome = tokio::select! {
-        r = tokio::signal::ctrl_c() => r.map_err(anyhow::Error::from),
-        _ = terminate.recv() => Ok(()),
-        r = listeners.join_next() => { bail!("listener stopped: {r:?}"); }
+    let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+    let outcome = loop {
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => break r.map_err(anyhow::Error::from),
+            _ = terminate.recv() => break Ok(()),
+            _ = hangup.recv() => {
+                if let Err(error) = reload(&config_path, None, &state, &mut runtime, &mut endpoints, &mut listeners) {
+                    tracing::error!(%error, "policy reload rejected; active policy unchanged");
+                }
+            }
+            Some(request) = reload_rx.recv() => {
+                let result = reload(&config_path, request.revision.as_deref(), &state, &mut runtime, &mut endpoints, &mut listeners);
+                let _ = request.reply.send(result);
+            }
+            result = listeners.join_next() => {
+                // Retired principal listeners finish after their existing clients drain.
+                if !matches!(result, Some(Ok(Ok(())))) { break Err(anyhow::anyhow!("listener stopped: {result:?}")); }
+            }
+        }
     };
     listeners.abort_all();
     while listeners.join_next().await.is_some() {}
@@ -81,33 +128,146 @@ pub async fn serve(config: Config) -> Result<()> {
     outcome
 }
 
+fn start_endpoint(
+    name: String,
+    listener: UnixListener,
+    state: &Arc<State>,
+    endpoints: &mut Endpoints,
+    listeners: &mut JoinSet<Result<()>>,
+) {
+    let (stop, shutdown) = watch::channel(false);
+    endpoints.insert(name.clone(), stop);
+    listeners.spawn(accept(listener, Some(name), state.clone(), shutdown));
+}
+
+fn reload(
+    path: &Path,
+    expected: Option<&str>,
+    state: &Arc<State>,
+    runtime: &mut Runtime,
+    endpoints: &mut Endpoints,
+    listeners: &mut JoinSet<Result<()>>,
+) -> Result<Event> {
+    security::trusted_path(path)?;
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(512 * 1024 + 1)
+        .read_to_string(&mut text)?;
+    ensure!(text.len() <= 512 * 1024, "config exceeds 512 KiB");
+    let config = Arc::new(Config::parse(&text)?);
+    let revision = libzond::config::revision(&text);
+    ensure!(
+        expected.is_none_or(|expected| expected == revision),
+        "configuration changed; reload the editor before applying"
+    );
+    {
+        let active = state.active.lock().unwrap();
+        ensure!(
+            config.runtime_dir == active.config.runtime_dir,
+            "changing runtime_dir requires a restart"
+        );
+        if revision == active.revision {
+            return Ok(Event::Reloaded {
+                revision,
+                cancelled_approvals: 0,
+            });
+        }
+    }
+    // Prepare every new socket before publishing any of the new policy.
+    let mut added = Vec::new();
+    for name in config
+        .principals
+        .keys()
+        .filter(|name| !endpoints.contains_key(*name))
+    {
+        let path = config.runtime_dir.join(format!("{name}.sock"));
+        match runtime.add(path.clone()) {
+            Ok(listener) => added.push((name.clone(), path, listener)),
+            Err(error) => {
+                for (_, path, _) in &added {
+                    let _ = runtime.remove(path);
+                }
+                return Err(error)
+                    .context("could not create new principal socket; active policy unchanged");
+            }
+        }
+    }
+    let cancelled_approvals;
+    {
+        let mut active = state.active.lock().unwrap();
+        active.config = config.clone();
+        active.revision = revision.clone();
+        active.generation += 1;
+        let pending = std::mem::take(&mut active.pending);
+        cancelled_approvals = pending.len();
+        for (_, entry) in pending {
+            let _ = entry
+                .decision
+                .send(Err("policy reloaded; submit the request again".into()));
+        }
+    }
+    let removed: Vec<_> = endpoints
+        .keys()
+        .filter(|name| !config.principals.contains_key(*name))
+        .cloned()
+        .collect();
+    for name in removed {
+        if let Err(error) = runtime.remove(&config.runtime_dir.join(format!("{name}.sock"))) {
+            tracing::warn!(%name, %error, "could not remove retired socket");
+        }
+        if let Some(stop) = endpoints.remove(&name) {
+            let _ = stop.send(true);
+        }
+    }
+    for (name, _, listener) in added {
+        start_endpoint(name, listener, state, endpoints, listeners);
+    }
+    tracing::info!(%revision, cancelled_approvals, "policy reloaded");
+    Ok(Event::Reloaded {
+        revision,
+        cancelled_approvals,
+    })
+}
+
 async fn accept(
     listener: UnixListener,
     principal: Option<String>,
-    uid: u32,
     state: Arc<State>,
-    connections: Arc<Semaphore>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let mut clients = JoinSet::new();
+    let admin_permits = Arc::new(Semaphore::new(16));
     loop {
         tokio::select! {
+            _ = shutdown.changed() => break,
             connection = listener.accept() => {
                 let (socket, _) = connection?;
-                let peer = socket.peer_cred()?;
-                if peer.uid() != uid { continue; }
-                let Ok(permit) = connections.clone().try_acquire_owned() else { continue; };
+                if socket.peer_cred()?.uid() != libzond::paths::current_uid() { continue; }
+                let mut admin_permit = None;
+                let mut caller_permit = None;
+                if principal.is_none() {
+                    let Ok(permit) = admin_permits.clone().try_acquire_owned() else { continue; };
+                    admin_permit = Some(permit);
+                } else {
+                    let mut active = state.active.lock().unwrap();
+                    if active.connections >= active.config.limits.max_connections { continue; }
+                    active.connections += 1;
+                    caller_permit = Some(CapacityGuard { state: state.clone(), execution: false });
+                }
                 let state = state.clone();
                 let principal = principal.clone();
                 clients.spawn(async move {
-                    let _permit = permit;
+                    let _permits = (admin_permit, caller_permit);
                     if let Err(error) = handle(socket, principal, state).await { tracing::debug!(%error, "session ended"); }
                 });
             }
             _ = clients.join_next(), if !clients.is_empty() => {}
         }
     }
+    drop(listener);
+    while clients.join_next().await.is_some() {}
+    Ok(())
 }
-
 async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>) -> Result<()> {
     let (read, mut write) = socket.into_split();
     let mut read = BufReader::new(read);
@@ -149,13 +309,15 @@ async fn dispatch(
     write: &mut tokio::net::unix::OwnedWriteHalf,
 ) -> Result<Event> {
     let Some(name) = principal else {
-        return admin(&state, request);
+        return admin(&state, request).await;
     };
-    let p = state
-        .config
-        .principals
-        .get(&name)
-        .context("principal missing")?;
+    let (config, generation) = {
+        let active = state.active.lock().unwrap();
+        (active.config.clone(), active.generation)
+    };
+    let Some(p) = config.principals.get(&name) else {
+        return Ok(reject("principal is no longer configured"));
+    };
     let (command, operation, decision) = match request {
         Request::Run { command } => {
             if !p.allow_exec {
@@ -166,12 +328,12 @@ async fn dispatch(
             (command, None, decision)
         }
         Request::Invoke { operation, args } => {
-            let (command, decision) = state.config.operation(p, &operation, &args)?;
+            let (command, decision) = config.operation(p, &operation, &args)?;
             (command, Some(operation), decision)
         }
         Request::ListOperations => {
             return Ok(Event::Operations {
-                operations: state.config.operations_for(p),
+                operations: config.operations_for(p),
             });
         }
         _ => {
@@ -184,30 +346,56 @@ async fn dispatch(
     match decision {
         Decision::Deny => return Ok(reject("command denied by policy")),
         Decision::Ask => {
-            if !state.config.approvals.enabled {
+            if !config.approvals.enabled {
                 return Ok(reject("approval required, but approvals are disabled"));
             }
-            let approved =
-                approval(state.clone(), &name, command.clone(), operation, id, write).await?;
-            if !approved {
-                return Ok(reject("approval denied or expired"));
+            if let Err(reason) = approval(
+                state.clone(),
+                generation,
+                &name,
+                command.clone(),
+                operation,
+                id,
+                write,
+            )
+            .await?
+            {
+                return Ok(reject(&reason));
             }
         }
         Decision::Allow => {}
     }
-    run(&state, p, &name, &command).await
+    run(state, &config, p, generation, &name, &command).await
 }
 
-async fn run(state: &State, p: &Principal, name: &str, command: &Command) -> Result<Event> {
-    let _permit = state
-        .running
-        .try_acquire()
-        .context("execution capacity exhausted")?;
+async fn run(
+    state: Arc<State>,
+    config: &Config,
+    p: &Principal,
+    generation: u64,
+    name: &str,
+    command: &Command,
+) -> Result<Event> {
+    {
+        let mut active = state.active.lock().unwrap();
+        if generation != active.generation {
+            return Ok(reject("policy reloaded; submit the request again"));
+        }
+        ensure!(
+            active.running < active.config.limits.max_running,
+            "execution capacity exhausted"
+        );
+        active.running += 1;
+    }
+    let _permit = CapacityGuard {
+        state,
+        execution: true,
+    };
     tracing::info!(principal = name, ?command, "execution started");
-    let result = execution::execute(command, p, &state.config.limits).await;
+    let result = execution::execute(command, p, &config.limits).await;
     match &result {
         Ok(Event::Completed { code, signal, .. }) => {
-            tracing::info!(principal = name, ?code, ?signal, "execution finished");
+            tracing::info!(principal = name, ?code, ?signal, "execution finished")
         }
         Err(error) => tracing::warn!(principal = name, %error, "execution failed"),
         _ => {}
@@ -217,31 +405,35 @@ async fn run(state: &State, p: &Principal, name: &str, command: &Command) -> Res
 
 async fn approval(
     state: Arc<State>,
+    generation: u64,
     name: &str,
     command: Command,
     operation: Option<String>,
     id: u64,
     write: &mut tokio::net::unix::OwnedWriteHalf,
-) -> Result<bool> {
-    let timeout = Duration::from_secs(state.config.approvals.timeout_secs);
-    let deadline = Instant::now() + timeout;
-    let request = Pending {
-        approval_id: uuid::Uuid::new_v4().to_string(),
-        principal: name.to_owned(),
-        command,
-        operation,
-        reason: "command not permitted without one-time approval".into(),
-        expires_unix_ms: (SystemTime::now().duration_since(UNIX_EPOCH)? + timeout).as_millis()
-            as u64,
-    };
+) -> Result<Result<(), String>> {
     let (decision, receive) = oneshot::channel();
-    {
-        let mut queue = state.pending.lock().unwrap();
+    let (request, deadline) = {
+        let mut active = state.active.lock().unwrap();
+        if generation != active.generation {
+            return Ok(Err("policy reloaded; submit the request again".into()));
+        }
         ensure!(
-            queue.len() < state.config.approvals.max_pending,
+            active.pending.len() < active.config.approvals.max_pending,
             "approval queue full"
         );
-        queue.insert(
+        let timeout = Duration::from_secs(active.config.approvals.timeout_secs);
+        let deadline = Instant::now() + timeout;
+        let request = Pending {
+            approval_id: uuid::Uuid::new_v4().to_string(),
+            principal: name.to_owned(),
+            command,
+            operation,
+            reason: "command not permitted without one-time approval".into(),
+            expires_unix_ms: (SystemTime::now().duration_since(UNIX_EPOCH)? + timeout).as_millis()
+                as u64,
+        };
+        active.pending.insert(
             request.approval_id.clone(),
             Entry {
                 request: request.clone(),
@@ -249,24 +441,26 @@ async fn approval(
                 decision,
             },
         );
-    }
+        (request, deadline)
+    };
     let _guard = PendingGuard {
         state,
         id: request.approval_id.clone(),
     };
     wire::write(write, &Envelope::new(id, Event::Pending { request })).await?;
-    Ok(matches!(
-        tokio::time::timeout_at(deadline, receive).await,
-        Ok(Ok(true))
-    ) && Instant::now() < deadline)
+    match tokio::time::timeout_at(deadline, receive).await {
+        Ok(Ok(decision)) if Instant::now() < deadline => Ok(decision),
+        _ => Ok(Err("approval denied or expired".into())),
+    }
 }
 
-fn admin(state: &State, request: Request) -> Result<Event> {
+async fn admin(state: &State, request: Request) -> Result<Event> {
     match request {
         Request::Pending => {
-            let queue = state.pending.lock().unwrap();
+            let active = state.active.lock().unwrap();
             Ok(Event::Queue {
-                requests: queue
+                requests: active
+                    .pending
                     .values()
                     .filter(|e| e.deadline > Instant::now())
                     .map(|e| e.request.clone())
@@ -277,14 +471,21 @@ fn admin(state: &State, request: Request) -> Result<Event> {
             approval_id,
             approve,
         } => {
-            let entry =
-                state.pending.lock().unwrap().remove(&approval_id).context(
-                    "approval not pending (unknown, expired, resolved, or disconnected)",
-                )?;
+            let entry = state
+                .active
+                .lock()
+                .unwrap()
+                .pending
+                .remove(&approval_id)
+                .context("approval not pending (unknown, expired, resolved, or disconnected)")?;
             ensure!(entry.deadline > Instant::now(), "approval expired");
             entry
                 .decision
-                .send(approve)
+                .send(if approve {
+                    Ok(())
+                } else {
+                    Err("approval denied".into())
+                })
                 .map_err(|_| anyhow::anyhow!("request no longer waiting"))?;
             tracing::info!(%approval_id, principal = %entry.request.principal, approve, "approval resolved");
             Ok(Event::Resolved {
@@ -292,16 +493,28 @@ fn admin(state: &State, request: Request) -> Result<Event> {
                 approved: approve,
             })
         }
-        Request::Status => Ok(Event::Status {
-            pending: state.pending.lock().unwrap().len(),
-            running: state.config.limits.max_running - state.running.available_permits(),
-        }),
+        Request::Status => {
+            let active = state.active.lock().unwrap();
+            Ok(Event::Status {
+                pending: active.pending.len(),
+                running: active.running,
+                revision: active.revision.clone(),
+            })
+        }
+        Request::Reload { revision } => {
+            let (reply, receive) = oneshot::channel();
+            state
+                .reload
+                .send(Reload { revision, reply })
+                .await
+                .context("daemon shutting down")?;
+            receive.await.context("daemon shutting down")?
+        }
         _ => Ok(reject(
             "execution is unavailable on the administration endpoint",
         )),
     }
 }
-
 fn reject(reason: &str) -> Event {
     Event::Rejected {
         reason: reason.into(),

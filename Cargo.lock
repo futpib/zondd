@@ -365,6 +365,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "toml",
 ]
@@ -1041,7 +1042,6 @@ dependencies = [
  "libzondtest",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "tokio",
 ]

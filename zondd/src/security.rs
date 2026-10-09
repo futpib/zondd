@@ -81,6 +81,22 @@ impl Runtime {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         Ok(listener)
     }
+
+    pub fn add(&mut self, path: PathBuf) -> Result<UnixListener> {
+        let listener = UnixListener::bind(&path)?;
+        self.sockets.push(path.clone());
+        if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+            let _ = self.remove(&path);
+            return Err(error.into());
+        }
+        Ok(listener)
+    }
+
+    pub fn remove(&mut self, path: &Path) -> Result<()> {
+        fs::remove_file(path)?;
+        self.sockets.retain(|p| p != path);
+        Ok(())
+    }
 }
 
 impl Drop for Runtime {

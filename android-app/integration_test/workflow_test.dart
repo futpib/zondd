@@ -299,8 +299,8 @@ void main() {
       );
       FocusManager.instance.primaryFocus?.unfocus();
       await settle();
-      await tap(find.text('Save policy'));
-      await waitFor(find.text('Saved. Restart zondd to apply this policy.'));
+      await tap(find.text('Save & apply'));
+      await waitFor(find.text('Policy applied.'));
       await capture('23-policy-saved');
       final saved = controller.text;
       await tester.enterText(

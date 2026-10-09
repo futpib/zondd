@@ -3,6 +3,7 @@ Description=zondd — SSH-authenticated operations and approval queue
 
 [Service]
 ExecStart=%h/.cargo/bin/zondd serve
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 RuntimeDirectory=zondd

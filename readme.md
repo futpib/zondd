@@ -114,6 +114,27 @@ full authority, including approval. This also applies to programs authorized
 to run as that user. Use separate Unix accounts and separate user daemons when
 OS-level isolation between users is needed.
 
+## Apply policy changes
+
+After editing the config, run `zondctl reload` as the daemon user. It waits for
+validation and reports the applied revision or an error. The Android app's
+**Save & apply** does the same over ordinary SSH or SSH through Iroh.
+`systemctl --user reload zondd` sends SIGHUP; check the journal for its result.
+
+Reload reads the original startup config path, validates it, and prepares any
+new principal sockets before atomically replacing the active policy. Invalid
+configurations, untrusted files, and socket conflicts leave the active policy
+and approval queue intact. Rules, operations, principals, approval settings,
+and limits take effect without restarting. Changing `runtime_dir` requires a
+restart. `zondctl status` includes the active config's SHA-256 revision.
+
+Commands already admitted keep running with their original policy and limits.
+Pending approvals are rejected with “policy reloaded; submit the request again”;
+new requests use the new policy. Lower capacity limits do not terminate existing
+work. Applying the same revision is a no-op and preserves pending approvals.
+Removed principal sockets stop accepting new connections while running commands
+finish. Reload is available only through the administration endpoint.
+
 ## Send operations
 
 ```sh
@@ -177,9 +198,9 @@ zondctl status
 control characters escaped, and asks for approve/deny/skip/quit. Approval is
 bound to that one immutable request, consumed once, and never adds a permanent
 allowlist rule. A full queue rejects new requests. Expiry, client disconnect,
-or daemon restart cancels pending requests. Admin connections have separate
-capacity so pending remote requests cannot block review. Policy is loaded at
-startup; restart to apply changes, which also cancels active work.
+policy reload, or daemon restart cancels pending requests. Admin connections
+have separate capacity so pending remote requests cannot block review.
+Restarting or stopping the daemon also cancels active work.
 
 Commands have null stdin, no PTY, and a configured working directory. Their
 environment starts with `PATH=/usr/bin:/bin`, `HOME=<cwd>`, and `LANG=C.UTF-8`,
@@ -198,7 +219,7 @@ avoid passing secrets in argv if those logs are retained.
 [The Android app](android-app/README.md) connects through a **normal SSH login**
 as the daemon user, directly or through your existing iroh-ssh server. Give its
 key ordinary SSH access, without a forced caller command. It can review and
-approve/reject requests, read/validate/save policy, and start/stop/restart the
+approve/reject requests, read/validate/save/apply policy, and start/stop/restart the
 systemd user service. SSH host keys are verified on both transports.
 
 The app invokes `zondctl control` through SSH exec. This helper exposes trusted
@@ -222,14 +243,20 @@ without requiring stdin EOF. Methods:
 - `save_config` (`content`, `revision`): validate, check the current revision,
   atomically replace with mode 0600. Concurrent helper saves are serialized;
   stale edits fail. External editors do not participate in the helper's lock.
+- `reload_config` (`revision`): apply that saved revision through the admin
+  socket. Returns `revision` and `cancelled_approvals` after applying; stale
+  revisions fail. A lost connection can leave the result unknown; check `status`
+  before retrying. Reloading the same revision is harmless.
 - `service` (`action`: `status`, `start`, `stop`, `restart`): `systemctl --user`
   for `zondd.service`. Restarting applies saved policy and cancels active work.
 
 Control requests are limited to 1 MiB; configuration content to 512 KiB.
 `zondctl --runtime-dir PATH control --config FILE` supports custom installations.
 Service actions always operate on the installed `zondd.service`; a custom config
-path does not change that unit's ExecStart. Saved configuration is applied only
-on restart. The policy editor works even when the daemon is stopped.
+path does not change that unit's ExecStart. Reload always reads the daemon's
+startup config path and checks the supplied revision. Saving alone leaves the
+active policy unchanged until reload or startup. The policy editor works even
+when the daemon is stopped.
 
 The management login intentionally retains general-purpose SSH privileges.
 Restricted caller keys cannot invoke this helper. Local processes running as

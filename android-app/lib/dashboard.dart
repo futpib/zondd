@@ -30,7 +30,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   String configPath = '';
   bool editing = false, loaded = false;
   Map<String, String> serviceState = {};
-  bool restartRequired = false;
+  bool applyRequired = false;
   @override
   void initState() {
     super.initState();
@@ -142,12 +142,21 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     }
     await action(() async {
       final result = await widget.api.request({'method': 'read_config'});
+      String? activeRevision;
+      try {
+        activeRevision =
+            (await widget.api.request({'method': 'status'}))['revision']
+                as String?;
+      } catch (_) {
+        /* Editing remains available while the daemon is stopped. */
+      }
       if (!mounted) return;
       setState(() {
         config.text = result['content'] as String;
         loadedConfig = config.text;
         revision = result['revision'] as String;
         configPath = result['path'] as String;
+        applyRequired = activeRevision != revision;
       });
     });
   }
@@ -180,7 +189,6 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 ),
           };
           if (verb != 'status') message = 'Service $verb completed.';
-          if (verb == 'restart' || verb == 'start') restartRequired = false;
         });
       }
     });
@@ -451,11 +459,28 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       setState(() {
         revision = result['revision'] as String;
         loadedConfig = config.text;
-        restartRequired = true;
-        message = 'Saved. Restart zondd to apply this policy.';
+        applyRequired = true;
+        message = 'Saved. Apply to activate this policy.';
       });
     }
+    await applySaved();
   });
+  Future<void> applySaved() async {
+    final result = await widget.api.request({
+      'method': 'reload_config',
+      'revision': revision,
+    });
+    final cancelled = result['cancelled_approvals'] as int;
+    if (mounted) {
+      setState(() {
+        applyRequired = false;
+        message = cancelled == 0
+            ? 'Policy applied.'
+            : 'Policy applied. $cancelled pending ${cancelled == 1 ? 'approval' : 'approvals'} rejected.';
+      });
+    }
+  }
+
   Widget policy() {
     Map<String, dynamic>? parsed;
     try {
@@ -537,7 +562,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                   Expanded(
                     child: FilledButton(
                       onPressed: acting || revision == null ? null : savePolicy,
-                      child: const Text('Save policy'),
+                      child: const Text('Save & apply'),
                     ),
                   ),
                 ],
@@ -566,13 +591,30 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                     const ErrorBox(
                       'This draft is not valid TOML. Open the editor to fix it.',
                     ),
-                  if (restartRequired)
+                  if (applyRequired)
                     Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.restart_alt),
-                        title: const Text('Restart needed'),
-                        subtitle: const Text(
-                          'Saved policy applies after restarting zondd.',
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              'Apply saved policy',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Running commands continue. Pending approvals are rejected when policy changes.',
+                            ),
+                            const SizedBox(height: 12),
+                            FilledButton.icon(
+                              onPressed: acting
+                                  ? null
+                                  : () => action(applySaved),
+                              icon: const Icon(Icons.sync),
+                              label: const Text('Apply now'),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -750,10 +792,10 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
               'Install the zondd user unit on this server to control it here.',
             ),
           ),
-        if (restartRequired)
+        if (applyRequired)
           const Padding(
             padding: EdgeInsets.only(bottom: 20),
-            child: Text('Your saved policy is waiting for a restart.'),
+            child: Text('Apply the saved policy from the Policy tab.'),
           ),
         FilledButton.icon(
           onPressed: acting || serviceState.isEmpty || missing

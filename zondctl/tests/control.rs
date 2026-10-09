@@ -66,6 +66,26 @@ fn management_resolves_requests_and_rejects_stale_or_invalid_configuration() {
     assert!(stale["error"].as_str().unwrap().contains("changed"));
     assert_eq!(std::fs::read_to_string(&env.config).unwrap(), changed);
     assert_eq!(
+        env.request("admin", json!({"method":"status"}))["revision"],
+        *revision
+    );
+    let stale_reload = control(
+        &env,
+        json!({"version":1,"method":"reload_config","revision":revision}),
+    );
+    assert!(stale_reload["error"].as_str().unwrap().contains("changed"));
+    let saved = control(&env, json!({"version":1,"method":"read_config"}));
+    let applied = control(
+        &env,
+        json!({"version":1,"method":"reload_config","revision":saved["result"]["revision"]}),
+    );
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["result"]["revision"], saved["result"]["revision"]);
+    assert_eq!(
+        env.request("admin", json!({"method":"status"}))["revision"],
+        saved["result"]["revision"]
+    );
+    assert_eq!(
         control(&env, json!({"version":1,"method":"pending","unknown":true}))["ok"],
         false
     );

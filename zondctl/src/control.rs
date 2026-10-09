@@ -1,11 +1,13 @@
 //! Trusted management over local stdin/stdout, also usable through a normal SSH exec.
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
-use libzond::{Request, config::Config};
+use libzond::{
+    Request,
+    config::{Config, revision},
+};
 use libzondctl::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
     io::{BufRead, Read, Write},
@@ -23,6 +25,7 @@ enum Control {
     ReadConfig {},
     ValidateConfig { content: String },
     SaveConfig { content: String, revision: String },
+    ReloadConfig { revision: String },
     Service { action: ServiceAction },
 }
 
@@ -82,6 +85,9 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
             approve,
         },
         Control::Status {} => Request::Status,
+        Control::ReloadConfig { revision } => Request::Reload {
+            revision: Some(revision),
+        },
         Control::ReadConfig {} => return read_config(config),
         Control::ValidateConfig { content } => {
             Config::parse(&content)?;
@@ -100,13 +106,6 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
         bail!("{message}");
     }
     Ok(serde_json::to_value(event)?)
-}
-
-fn revision(content: &str) -> String {
-    Sha256::digest(content.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 fn content(path: &Path) -> Result<String> {
@@ -153,7 +152,7 @@ fn save_config(path: &Path, text: &str, expected: &str) -> Result<Value> {
     file.as_file().sync_all()?;
     file.persist(path)?;
     fs::File::open(parent)?.sync_all()?;
-    Ok(json!({"revision":revision(text),"restart_required":true}))
+    Ok(json!({"revision":revision(text),"apply_required":true,"restart_required":false}))
 }
 
 async fn service(action: ServiceAction) -> Result<Value> {

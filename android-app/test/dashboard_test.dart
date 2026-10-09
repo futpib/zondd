@@ -29,6 +29,8 @@ class UnavailableControl implements ControlApi {
 
 class EditableControl implements ControlApi {
   String content = '[principals.demo]\ncwd = "/"\n';
+  bool failApply = false;
+  int saves = 0;
   @override
   Future<void> close() async {}
   @override
@@ -44,9 +46,14 @@ class EditableControl implements ControlApi {
         };
       case 'validate_config':
         throw StateError('cwd must be absolute');
+      case 'reload_config':
+        expect(body['revision'], 'after');
+        if (failApply) throw StateError('Daemon unavailable');
+        return {'revision': 'after', 'cancelled_approvals': 0};
       case 'save_config':
+        saves++;
         content = body['content'] as String;
-        return {'revision': 'after', 'restart_required': true};
+        return {'revision': 'after', 'apply_required': true};
       default:
         throw StateError('unexpected request');
     }
@@ -54,6 +61,34 @@ class EditableControl implements ControlApi {
 }
 
 void main() {
+  testWidgets('a saved policy can be applied again after a reload failure', (
+    tester,
+  ) async {
+    final api = EditableControl()..failApply = true;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Dashboard(api: api, name: 'test'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Policy'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Edit TOML'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '${api.content}\n# edited');
+    await tester.tap(find.text('Save & apply'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Daemon unavailable'), findsOneWidget);
+    await tester.tap(find.text('Overview'));
+    await tester.pumpAndSettle();
+    api.failApply = false;
+    await tester.tap(find.text('Apply now'));
+    await tester.pumpAndSettle();
+    expect(find.text('Policy applied.'), findsOneWidget);
+    expect(find.text('Apply now'), findsNothing);
+    expect(api.saves, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   testWidgets('a corrected policy can be saved after a validation error', (
     tester,
   ) async {
@@ -74,13 +109,10 @@ void main() {
     expect(find.textContaining('cwd must be absolute'), findsOneWidget);
     const edited = '[principals.demo]\ncwd = "/tmp"\n';
     await tester.enterText(find.byType(TextField), edited);
-    await tester.tap(find.text('Save policy'));
+    await tester.tap(find.text('Save & apply'));
     await tester.pumpAndSettle();
     expect(api.content, edited);
-    expect(
-      find.text('Saved. Restart zondd to apply this policy.'),
-      findsOneWidget,
-    );
+    expect(find.text('Policy applied.'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
   testWidgets(
@@ -101,9 +133,9 @@ void main() {
       const draft = '[principals.demo]\ncwd = "/tmp"\n';
       await tester.enterText(find.byType(TextField), draft);
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('Save policy'));
+      await tester.ensureVisible(find.text('Save & apply'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Save policy'));
+      await tester.tap(find.text('Save & apply'));
       await tester.pumpAndSettle();
       expect(find.textContaining('configuration changed'), findsOneWidget);
       expect(

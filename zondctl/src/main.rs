@@ -70,6 +70,8 @@ enum Action {
     /// Review pending commands interactively on the local admin socket.
     Review,
     Status,
+    /// Apply the daemon's saved configuration without interrupting running commands.
+    Reload,
     /// Trusted management JSON over stdio; invoke through a normal SSH login.
     Control {
         #[arg(long, default_value_os_t = libzond::paths::config_path())]
@@ -159,6 +161,7 @@ async fn run(cli: Cli) -> Result<u8> {
             approve: false,
         },
         Action::Status => Request::Status,
+        Action::Reload => Request::Reload { revision: None },
         Action::Review | Action::Control { .. } => unreachable!(),
     };
     let mut client = cli.connect().await?;

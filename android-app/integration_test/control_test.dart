@@ -194,7 +194,17 @@ void main() {
             'content': edited,
             'revision': config['revision'],
           });
-          expect(saved['restart_required'], isTrue);
+          expect(saved['restart_required'], isFalse);
+          expect(saved['apply_required'], isTrue);
+          final applied = await api.request({
+            'method': 'reload_config',
+            'revision': saved['revision'],
+          });
+          expect(applied['revision'], saved['revision']);
+          expect(
+            (await api.request({'method': 'status'}))['revision'],
+            saved['revision'],
+          );
           expect(
             (await api.request({'method': 'read_config'}))['content'],
             edited,

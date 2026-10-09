@@ -377,6 +377,35 @@ fn shipped_user_service_runs_and_executes_as_the_current_user() {
     let result = session.event();
     assert_eq!(result["code"], 0, "{result}");
     assert_eq!(decoded(&result, "stdout"), b"active\n");
+    let pid = || {
+        checked(
+            Command::new("systemctl").args([
+                "--user",
+                "show",
+                "--property=MainPID",
+                "--value",
+                &service.name,
+            ]),
+            0,
+        )
+        .stdout
+    };
+    let original_pid = pid();
+    let changed = format!(
+        "runtime_dir = {:?}\n{}\n# live reload\n",
+        runtime, env.policy
+    );
+    fs::write(&env.config, &changed).unwrap();
+    checked(
+        Command::new("systemctl").args(["--user", "reload", &service.name]),
+        0,
+    );
+    wait_for(|| {
+        let mut status =
+            libzondtest::Session::new(&runtime.join("admin.sock"), json!({"method":"status"}));
+        status.event()["revision"] == libzond::config::revision(&changed)
+    });
+    assert_eq!(pid(), original_pid);
     drop(service);
     assert!(
         !runtime.exists(),

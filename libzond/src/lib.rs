@@ -33,6 +33,10 @@ pub enum Request {
         approve: bool,
     },
     Status,
+    Reload {
+        #[serde(default)]
+        revision: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,6 +105,11 @@ pub enum Event {
     Status {
         pending: usize,
         running: usize,
+        revision: String,
+    },
+    Reloaded {
+        revision: String,
+        cancelled_approvals: usize,
     },
 }
 

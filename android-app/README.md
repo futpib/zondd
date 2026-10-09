@@ -36,7 +36,13 @@ background notification service. Closing the controller does not reject callers;
 they remain pending until their existing deadline, disconnection, or a decision.
 Expired/disconnected requests cannot be approved. All decisions apply once.
 Policy saves validate and check for concurrent edits, then atomically replace the
-file. Restart the user service to apply changes; restart/stop cancel active work.
+file. **Save & apply** then reloads that exact saved revision without restarting.
+Running commands finish; pending approvals are rejected so callers must resubmit
+under the new policy. Invalid reloads leave the active policy intact. If saving
+succeeds but applying fails, **Apply now** retries the saved revision; refresh
+before applying if another editor changed the file. A stopped daemon loads the
+saved policy when started. Changing `runtime_dir` still requires a restart.
+Restart/stop cancel active work.
 The policy overview shows the saved callers, ordered rules, and named operations.
 **Edit TOML** keeps validation and saving visible while editing; unsaved drafts
 survive tab changes, validation errors, and stale-save errors. Command arguments
