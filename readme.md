@@ -63,14 +63,15 @@ check pipe EOF after completion to catch orphaned proxy processes.
 
 ## Configure the receiver
 
-For Arch Linux, [packaging/aur/PKGBUILD](packaging/aur/PKGBUILD) builds the
-`zondd-git` package from Git. It installs both binaries in `/usr/bin`, the user
+For Arch Linux, the separate `zondd-git` AUR packaging repository builds the
+package from Git. It installs both binaries in `/usr/bin`, the user
 service in `/usr/lib/systemd/user`, and the example policy in
 `/usr/share/doc/zondd`. It does not create a policy, enroll SSH keys, or start
-the service. Once the source repository is published:
+the service. Once the source and AUR repositories are published:
 
 ```sh
-cd packaging/aur
+git clone https://aur.archlinux.org/zondd-git.git
+cd zondd-git
 makepkg -si
 zondd check
 systemctl --user daemon-reload
