@@ -63,7 +63,27 @@ check pipe EOF after completion to catch orphaned proxy processes.
 
 ## Configure the receiver
 
-Install the binaries and [zondd.service](zondd.service) as a **user service**:
+For Arch Linux, [packaging/aur/PKGBUILD](packaging/aur/PKGBUILD) builds the
+`zondd-git` package from Git. It installs both binaries in `/usr/bin`, the user
+service in `/usr/lib/systemd/user`, and the example policy in
+`/usr/share/doc/zondd`. It does not create a policy, enroll SSH keys, or start
+the service. Once the source repository is published:
+
+```sh
+cd packaging/aur
+makepkg -si
+zondd check
+systemctl --user daemon-reload
+systemctl --user enable --now zondd.service
+```
+
+The package service uses `/usr/bin/zondd serve`. If migrating from a Cargo
+installation, remove your old `~/.config/systemd/user/zondd.service` copy so
+it no longer overrides the packaged unit, then reload the user manager and
+restart the service. Keep any intentional local customizations as drop-ins.
+
+For a Cargo installation, install the binaries and
+[zondd.service](zondd.service) as a **user service**:
 
 ```sh
 cargo install --locked --path zondd
