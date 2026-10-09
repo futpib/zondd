@@ -7,12 +7,17 @@ systemd user-service controls. GPL-3.0-or-later; see [LICENSE](../LICENSE).
 
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host
    using the [receiver instructions](../readme.md#configure-the-receiver).
-2. Add a connection in the app. Enter a hostname/IP and SSH port, or enable Iroh
-   and enter your existing iroh-ssh server's 64-hex endpoint ID.
-3. Use the Unix account running zondd and a normal SSH private key or password.
-   Paste an existing PEM/OpenSSH private key and its passphrase if encrypted.
-   This key must have ordinary SSH access; a restricted caller key cannot manage
-   zondd. Credentials are saved using Android encrypted storage; backups are disabled.
+2. Open **SSH keys**. Import a PEM/OpenSSH private key from a file or paste it,
+   including its passphrase if encrypted. Or generate an Ed25519 key and copy
+   its public key to the server. Identities are reusable across connections.
+3. Select **SSH** or **Iroh**, enter `user@host[:port]` or
+   `user@<64-hex-endpoint-id>`, choose a key, and connect. IPv6 addresses use
+   `user@[address]:port`. Successful quick connections are saved automatically.
+   **Connection options** also supports passwords, display names, and custom paths.
+   Use the Unix account running zondd and an ordinary SSH identity; a restricted
+   caller key cannot manage zondd. Keys and passwords are encrypted in Android
+   storage; backups are disabled. Existing inline profile keys migrate to the
+   shared key store without changing SSH host-key pins.
 4. Verify the SSH server fingerprint on first connection. The app pins it for
    the destination and rejects changes, including over Iroh. To rotate a key,
    verify the new fingerprint out of band and use **Forget host key** first.
@@ -32,6 +37,11 @@ they remain pending until their existing deadline, disconnection, or a decision.
 Expired/disconnected requests cannot be approved. All decisions apply once.
 Policy saves validate and check for concurrent edits, then atomically replace the
 file. Restart the user service to apply changes; restart/stop cancel active work.
+The policy overview shows the saved callers, ordered rules, and named operations.
+**Edit TOML** keeps validation and saving visible while editing; unsaved drafts
+survive tab changes, validation errors, and stale-save errors. Command arguments
+in approvals are individually JSON-quoted so boundaries and control characters
+remain visible; the display is not a shell command to copy and execute.
 
 ## Architecture
 
@@ -83,6 +93,16 @@ checks caller results, validates/saves configuration, rejects stale saves and
 invalid policy, rejects untrusted host keys and restricted management keys, and
 reads service state. It does not start/stop your installed service. The fixture
 uses the emulator's `10.0.2.2` host gateway; physical devices need another route.
+It also generates and imports keys through the UI, saves a connection, reviews
+policy details, corrects a validation error, and checks unsaved-edit prompts.
+
+To run the same tests and capture each screen and dialog using actual `adb`
+screenshots (requires Python 3 and `adb` on PATH):
+
+```sh
+FLUTTER=/path/to/flutter python3 android-app/scripts/capture-screenshots.py \
+  --device emulator-5554 --output /tmp/zondd-screenshots
+```
 
 Ephemeral fixture credentials are embedded in the test APK. Never distribute
 that APK; build the normal `lib/main.dart` app again afterward. Rust drop guards

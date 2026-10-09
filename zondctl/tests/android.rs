@@ -11,6 +11,15 @@ use std::{
 #[ignore = "requires Flutter, Android SDK/NDK, a running emulator, OpenSSH and iroh-ssh"]
 fn android_management_over_ssh_and_iroh() {
     let ssh = SshEnv::new();
+    ssh.env.stop_daemon();
+    fs::write(
+        &ssh.env.config,
+        ssh.env
+            .policy
+            .replace("timeout_secs = 4", "timeout_secs = 120"),
+    )
+    .unwrap();
+    ssh.env.start_daemon();
     let endpoint = ssh.start_iroh();
     let fingerprint = checked(
         Command::new("ssh-keygen")
@@ -34,7 +43,11 @@ fn android_management_over_ssh_and_iroh() {
     let definitions = ssh.env.dir.path().join("android-defines.json");
     fs::write(
         &definitions,
-        json!({"ZONDD_FIXTURE":fixture.to_string()}).to_string(),
+        json!({
+            "ZONDD_FIXTURE":fixture.to_string(),
+            "CAPTURE_PORT":std::env::var("ZONDD_SCREENSHOT_PORT").unwrap_or_default(),
+        })
+        .to_string(),
     )
     .unwrap();
     fs::set_permissions(&definitions, fs::Permissions::from_mode(0o600)).unwrap();
@@ -43,7 +56,12 @@ fn android_management_over_ssh_and_iroh() {
     let mut process = Process::spawn(
         Command::new(std::env::var("FLUTTER").unwrap_or_else(|_| "flutter".into()))
             .current_dir(app)
-            .args(["test", "integration_test/control_test.dart", "-d"])
+            .args([
+                "test",
+                "integration_test/control_test.dart",
+                "integration_test/workflow_test.dart",
+                "-d",
+            ])
             .arg(std::env::var("ZONDD_ANDROID_DEVICE").unwrap_or_else(|_| "emulator-5554".into()))
             .arg("--dart-define-from-file")
             .arg(&definitions)

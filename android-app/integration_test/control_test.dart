@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
+import 'package:zondd_control/identities.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -31,10 +32,13 @@ void main() {
     (tester) async {
       const store = ProfileStore();
       final previous = await store.load();
+      final previousKeys = await IdentityStore().load();
       final p = profile(false);
       try {
         await store.save([p]);
-        expect((await store.load()).single.privateKey, p.privateKey);
+        final migrated = (await store.load()).single;
+        expect(migrated.privateKey, isEmpty);
+        expect((await IdentityStore().get(migrated.keyId)).pem, p.privateKey);
         await tester.pumpWidget(const ZonddApp());
         for (var i = 0; i < 100 && find.text(p.name).evaluate().isEmpty; i++) {
           await tester.pump(const Duration(milliseconds: 100));
@@ -71,6 +75,7 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
       } finally {
         await store.save(previous);
+        await IdentityStore().save(previousKeys);
         await store.forget(p.hostIdentity);
       }
     },

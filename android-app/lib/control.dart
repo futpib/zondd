@@ -6,6 +6,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'transport.dart';
+import 'identities.dart';
 
 class Profile {
   Profile({
@@ -17,6 +18,7 @@ class Profile {
     this.privateKey = '',
     this.password = '',
     this.passphrase = '',
+    this.keyId = '',
     this.relays = const [],
     this.executable = '.cargo/bin/zondctl',
     this.runtime = '',
@@ -28,6 +30,7 @@ class Profile {
       privateKey,
       password,
       passphrase,
+      keyId,
       executable,
       runtime,
       config;
@@ -45,6 +48,7 @@ class Profile {
     'privateKey': privateKey,
     'password': password,
     'passphrase': passphrase,
+    'keyId': keyId,
     'relays': relays,
     'executable': executable,
     'runtime': runtime,
@@ -59,6 +63,7 @@ class Profile {
     privateKey: value['privateKey'] as String,
     password: value['password'] as String,
     passphrase: value['passphrase'] as String,
+    keyId: value['keyId'] as String? ?? '',
     executable: value['executable'] as String,
     runtime: value['runtime'] as String,
     config: value['config'] as String,
@@ -71,11 +76,36 @@ class ProfileStore {
   static const storage = FlutterSecureStorage();
   Future<List<Profile>> load() async {
     final value = await storage.read(key: 'profiles');
-    return value == null
-        ? []
+    final profiles = value == null
+        ? <Profile>[]
         : (jsonDecode(value) as List)
               .map((v) => Profile.fromJson(v as Map<String, dynamic>))
               .toList();
+    var migrated = false;
+    for (var i = 0; i < profiles.length; i++) {
+      final profile = profiles[i];
+      if (profile.privateKey.isEmpty) continue;
+      Identity identity;
+      try {
+        identity = await IdentityStore().import(
+          '${profile.name} key',
+          profile.privateKey,
+          profile.passphrase,
+        );
+      } catch (_) {
+        // Preserve legacy credentials if they cannot be migrated; the connection remains editable.
+        continue;
+      }
+      profiles[i] = Profile.fromJson({
+        ...profile.toJson(),
+        'keyId': identity.id,
+        'privateKey': '',
+        'passphrase': '',
+      });
+      migrated = true;
+    }
+    if (migrated) await save(profiles);
+    return profiles;
   }
 
   Future<void> save(List<Profile> profiles) => storage.write(
@@ -109,13 +139,16 @@ class SshControl implements ControlApi {
     int? tunnel;
     SSHClient? client;
     SSHSocket? socket;
+    (Object, StackTrace)? verificationFailure;
     try {
-      final identities = profile.privateKey.trim().isEmpty
+      final identity = profile.keyId.isEmpty
           ? null
-          : SSHKeyPair.fromPem(
-              profile.privateKey,
-              profile.passphrase.isEmpty ? null : profile.passphrase,
-            );
+          : await IdentityStore().get(profile.keyId);
+      final pem = identity?.pem ?? profile.privateKey;
+      final passphrase = identity?.passphrase ?? profile.passphrase;
+      final identities = pem.trim().isEmpty
+          ? null
+          : SSHKeyPair.fromPem(pem, passphrase.isEmpty ? null : passphrase);
       if (profile.iroh) {
         tunnel = await IrohTransport.connect(profile.host, profile.relays);
       }
@@ -130,8 +163,14 @@ class SshControl implements ControlApi {
         identities: identities,
         onPasswordRequest: () =>
             profile.password.isEmpty ? null : profile.password,
-        onVerifyHostKey: (type, fingerprint) =>
-            verify(type, utf8.decode(fingerprint)),
+        onVerifyHostKey: (type, fingerprint) async {
+          try {
+            return await verify(type, utf8.decode(fingerprint));
+          } catch (error, stack) {
+            verificationFailure = (error, stack);
+            return false;
+          }
+        },
         keepAliveInterval: const Duration(seconds: 15),
       );
       await client.authenticated.timeout(const Duration(minutes: 2));
@@ -140,6 +179,8 @@ class SshControl implements ControlApi {
       client?.close();
       if (client == null) socket?.close();
       if (tunnel != null) await IrohTransport.disconnect(tunnel);
+      final failure = verificationFailure;
+      if (failure != null) Error.throwWithStackTrace(failure.$1, failure.$2);
       rethrow;
     }
   }
