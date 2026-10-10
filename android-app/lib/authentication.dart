@@ -1,15 +1,42 @@
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
+import 'control.dart';
 
 class AuthenticationDialog {
   AuthenticationDialog(this.context, this.target);
   final BuildContext context;
   final String target;
-  DialogRoute<List<String>>? _route;
+  DialogRoute<dynamic>? _route;
   bool _closed = false;
+  final cancellation = AuthenticationCancellation();
+  bool get active => !_closed && !cancellation.isCancelled && context.mounted;
+
+  void _dismiss() {
+    final route = _route;
+    _route = null;
+    if (route != null && route.isActive) route.navigator?.removeRoute(route);
+  }
+
+  Future<T?> show<T>(WidgetBuilder builder) async {
+    if (!active) return null;
+    _dismiss();
+    final route = DialogRoute<T>(
+      context: context,
+      barrierDismissible: false,
+      builder: builder,
+    );
+    _route = route;
+    try {
+      final result = await Navigator.of(context).push(route);
+      return active ? result : null;
+    } finally {
+      if (_route == route) _route = null;
+    }
+  }
 
   Future<List<String>?> request(SSHUserInfoRequest request, bool retry) async {
-    if (_closed || !context.mounted) return null;
+    if (!active) return null;
+    _dismiss();
     final route = DialogRoute<List<String>>(
       context: context,
       barrierDismissible: false,
@@ -17,8 +44,18 @@ class AuthenticationDialog {
           _AuthenticationForm(target: target, request: request, retry: retry),
     );
     _route = route;
+    final response = Navigator.of(context).push(route);
+    if (request.prompts.isEmpty) {
+      response.then((_) {
+        if (_route == route && active) cancellation.cancel();
+        if (_route == route) _route = null;
+      });
+      return [];
+    }
     try {
-      return await Navigator.of(context).push(route);
+      final answers = await response;
+      if (answers == null && active) cancellation.cancel();
+      return active ? answers : null;
     } finally {
       if (_route == route) _route = null;
     }
@@ -26,9 +63,8 @@ class AuthenticationDialog {
 
   void close() {
     _closed = true;
-    final route = _route;
-    _route = null;
-    if (route != null && route.isActive) route.navigator?.removeRoute(route);
+    cancellation.cancel();
+    _dismiss();
   }
 }
 
@@ -47,6 +83,7 @@ class _AuthenticationForm extends StatefulWidget {
 }
 
 class _AuthenticationFormState extends State<_AuthenticationForm> {
+  String? error;
   late final fields = [
     for (final _ in widget.request.prompts) TextEditingController(),
   ];
@@ -59,7 +96,18 @@ class _AuthenticationFormState extends State<_AuthenticationForm> {
     super.dispose();
   }
 
-  void submit() => Navigator.pop(context, [for (final f in fields) f.text]);
+  void submit() {
+    if (widget.request is PasswordChangeRequest &&
+        (fields[1].text.isEmpty || fields[1].text != fields[2].text)) {
+      setState(
+        () => error = fields[1].text.isEmpty
+            ? 'Enter a new password.'
+            : 'The new passwords do not match.',
+      );
+      return;
+    }
+    Navigator.pop(context, [for (final f in fields) f.text]);
+  }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -97,6 +145,15 @@ class _AuthenticationFormState extends State<_AuthenticationForm> {
               onSubmitted: i == fields.length - 1 ? (_) => submit() : null,
             ),
           ],
+          if (fields.isEmpty) ...[
+            const SizedBox(height: 16),
+            const Text('Waiting for the server…'),
+          ],
+          if (error != null)
+            Text(
+              error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
         ],
       ),
     ),
@@ -105,7 +162,8 @@ class _AuthenticationFormState extends State<_AuthenticationForm> {
         onPressed: () => Navigator.pop(context),
         child: const Text('Cancel'),
       ),
-      FilledButton(onPressed: submit, child: const Text('Continue')),
+      if (fields.isNotEmpty)
+        FilledButton(onPressed: submit, child: const Text('Continue')),
     ],
   );
 }

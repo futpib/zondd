@@ -1,3 +1,4 @@
+import 'policy_overview.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -572,7 +573,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   Widget policy() {
     Map<String, dynamic>? parsed;
     try {
-      parsed = TomlDocument.parse(loadedConfig ?? '').toMap();
+      parsed = parsePolicyOverview(loadedConfig ?? '');
     } catch (_) {
       /* Keep invalid drafts editable. */
     }
@@ -677,7 +678,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                     ),
                   if (parsed == null)
                     const ErrorBox(
-                      'This draft is not valid TOML. Open the editor to fix it.',
+                      'This configuration cannot be displayed. Open Edit TOML to repair it, then validate and apply your changes.',
                     ),
                   if (applyRequired)
                     Card(
@@ -706,118 +707,122 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
-                  Card(
-                    child: ListTile(
-                      leading: Icon(
-                        approvals['enabled'] != false
-                            ? Icons.verified_user_outlined
-                            : Icons.block,
-                      ),
-                      title: Text(
-                        approvals['enabled'] != false
-                            ? 'Manual approvals enabled'
-                            : 'Manual approvals disabled',
-                      ),
-                      subtitle: Text(
-                        approvals['enabled'] != false
-                            ? 'Requests expire after ${approvals['timeout_secs'] ?? 300} seconds'
-                            : 'Commands cannot wait for manual review',
+                  if (parsed != null) ...[
+                    Card(
+                      child: ListTile(
+                        leading: Icon(
+                          approvals['enabled'] != false
+                              ? Icons.verified_user_outlined
+                              : Icons.block,
+                        ),
+                        title: Text(
+                          approvals['enabled'] != false
+                              ? 'Manual approvals enabled'
+                              : 'Manual approvals disabled',
+                        ),
+                        subtitle: Text(
+                          approvals['enabled'] != false
+                              ? 'Requests expire after ${approvals['timeout_secs'] ?? 300} seconds'
+                              : 'Commands cannot wait for manual review',
+                        ),
                       ),
                     ),
-                  ),
-                  SectionHeading('Callers · ${principals.length}'),
-                  for (final entry in principals.entries)
-                    Card(
-                      child: ExpansionTile(
-                        leading: const Icon(Icons.person_outline),
-                        title: Text('${entry.key}'),
-                        subtitle: Text(
-                          entry.value['allow_exec'] == true
-                              ? 'Commands · default ${entry.value['default'] ?? 'deny'}'
-                              : 'Named operations only',
-                        ),
-                        childrenPadding: const EdgeInsets.fromLTRB(
-                          16,
-                          0,
-                          16,
-                          16,
-                        ),
-                        children: [
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text('Working directory'),
-                            subtitle: SelectableText(
-                              '${entry.value['cwd']}',
-                              style: mono,
-                            ),
+                    SectionHeading('Callers · ${principals.length}'),
+                    for (final entry in principals.entries)
+                      Card(
+                        child: ExpansionTile(
+                          leading: const Icon(Icons.person_outline),
+                          title: Text('${entry.key}'),
+                          subtitle: Text(
+                            entry.value['allow_exec'] == true
+                                ? 'Commands · default ${entry.value['default'] ?? 'deny'}'
+                                : 'Named operations only',
                           ),
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text('Operations'),
-                            subtitle: Text(
-                              (entry.value['operations'] as List? ?? [])
-                                      .join(', ')
-                                      .isEmpty
-                                  ? 'None'
-                                  : (entry.value['operations'] as List).join(
-                                      ', ',
-                                    ),
-                            ),
+                          childrenPadding: const EdgeInsets.fromLTRB(
+                            16,
+                            0,
+                            16,
+                            16,
                           ),
-                          for (final rule
-                              in entry.value['rules'] as List? ?? [])
+                          children: [
                             ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: Text(
-                                '${rule['decision']}'.toUpperCase(),
-                                style: Theme.of(context).textTheme.labelMedium,
-                              ),
+                              title: const Text('Working directory'),
                               subtitle: SelectableText(
-                                '${rule['program']}\n${rule.containsKey('args') ? jsonEncode(rule['args']) : 'Any arguments'}',
+                                '${entry.value['cwd']}',
                                 style: mono,
                               ),
                             ),
-                        ],
-                      ),
-                    ),
-                  SectionHeading('Operations · ${operations.length}'),
-                  for (final entry in operations.entries)
-                    Card(
-                      child: ExpansionTile(
-                        leading: const Icon(Icons.terminal),
-                        title: Text('${entry.key}'),
-                        subtitle: Text(
-                          '${entry.value['description'] ?? entry.value['program']}',
-                        ),
-                        childrenPadding: const EdgeInsets.all(16),
-                        children: [
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: Text(
-                              '${entry.value['decision'] ?? 'deny'}'
-                                  .toUpperCase(),
-                            ),
-                            subtitle: SelectableText(
-                              [
-                                jsonEncode(entry.value['program']),
-                                ...(entry.value['fixed_args'] as List? ?? [])
-                                    .map(jsonEncode),
-                              ].join(' '),
-                              style: mono,
-                            ),
-                          ),
-                          for (final argument
-                              in entry.value['arguments'] as List? ?? [])
                             ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: Text('${argument['name']}'),
+                              title: const Text('Operations'),
                               subtitle: Text(
-                                'Choices: ${(argument['choices'] as List? ?? []).map(jsonEncode).join(', ')}',
+                                (entry.value['operations'] as List? ?? [])
+                                        .join(', ')
+                                        .isEmpty
+                                    ? 'None'
+                                    : (entry.value['operations'] as List).join(
+                                        ', ',
+                                      ),
                               ),
                             ),
-                        ],
+                            for (final rule
+                                in entry.value['rules'] as List? ?? [])
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(
+                                  '${rule['decision']}'.toUpperCase(),
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.labelMedium,
+                                ),
+                                subtitle: SelectableText(
+                                  '${rule['program']}\n${rule.containsKey('args') ? jsonEncode(rule['args']) : 'Any arguments'}',
+                                  style: mono,
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
-                    ),
+                    SectionHeading('Operations · ${operations.length}'),
+                    for (final entry in operations.entries)
+                      Card(
+                        child: ExpansionTile(
+                          leading: const Icon(Icons.terminal),
+                          title: Text('${entry.key}'),
+                          subtitle: Text(
+                            '${entry.value['description'] ?? entry.value['program']}',
+                          ),
+                          childrenPadding: const EdgeInsets.all(16),
+                          children: [
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(
+                                '${entry.value['decision'] ?? 'deny'}'
+                                    .toUpperCase(),
+                              ),
+                              subtitle: SelectableText(
+                                [
+                                  jsonEncode(entry.value['program']),
+                                  ...(entry.value['fixed_args'] as List? ?? [])
+                                      .map(jsonEncode),
+                                ].join(' '),
+                                style: mono,
+                              ),
+                            ),
+                            for (final argument
+                                in entry.value['arguments'] as List? ?? [])
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: Text('${argument['name']}'),
+                                subtitle: Text(
+                                  'Choices: ${(argument['choices'] as List? ?? []).map(jsonEncode).join(', ')}',
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                  ],
                   const SectionHeading('Configuration file'),
                   SelectableText(configPath, style: mono),
                   const SizedBox(height: 24),

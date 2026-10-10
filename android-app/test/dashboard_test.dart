@@ -63,6 +63,51 @@ class EditableControl implements ControlApi {
 }
 
 void main() {
+  testWidgets('malformed policy shapes remain repairable', (tester) async {
+    for (final content in [
+      'approvals = false',
+      'principals = []',
+      '[principals]\ndemo = false',
+      '[principals.demo]\noperations = false',
+      '[principals.demo]\nrules = [false]',
+      '[operations.demo]\nfixed_args = false',
+      '[operations.demo]\narguments = [{choices = false}]',
+      '[approvals]\nenabled = "yes"',
+      'invalid TOML',
+    ]) {
+      final api = EditableControl()..content = content;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Dashboard(api: api, name: 'repair'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Policy'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(
+        find.textContaining('This configuration cannot be displayed'),
+        findsOneWidget,
+      );
+      expect(find.text('Manual approvals enabled'), findsNothing);
+      await tester.tap(find.text('Edit TOML'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        content,
+      );
+      await tester.enterText(
+        find.byType(TextField),
+        '[approvals]\nenabled = false',
+      );
+      await tester.tap(find.text('Save & apply'));
+      await tester.pumpAndSettle();
+      expect(api.saves, 1);
+      expect(find.text('Policy applied.'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
+
   testWidgets(
     'policy overview includes the built-in caller only when principals are omitted',
     (tester) async {

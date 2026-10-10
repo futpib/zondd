@@ -65,11 +65,14 @@ Plain SSH connections do not depend on Iroh versions.
 3. Select **SSH** or **Iroh**, enter `user@host[:port]` or
    `user@<64-hex-endpoint-id>`, optionally choose a key, and connect. IPv6 addresses use
    `user@[address]:port`. Successful quick connections are saved automatically.
-   The app asks for a password when needed and displays server-provided
-   keyboard-interactive prompts, including verification codes. Cancel returns to
+   Choose **Password / no SSH key** to connect without an identity, even when
+   keys are stored. The app asks only for authentication methods offered by the
+   server, supports expired-password changes, and displays keyboard-interactive
+   prompts and instructions, including verification codes and push approvals. Cancel returns to
    the connection list; rejected answers can be retried. Prompted answers are
    never saved. **Connection options** supports an optional saved password,
    display names, and custom paths. Leave the password blank to ask each time.
+   Leaving edited connection options asks whether to discard unsaved changes.
    Use the Unix account running zondd and an ordinary SSH identity; a restricted
    caller key cannot manage zondd. Keys and passwords are encrypted in Android
    storage; backups are disabled. Existing inline profile keys migrate to the
@@ -129,6 +132,9 @@ you close the app. **Activity** shows the persistent daemon action log. Both lis
 support loading earlier entries, and history survives service restarts.
 
 ## Architecture
+
+The local `vendor/dartssh2` dependency retains version 4.1.0 with one documented
+patch: discover the server's authentication methods before requesting credentials.
 
 Flutter provides the UI and `dartssh2` provides SSH authentication and exec
 channels. A small Rust FFI adapter calls the existing `futpib/iroh-ssh` bridge
@@ -197,8 +203,12 @@ The Rust test owns an isolated user daemon, an OpenSSH server, ephemeral caller
 and management keys, and an Iroh server built from `native/Cargo.lock`. It uses
 the same Iroh SSH library as the app; no separately installed Iroh CLI is needed.
 The authentication tests exercise password entry, cancellation, rejected-answer
-retry, stale saved passwords, and multi-round keyboard-interactive challenges
-through the normal app UI over both SSH and Iroh. The other Flutter integration
+retry, stale saved passwords, expired-password changes, keyless multi-round
+keyboard-interactive challenges, and cancellable push-approval instructions
+through the normal app UI over both SSH and Iroh. They also check connection
+editing and that the real authentication timeout dismisses host trust without
+saving a pin. Policy repair is tested after writing malformed TOML types directly
+to the remote configuration file. The other Flutter integration
 tests exercise
 actual Android SSH and native Iroh connections, taps approval/rejection buttons,
 checks caller results, validates/saves configuration, rejects stale saves and

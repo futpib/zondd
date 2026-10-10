@@ -27,6 +27,92 @@ void main() {
     config: fixture['config'] as String,
   );
 
+  testWidgets(
+    'repair malformed remote policy through the editor',
+    (tester) async {
+      final p = Profile(
+        name: 'Policy review',
+        host: fixture['host'],
+        port: fixture['port'],
+        user: fixture['user'],
+        privateKey: fixture['key'],
+        executable: fixture['executable'],
+        runtime: fixture['runtime'],
+        config: fixture['config'],
+      );
+      final api = await SshControl.connect(
+        p,
+        (_, fp) async => fp == fixture['fingerprint'],
+      );
+      final original = await api.request({'method': 'read_config'});
+      final ssh = SSHClient(
+        await SSHSocket.connect(p.host, p.port),
+        username: p.user,
+        identities: SSHKeyPair.fromPem(p.privateKey),
+        onVerifyHostKey: (_, fp) => utf8.decode(fp) == fixture['fingerprint'],
+      );
+      await ssh.authenticated;
+      Future<void> write(String content) async {
+        await ssh.run(
+          'printf %s ${shellQuote(content)} > ${shellQuote(p.config)}',
+        );
+      }
+
+      try {
+        await write('approvals = false\n');
+        expect(
+          (await api.request({'method': 'read_config'}))['content'],
+          'approvals = false\n',
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Dashboard(api: api, name: p.name),
+          ),
+        );
+        await tester.pump(const Duration(seconds: 1));
+        await tester.tap(find.text('Policy'));
+        for (
+          var i = 0;
+          i < 100 &&
+              find
+                  .textContaining('This configuration cannot be displayed')
+                  .evaluate()
+                  .isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(tester.takeException(), isNull);
+        expect(
+          find.textContaining('This configuration cannot be displayed'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('Edit TOML'));
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.enterText(find.byType(TextField), original['content']);
+        await tester.tap(find.text('Save & apply'));
+        for (
+          var i = 0;
+          i < 100 && find.text('Policy applied.').evaluate().isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(find.text('Policy applied.'), findsOneWidget);
+        expect(
+          (await api.request({'method': 'read_config'}))['content'],
+          original['content'],
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await write(original['content']);
+        ssh.close();
+        await api.close();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
   for (final iroh in [false, true]) {
     testWidgets('recover a closed ${iroh ? 'Iroh' : 'SSH'} session in place', (
       tester,

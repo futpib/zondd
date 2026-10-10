@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -98,6 +99,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   List<Identity> keys = [];
   String? keyId, error;
   bool busy = false, iroh = true;
+  AuthenticationDialog? authentication;
   @override
   void initState() {
     super.initState();
@@ -106,6 +108,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
 
   @override
   void dispose() {
+    authentication?.close();
     target.dispose();
     super.dispose();
   }
@@ -118,7 +121,11 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
         setState(() {
           profiles = saved;
           keys = identities;
-          if (!keys.any((k) => k.id == keyId)) keyId = keys.firstOrNull?.id;
+          if (keyId == null) {
+            keyId = keys.firstOrNull?.id ?? '';
+          } else if (keyId!.isNotEmpty && !keys.any((k) => k.id == keyId)) {
+            keyId = '';
+          }
         });
       }
     } catch (e) {
@@ -175,72 +182,80 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
       error = null;
     });
     Future<ControlApi> open() async {
-      final authentication = AuthenticationDialog(context, Target.of(profile));
-      return SshControl.connect(profile, (type, fingerprint) async {
-        final saved = await store.hostKey(profile.hostIdentity),
-            key = '$type $fingerprint';
-        if (saved != null) {
-          if (saved != key) {
-            throw StateError(
-              'SSH host key changed for ${profile.host}.\nSaved: $saved\nReceived: $key',
-            );
+      final dialog = AuthenticationDialog(context, Target.of(profile));
+      authentication = dialog;
+      return SshControl.connect(
+        profile,
+        (type, fingerprint) async {
+          final saved = await store.hostKey(profile.hostIdentity),
+              key = '$type $fingerprint';
+          if (saved != null) {
+            if (saved != key) {
+              throw StateError(
+                'SSH host key changed for ${profile.host}.\nSaved: $saved\nReceived: $key',
+              );
+            }
+            return true;
           }
-          return true;
-        }
-        if (!mounted) return false;
-        final trusted =
-            await showDialog<bool>(
-              context: context,
-              builder: (context) => AlertDialog(
-                icon: const Icon(Icons.fingerprint, size: 32),
-                title: const Text('Trust SSH host key?'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        profile.name,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        profile.host,
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 20),
-                      Text(
-                        type,
-                        style: Theme.of(context).textTheme.labelMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      SelectableText(fingerprint, style: mono),
-                      const SizedBox(height: 20),
-                      const Text(
-                        'Compare this fingerprint with your server. Future connections must use the same key.',
-                      ),
-                    ],
+          if (!mounted) return false;
+          final trusted =
+              await dialog.show<bool>(
+                (context) => AlertDialog(
+                  icon: const Icon(Icons.fingerprint, size: 32),
+                  title: const Text('Trust SSH host key?'),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          profile.name,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          profile.host,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          type,
+                          style: Theme.of(context).textTheme.labelMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        SelectableText(fingerprint, style: mono),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'Compare this fingerprint with your server. Future connections must use the same key.',
+                        ),
+                      ],
+                    ),
                   ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Trust'),
+                    ),
+                  ],
                 ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('Cancel'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    child: const Text('Trust'),
-                  ),
-                ],
-              ),
-            ) ??
-            false;
-        if (trusted) await store.trust(profile.hostIdentity, key);
-        return trusted;
-      }, onAuthenticationRequest: authentication.request).whenComplete(
-        authentication.close,
-      );
+              ) ??
+              false;
+          if (trusted && dialog.active) {
+            await store.trust(profile.hostIdentity, key);
+          }
+          return trusted && dialog.active;
+        },
+        onAuthenticationRequest: dialog.request,
+        cancellation: dialog.cancellation,
+      ).whenComplete(() {
+        dialog.close();
+        if (authentication == dialog) authentication = null;
+      });
     }
 
     try {
@@ -378,17 +393,20 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
             initialValue: keyId,
             isExpanded: true,
             decoration: const InputDecoration(
-              labelText: 'SSH key',
+              labelText: 'Authentication',
               prefixIcon: Icon(Icons.key_outlined),
             ),
-            items: keys
-                .map(
-                  (k) => DropdownMenuItem(
-                    value: k.id,
-                    child: Text(k.label, overflow: TextOverflow.ellipsis),
-                  ),
-                )
-                .toList(),
+            items: [
+              const DropdownMenuItem(
+                value: '',
+                child: Text('Password / no SSH key'),
+              ),
+              for (final k in keys)
+                DropdownMenuItem(
+                  value: k.id,
+                  child: Text(k.label, overflow: TextOverflow.ellipsis),
+                ),
+            ],
             onChanged: busy ? null : (v) => setState(() => keyId = v),
           ),
         if (keys.isEmpty)
@@ -502,6 +520,46 @@ class _ProfilePageState extends State<ProfilePage> {
   late bool iroh, password;
   List<Identity> keys = [];
   String? keyId, error;
+  late String initial;
+  bool leaving = false, confirming = false;
+  String get snapshot => jsonEncode([
+    iroh,
+    password,
+    password ? '' : keyId,
+    for (final f in fields.values) f.text,
+  ]);
+  bool get dirty => snapshot != initial;
+  void changed() => setState(() {});
+
+  Future<void> leave() async {
+    if (confirming) return;
+    confirming = true;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard connection changes?'),
+        content: const Text('Your changes have not been saved.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    confirming = false;
+    if (discard == true && mounted) {
+      setState(() => leaving = true);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.pop(context);
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -524,6 +582,10 @@ class _ProfilePageState extends State<ProfilePage> {
       }.entries)
         e.key: TextEditingController(text: e.value),
     };
+    initial = snapshot;
+    for (final f in fields.values) {
+      f.addListener(changed);
+    }
     loadKeys();
   }
 
@@ -533,7 +595,11 @@ class _ProfilePageState extends State<ProfilePage> {
       if (mounted) {
         setState(() {
           keys = result;
-          if (!keys.any((k) => k.id == keyId)) keyId = keys.firstOrNull?.id;
+          if (keyId == null) {
+            final pristine = !dirty;
+            keyId = keys.firstOrNull?.id;
+            if (pristine) initial = snapshot;
+          }
         });
       }
     } catch (e) {
@@ -591,148 +657,159 @@ class _ProfilePageState extends State<ProfilePage> {
   );
   void save() {
     if (!form.currentState!.validate()) return;
-    if (!password && keyId == null) {
+    if (!password && !keys.any((k) => k.id == keyId)) {
       setState(
         () => error = 'Add an SSH key or choose password authentication.',
       );
       return;
     }
     final t = Target.parse(value('Target'), iroh);
-    Navigator.pop(
-      context,
-      Profile(
-        name: value('Name').trim().isEmpty ? t.host : value('Name').trim(),
-        host: t.host,
-        user: t.user,
-        port: t.port,
-        iroh: iroh,
-        keyId: password ? '' : keyId!,
-        password: password ? value('Password') : '',
-        executable: value('Executable').trim(),
-        runtime: value('Runtime').trim(),
-        config: value('Config').trim(),
-        relays: value(
-          'Relays',
-        ).split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList(),
-      ),
+    final result = Profile(
+      name: value('Name').trim().isEmpty ? t.host : value('Name').trim(),
+      host: t.host,
+      user: t.user,
+      port: t.port,
+      iroh: iroh,
+      keyId: password ? '' : keyId!,
+      password: password ? value('Password') : '',
+      executable: value('Executable').trim(),
+      runtime: value('Runtime').trim(),
+      config: value('Config').trim(),
+      relays: value(
+        'Relays',
+      ).split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList(),
     );
+    setState(() => leaving = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.pop(context, result);
+    });
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(
-        widget.profile == null ? 'New connection' : 'Connection options',
+  Widget build(BuildContext context) => PopScope<Profile>(
+    canPop: leaving || !dirty,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop) leave();
+    },
+    child: Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.profile == null ? 'New connection' : 'Connection options',
+        ),
       ),
-    ),
-    bottomNavigationBar: SafeArea(
-      minimum: const EdgeInsets.all(16),
-      child: FilledButton(
-        onPressed: save,
-        child: const Text('Save connection'),
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.all(16),
+        child: FilledButton(
+          onPressed: save,
+          child: const Text('Save connection'),
+        ),
       ),
-    ),
-    body: Form(
-      key: form,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TransportSelector(
-              iroh: iroh,
-              onChanged: (v) => setState(() => iroh = v),
-            ),
-            const SizedBox(height: 24),
-            field(
-              'Target',
-              hint: iroh ? 'user@endpoint_id' : 'user@host:port',
-              required: true,
-            ),
-            field(
-              'Name',
-              label: 'Display name (optional)',
-              hint: 'Home server',
-            ),
-            const SectionHeading('Authentication'),
-            SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(
-                  value: false,
-                  icon: Icon(Icons.key),
-                  label: Text('SSH key'),
-                ),
-                ButtonSegment(
-                  value: true,
-                  icon: Icon(Icons.password),
-                  label: Text('Password'),
-                ),
-              ],
-              selected: {password},
-              onSelectionChanged: (v) => setState(() => password = v.single),
-            ),
-            const SizedBox(height: 16),
-            if (password)
-              field(
-                'Password',
-                label: 'Password (optional)',
-                hint: 'Ask when connecting',
-                secret: true,
-              )
-            else ...[
-              if (keys.isNotEmpty)
-                DropdownButtonFormField<String>(
-                  key: ValueKey(keyId),
-                  initialValue: keyId,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: 'Identity'),
-                  items: keys
-                      .map(
-                        (k) =>
-                            DropdownMenuItem(value: k.id, child: Text(k.label)),
-                      )
-                      .toList(),
-                  onChanged: (v) => setState(() => keyId = v),
-                ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () async {
-                    await Navigator.of(context).push<void>(
-                      MaterialPageRoute(builder: (_) => const KeysPage()),
-                    );
-                    await loadKeys();
-                  },
-                  icon: const Icon(Icons.key_outlined),
-                  label: Text(keys.isEmpty ? 'Add SSH key' : 'Manage SSH keys'),
-                ),
+      body: Form(
+        key: form,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TransportSelector(
+                iroh: iroh,
+                onChanged: (v) => setState(() => iroh = v),
               ),
-            ],
-            const SizedBox(height: 8),
-            ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              title: const Text('Advanced'),
-              subtitle: const Text('Remote paths and network'),
-              children: [
-                const SizedBox(height: 12),
-                field(
-                  'Executable',
-                  label: 'Remote zondctl executable',
-                  required: true,
-                ),
-                field('Runtime', label: 'Runtime directory (optional)'),
-                field('Config', label: 'Config file (optional)'),
-                if (iroh)
-                  field(
-                    'Relays',
-                    label: 'Relay URLs (optional)',
-                    lines: 3,
-                    hint: 'One per line; empty uses Iroh defaults',
+              const SizedBox(height: 24),
+              field(
+                'Target',
+                hint: iroh ? 'user@endpoint_id' : 'user@host:port',
+                required: true,
+              ),
+              field(
+                'Name',
+                label: 'Display name (optional)',
+                hint: 'Home server',
+              ),
+              const SectionHeading('Authentication'),
+              SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.key),
+                    label: Text('SSH key'),
                   ),
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.password),
+                    label: Text('Password'),
+                  ),
+                ],
+                selected: {password},
+                onSelectionChanged: (v) => setState(() => password = v.single),
+              ),
+              const SizedBox(height: 16),
+              if (password)
+                field(
+                  'Password',
+                  label: 'Password (optional)',
+                  hint: 'Ask when connecting',
+                  secret: true,
+                )
+              else ...[
+                if (keys.isNotEmpty)
+                  DropdownButtonFormField<String>(
+                    key: ValueKey(keyId),
+                    initialValue: keys.any((k) => k.id == keyId) ? keyId : null,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Identity'),
+                    items: keys
+                        .map(
+                          (k) => DropdownMenuItem(
+                            value: k.id,
+                            child: Text(k.label),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (v) => setState(() => keyId = v),
+                  ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () async {
+                      await Navigator.of(context).push<void>(
+                        MaterialPageRoute(builder: (_) => const KeysPage()),
+                      );
+                      await loadKeys();
+                    },
+                    icon: const Icon(Icons.key_outlined),
+                    label: Text(
+                      keys.isEmpty ? 'Add SSH key' : 'Manage SSH keys',
+                    ),
+                  ),
+                ),
               ],
-            ),
-            if (error != null) ErrorBox(error!),
-          ],
+              const SizedBox(height: 8),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Advanced'),
+                subtitle: const Text('Remote paths and network'),
+                children: [
+                  const SizedBox(height: 12),
+                  field(
+                    'Executable',
+                    label: 'Remote zondctl executable',
+                    required: true,
+                  ),
+                  field('Runtime', label: 'Runtime directory (optional)'),
+                  field('Config', label: 'Config file (optional)'),
+                  if (iroh)
+                    field(
+                      'Relays',
+                      label: 'Relay URLs (optional)',
+                      lines: 3,
+                      hint: 'One per line; empty uses Iroh defaults',
+                    ),
+                ],
+              ),
+              if (error != null) ErrorBox(error!),
+            ],
+          ),
         ),
       ),
     ),

@@ -206,6 +206,24 @@ class ControlConnection extends ChangeNotifier implements ControlApi {
 typedef AuthenticationRequest =
     Future<List<String>?> Function(SSHUserInfoRequest request, bool retry);
 
+class PasswordChangeRequest extends SSHUserInfoRequest {
+  PasswordChangeRequest(String instruction)
+    : super('Change SSH password', instruction, [
+        SSHUserInfoPrompt('Current password', false),
+        SSHUserInfoPrompt('New password', false),
+        SSHUserInfoPrompt('Confirm new password', false),
+      ]);
+}
+
+class AuthenticationCancellation {
+  final _cancelled = Completer<void>();
+  bool get isCancelled => _cancelled.isCompleted;
+  Future<void> get whenCancelled => _cancelled.future;
+  void cancel() {
+    if (!isCancelled) _cancelled.complete();
+  }
+}
+
 class AuthenticationCancelled implements Exception {
   const AuthenticationCancelled();
   @override
@@ -223,6 +241,7 @@ class SshControl implements ControlApi {
     Profile profile,
     Future<bool> Function(String type, String fingerprint) verify, {
     AuthenticationRequest? onAuthenticationRequest,
+    AuthenticationCancellation? cancellation,
   }) async {
     for (var attempt = 0; ; attempt++) {
       var submitted = false;
@@ -233,6 +252,7 @@ class SshControl implements ControlApi {
           onAuthenticationRequest: onAuthenticationRequest,
           retry: attempt > 0,
           onSubmitted: () => submitted = true,
+          cancellation: cancellation,
         );
       } on SSHAuthFailError {
         // dartssh2 tries each authentication method once per connection.
@@ -249,6 +269,7 @@ class SshControl implements ControlApi {
     required AuthenticationRequest? onAuthenticationRequest,
     required bool retry,
     required void Function() onSubmitted,
+    AuthenticationCancellation? cancellation,
   }) async {
     int? tunnel;
     SSHClient? client;
@@ -257,7 +278,7 @@ class SshControl implements ControlApi {
     var cancelled = false, active = true, savedPasswordUsed = retry;
     Future<List<String>?> ask(SSHUserInfoRequest request) async {
       if (!active) return null;
-      if (request.prompts.isEmpty) return <String>[];
+      if (request.prompts.isEmpty && onAuthenticationRequest == null) return [];
       final responses = await onAuthenticationRequest!(request, retry);
       if (!active) return null;
       if (responses == null) {
@@ -265,7 +286,7 @@ class SshControl implements ControlApi {
         client?.close();
         return null;
       }
-      onSubmitted();
+      if (request.prompts.isNotEmpty) onSubmitted();
       return responses;
     }
 
@@ -308,6 +329,12 @@ class SshControl implements ControlApi {
           return responses?.single;
         },
         onUserInfoRequest: onAuthenticationRequest == null ? null : ask,
+        onChangePasswordRequest: (prompt) async {
+          if (onAuthenticationRequest == null) return null;
+          final responses = await ask(PasswordChangeRequest(prompt));
+          if (responses == null) return null;
+          return SSHChangePasswordResponse(responses[0], responses[1]);
+        },
         onVerifyHostKey: (type, fingerprint) async {
           try {
             return await verify(type, utf8.decode(fingerprint));
@@ -318,7 +345,13 @@ class SshControl implements ControlApi {
         },
         keepAliveInterval: const Duration(seconds: 15),
       );
-      await client.authenticated.timeout(const Duration(minutes: 2));
+      await Future.any([
+        client.authenticated,
+        if (cancellation != null)
+          cancellation.whenCancelled.then((_) {
+            throw const AuthenticationCancelled();
+          }),
+      ]).timeout(const Duration(minutes: 2));
       return SshControl._(client, profile, tunnel);
     } catch (_) {
       client?.close();

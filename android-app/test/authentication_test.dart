@@ -7,6 +7,84 @@ import 'package:zondd_control/connections.dart';
 import 'package:zondd_control/control.dart';
 
 void main() {
+  testWidgets(
+    'informational challenges acknowledge immediately, replace and cancel',
+    (tester) async {
+      late BuildContext context;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (value) {
+              context = value;
+              return const Scaffold();
+            },
+          ),
+        ),
+      );
+      final dialog = AuthenticationDialog(context, 'alice@server');
+      expect(
+        await dialog.request(
+          SSHUserInfoRequest('Push approval', 'Approve on your device', []),
+          false,
+        ),
+        isEmpty,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Approve on your device'), findsOneWidget);
+      expect(find.text('Continue'), findsNothing);
+      final response = dialog.request(
+        SSHUserInfoRequest('Code', '', [SSHUserInfoPrompt('OTP', false)]),
+        false,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Push approval'), findsNothing);
+      expect(dialog.cancellation.isCancelled, isFalse);
+      await tester.tap(find.text('Cancel'));
+      expect(await response, isNull);
+      expect(dialog.cancellation.isCancelled, isTrue);
+      await tester.pumpAndSettle();
+      final info = AuthenticationDialog(context, 'alice@server');
+      await info.request(SSHUserInfoRequest('Push approval', '', []), false);
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(info.cancellation.isCancelled, isTrue);
+    },
+  );
+
+  testWidgets('closing a trust dialog rejects stale acceptance', (
+    tester,
+  ) async {
+    late AuthenticationDialog dialog;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) {
+            dialog = AuthenticationDialog(context, 'alice@server');
+            return const Scaffold();
+          },
+        ),
+      ),
+    );
+    final trusted = dialog.show<bool>(
+      (context) => AlertDialog(
+        title: const Text('Trust?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Trust'),
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    dialog.close();
+    expect(await trusted, isNull);
+    await tester.pumpAndSettle();
+    expect(find.text('Trust'), findsNothing);
+    expect(dialog.active, isFalse);
+  });
+
   testWidgets('server prompts preserve answers, echo and instructions', (
     tester,
   ) async {
@@ -59,7 +137,9 @@ void main() {
     final request = SSHUserInfoRequest('', '', [
       SSHUserInfoPrompt('Password', false),
     ]);
+    final context = dialog.context;
     for (final exit in ['cancel', 'back', 'failure']) {
+      dialog = AuthenticationDialog(context, 'user@server');
       final response = dialog.request(request, false);
       await tester.pumpAndSettle();
       if (exit == 'cancel') {

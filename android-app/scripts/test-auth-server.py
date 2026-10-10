@@ -6,12 +6,43 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 import paramiko
+from paramiko.auth_handler import AuthHandler
+from paramiko.message import Message
 
 
 host_key = paramiko.Ed25519Key.from_private_key_file(sys.argv[1])
 command = sys.argv[2:]
+
+
+class PasswordChangeHandler(AuthHandler):
+    # Paramiko's default server rejects password changes. Exercise the actual
+    # SSH password-change packets and verify both old and new credentials.
+    def _parse_userauth_request(self, message):
+        probe = Message(message.asbytes())
+        username, service, method = [probe.get_text() for _ in range(3)]
+        if username != "expired" or method != "password":
+            return super()._parse_userauth_request(message)
+        if self.authenticated or service != "ssh-connection":
+            return
+        self.auth_username = username
+        changing, old = probe.get_boolean(), probe.get_text()
+        if not changing and old == "android test password":
+            response = Message()
+            response.add_byte(bytes([60]))
+            response.add_string("Your password expired. Choose a new password.")
+            response.add_string("")
+            self.transport._send_message(response)
+            return
+        result = paramiko.AUTH_FAILED
+        if changing and old == "android test password" and probe.get_text() == "new test password":
+            result = paramiko.AUTH_SUCCESSFUL
+        self._send_auth_result(username, method, result)
+
+
+paramiko.transport.AuthHandler = PasswordChangeHandler
 
 
 class Authentication(paramiko.ServerInterface):
@@ -19,7 +50,7 @@ class Authentication(paramiko.ServerInterface):
         self.round = 0
 
     def get_allowed_auths(self, username):
-        return "keyboard-interactive" if username == "interactive" else "password"
+        return "keyboard-interactive" if username in ("interactive", "push") else "password"
 
     def check_auth_password(self, username, password):
         if username == "password" and password == "android test password":
@@ -27,6 +58,11 @@ class Authentication(paramiko.ServerInterface):
         return paramiko.AUTH_FAILED
 
     def check_auth_interactive(self, username, submethods):
+        if username == "push":
+            self.round = 2
+            return paramiko.InteractiveQuery(
+                "Push approval", "Approve this login on your other device.",
+            )
         if username != "interactive":
             return paramiko.AUTH_FAILED
         self.round = 0
@@ -36,6 +72,12 @@ class Authentication(paramiko.ServerInterface):
         )
 
     def check_auth_interactive_response(self, responses):
+        if self.round == 2 and responses == []:
+            time.sleep(4)
+            self.round = 1
+            return paramiko.InteractiveQuery(
+                "Verification", "Enter the verification code.", ("Code", False),
+            )
         if self.round == 0 and responses == ["test account", "android test password"]:
             self.round = 1
             return paramiko.InteractiveQuery(
