@@ -41,6 +41,21 @@ fn main() {
             std::fs::write(&args[2], std::process::id().to_string()).unwrap();
             std::thread::sleep(Duration::from_secs(30));
         }
+        "stream" => {
+            println!("early");
+            std::io::stdout().flush().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            eprintln!("late");
+        }
+        "large" => {
+            std::io::stdout().write_all(&vec![b'x'; 2048]).unwrap();
+        }
+        "streamlarge" => {
+            println!("early");
+            std::io::stdout().flush().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            std::io::stdout().write_all(&vec![b'x'; 2048]).unwrap();
+        }
         _ => panic!("unknown probe"),
     }
 }

@@ -26,6 +26,17 @@ pub enum Request {
         operation: String,
         args: Vec<String>,
     },
+    Follow {
+        request_id: String,
+        #[serde(default)]
+        after: u64,
+    },
+    Job {
+        request_id: String,
+    },
+    Cancel {
+        request_id: String,
+    },
     ListOperations,
     Permissions {},
     Check {
@@ -126,6 +137,8 @@ impl<T> Envelope<T> {
 pub struct Pending {
     pub approval_id: String,
     pub principal: String,
+    #[serde(default)]
+    pub detached: bool,
     pub command: Command,
     pub operation: Option<String>,
     pub reason: String,
@@ -141,6 +154,12 @@ pub struct RequestRecord {
     pub sequence: u64,
     pub request_id: String,
     pub retry_of: Option<String>,
+    #[serde(default)]
+    pub detached: bool,
+    #[serde(default)]
+    pub backgrounded: bool,
+    #[serde(default)]
+    pub output_truncated: bool,
     #[serde(default)]
     pub approval_id: Option<String>,
     pub principal: String,
@@ -239,6 +258,22 @@ pub enum Event {
     Submitted {
         request_id: String,
     },
+    Output {
+        request_id: String,
+        sequence: u64,
+        stderr: bool,
+        data: String,
+    },
+    OutputTruncated {
+        request_id: String,
+        next_sequence: u64,
+    },
+    Job {
+        request: Box<RequestRecord>,
+    },
+    Cancelled {
+        request_id: String,
+    },
     Actions {
         actions: Vec<ActionRecord>,
         next_before: Option<u64>,
@@ -248,6 +283,9 @@ pub enum Event {
 
 impl Event {
     pub fn is_terminal(&self) -> bool {
-        !matches!(self, Self::Pending { .. })
+        !matches!(
+            self,
+            Self::Pending { .. } | Self::Output { .. } | Self::OutputTruncated { .. }
+        )
     }
 }

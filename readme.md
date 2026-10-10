@@ -300,6 +300,32 @@ zondctl --principal monitor invoke service-status slopd.service
 # An explicit --socket /path/to/PRINCIPAL.sock also works.
 ```
 
+`exec` and `invoke` return the command result when it finishes within
+`command_timeout_secs`. If execution runs past that deadline, the CLI prints
+a request ID and the command keeps running under the daemon. There is no need
+to restart it. Use the same caller key or principal to inspect, follow, or
+cancel it afterward.
+
+```sh
+zondctl --host alice@server --identity ~/.ssh/caller exec /usr/bin/long-command --flag
+zondctl --host alice@server --identity ~/.ssh/caller follow REQUEST_ID
+zondctl --host alice@server --identity ~/.ssh/caller job REQUEST_ID
+zondctl --host alice@server --identity ~/.ssh/caller cancel REQUEST_ID
+# Named operations use invoke OPERATION [ARGS...] the same way.
+```
+
+`follow` streams retained output first, then live stdout and stderr, and exits
+with the job's result. It may be disconnected and restarted; `--after SEQUENCE`
+resumes after an output chunk sequence from `--json` mode. A gap event warns
+when earlier output has been discarded. `cancel` kills the job's process group.
+Once a command moves to the background, it has no wall-time timeout and
+`max_output_bytes` becomes a per-job output retention cap. Before that point,
+disconnect cancels the command and exceeding the output limit kills it.
+`max_running` still limits concurrent processes. Backgrounded output and status
+survive caller disconnects, but stopping the daemon interrupts running jobs.
+Commands still have null stdin and no PTY, so programs that need interactive
+input cannot run this way.
+
 ## Inspect caller permissions
 
 Use the same caller key or local principal that will submit the operation:
@@ -368,9 +394,10 @@ zondctl status
 `review` displays the principal, exact argv, expiry and request ID, with terminal
 control characters escaped, and asks for approve/deny/skip/quit. Approval is
 bound to that one immutable request, consumed once, and never adds a permanent
-allowlist rule. A full queue rejects new requests. Expiry, client disconnect,
-or daemon restart cancels pending requests. Admin connections
-have separate capacity so pending remote requests cannot block review.
+allowlist rule. A full queue rejects new requests. Expiry or daemon restart
+cancels pending requests; client disconnect cancels attached requests, while
+commands that have already moved to the background keep running. Admin
+connections have separate capacity so pending remote requests cannot block review.
 Restarting or stopping the daemon also cancels active work.
 
 Commands have null stdin, no PTY, and a configured working directory. Their
@@ -379,23 +406,24 @@ then inherits the daemon's `HOME`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` when set. This lets user
 operations reach their own files and session bus; callers cannot supply environment
 variables through the protocol.
-Stdout/stderr are collected under a combined byte limit and returned when the
-command finishes. The CLI reproduces those bytes and the command's exit status;
-rejection uses 126 and protocol/infrastructure failures use 125. `--json` prints
-all protocol events instead. Request bodies and decisions are logged to stderr;
+While attached, stdout/stderr have a combined byte limit. The CLI reproduces
+the retained bytes and the command's exit status when it finishes; rejection
+uses 126 and protocol/infrastructure failures use 125. `--json` prints all
+protocol events instead. Request bodies and decisions are logged to stderr;
 avoid passing secrets in argv if those logs are retained.
 
 ## Request history and action log
 
 The daemon records every execution request, including policy rejections, manual
 approvals/denials, expiration, disconnection, execution failures and results.
-History retains exact input, resolved executable/argv, working directory, output,
-exit status and action timestamps. SQLite storage is private (0600), survives
-restarts, and is scoped to the config: `config.toml` uses the adjacent
+History retains exact input, resolved executable/argv, working directory,
+retained output, exit status and action timestamps. SQLite storage is private
+(0600), survives restarts, and is scoped to the config: `config.toml` uses the adjacent
 `config.history.sqlite3` database. Its WAL/SHM files belong with that database;
 use SQLite backup tooling for a consistent live backup. History is retained
-until explicitly removed by the account owner. Unfinished records on startup
-are marked interrupted; they are never automatically replayed.
+until explicitly removed by the account owner. Background-capable output is
+stored in bounded per-request chunks; `follow` reads those chunks. Unfinished
+records on startup are marked interrupted; they are never automatically replayed.
 
 ```sh
 zondctl history --limit 30
@@ -406,7 +434,7 @@ zondctl actions --request-id REQUEST_ID
 ```
 
 History and activity use descending sequence cursors (`--before`) for paging.
-The Android **History** tab includes all outcomes, request details, output,
+The Android **History** tab includes all outcomes, request details, retained output,
 approval events, daemon activity and **Run again**. Run again submits the original
 structured request as a new request under the same principal's current policy;
 operation arguments are validated/expanded again and past approvals never carry
@@ -484,10 +512,12 @@ does not match another shell path. Prefer named operations with trusted
 executables/scripts and explicit argument choices for narrow capabilities.
 
 Commands have `no_new_privs`, a 077 umask and disabled core dumps.
-There are limits on frame size, connections, queue size, running
-commands, wall time and collected output. Disconnect and timeout kill the
-command process group. A deliberately hostile descendant can escape its
-process group; there is no per-request cgroup, filesystem or network sandbox.
+There are limits on frame size, connections, queue size, and running commands.
+Attached commands have a collected-output limit; disconnect kills their
+process group. Exceeding the execution deadline moves them to the background
+with bounded retained output. Backgrounded jobs can be cancelled by their owner
+or an admin. A deliberately hostile descendant can escape its process group;
+there is no per-request cgroup, filesystem or network sandbox.
 The supplied systemd user service cleans its entire cgroup on shutdown.
 Treat these distinctions as part of configuring
 what an approved command is allowed to do.
@@ -507,14 +537,20 @@ Or a named operation:
 ```
 
 Each connection carries **one request**. Keep its writing side open until the
-terminal response; EOF or additional request bytes cancel it. Responses echo
+terminal response; EOF or additional request bytes cancel an attached request
+or `follow` session, but do not cancel a backgrounded job. Responses echo
 the version and ID. An optional `pending` event precedes one terminal event:
 `completed`, `rejected`, `error`, `operations`, `permissions`, `checked`,
-`queue`, `resolved`, or `status`.
+`queue`, `resolved`, `status`, `submitted`, `job`, or `cancelled`.
 `completed.stdout` and `.stderr` are base64 strings so arbitrary output bytes
 survive JSON transport; `code` or `signal` describes termination.
 
-Principal methods: `run`, `invoke`, `list_operations`, `permissions`, `check`.
+Principal methods: `run`, `invoke`, `follow`, `job`, `cancel`,
+`list_operations`, `permissions`, `check`. A `run` or `invoke` that exceeds the
+execution deadline returns `submitted` with a request ID. `follow` emits
+base64 `output` events with per-job sequence numbers, optional
+`output_truncated`, then a terminal `job` event. `job` returns one status
+snapshot; `cancel` returns `cancelled`.
 The `check` body wraps a `run` or `invoke` as `input`, for example:
 
 ```json
@@ -522,7 +558,8 @@ The `check` body wraps a `run` or `invoke` as `input`, for example:
 ```
 
 Neither introspection method accepts a principal selector. Local admin methods:
-`pending`, `resolve` (`approval_id`, boolean `approve`), `status`. Neither
+`pending`, `resolve` (`approval_id`, boolean `approve`), `status`, and
+`follow`/`job`/`cancel` for any managed job. Neither
 endpoint accepts the other endpoint's methods. Request types reject unknown
 fields. Requests are limited to 64 KiB including LF; responses to 4 MiB. The
 first request must arrive within ten seconds. Oversized/malformed requests or

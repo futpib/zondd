@@ -161,6 +161,28 @@ fn ssh_command_waits_for_local_cli_approval() {
 
 #[test]
 #[ignore = "requires OpenSSH client/server"]
+fn ssh_long_command_backgrounds_and_can_be_followed_without_restarting() {
+    let ssh = SshEnv::new();
+    let result = checked(
+        ssh.remote("exec")
+            .args(["--json", "exec", "/usr/bin/sleep", "3"]),
+        0,
+    );
+    let submitted: libzondtest::serde_json::Value =
+        libzondtest::serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(submitted["type"], "submitted", "{submitted}");
+    let id = submitted["request_id"].as_str().unwrap();
+    let followed = checked(ssh.remote("exec").args(["--json", "follow", id]), 0);
+    let stdout = String::from_utf8(followed.stdout).unwrap();
+    let terminal: libzondtest::serde_json::Value =
+        libzondtest::serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(terminal["type"], "job");
+    assert_eq!(terminal["request"]["status"], "completed");
+    checked(ssh.remote("ops").args(["job", id]), 125);
+}
+
+#[test]
+#[ignore = "requires OpenSSH client/server"]
 fn forced_bridge_exits_even_while_ssh_stdin_remains_open() {
     let ssh = SshEnv::new();
     let mut remote = Process::spawn(

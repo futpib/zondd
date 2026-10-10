@@ -64,6 +64,20 @@ enum Action {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Stream retained and live job output until it finishes.
+    Follow {
+        id: String,
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+    },
+    /// Inspect the current or final state of a managed job.
+    Job {
+        id: String,
+    },
+    /// Stop a managed job and its process group.
+    Cancel {
+        id: String,
+    },
     Operations,
     /// Inspect this caller's rules, named operations, approvals, and limits.
     Permissions,
@@ -213,6 +227,16 @@ async fn run(cli: Cli) -> Result<u8> {
             operation: operation.clone(),
             args: args.clone(),
         },
+        Action::Follow { id, after } => Request::Follow {
+            request_id: id.clone(),
+            after: *after,
+        },
+        Action::Job { id } => Request::Job {
+            request_id: id.clone(),
+        },
+        Action::Cancel { id } => Request::Cancel {
+            request_id: id.clone(),
+        },
         Action::Operations => Request::ListOperations,
         Action::Permissions => Request::Permissions {},
         Action::Check { input } => Request::Check {
@@ -310,6 +334,54 @@ async fn run(cli: Cli) -> Result<u8> {
                     eprintln!("Error: {message}");
                 }
                 return Ok(125);
+            }
+            Event::Output { stderr, data, .. } => {
+                if !cli.json {
+                    if stderr {
+                        std::io::stderr().write_all(&STANDARD.decode(data)?)?;
+                        std::io::stderr().flush()?;
+                    } else {
+                        std::io::stdout().write_all(&STANDARD.decode(data)?)?;
+                        std::io::stdout().flush()?;
+                    }
+                }
+            }
+            Event::OutputTruncated { next_sequence, .. } => {
+                if !cli.json {
+                    eprintln!(
+                        "Earlier job output was discarded; resuming at chunk {next_sequence}"
+                    );
+                }
+            }
+            Event::Submitted { request_id } => {
+                if !cli.json {
+                    eprintln!(
+                        "Command continues in background; use follow, job, or cancel with this ID:"
+                    );
+                    println!("{request_id}");
+                }
+                return Ok(0);
+            }
+            Event::Job { request } => {
+                if !cli.json {
+                    eprintln!(
+                        "Job {}: {} ({})",
+                        request.request_id, request.status, request.reason
+                    );
+                }
+                if request.is_terminal() {
+                    return Ok(match request.status.as_str() {
+                        "completed" => request
+                            .result
+                            .as_ref()
+                            .and_then(|r| r["code"].as_i64())
+                            .unwrap_or(128)
+                            .clamp(0, 255) as u8,
+                        "rejected" | "denied" => 126,
+                        _ => 125,
+                    });
+                }
+                return Ok(0);
             }
             other => {
                 if !cli.json {

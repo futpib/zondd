@@ -1,13 +1,9 @@
-use anyhow::{Context, Result, bail};
-use libzond::{
-    Command, Event,
-    config::{Limits, Principal},
-};
+use anyhow::{Context, Result};
+use libzond::{Command, Event, config::Principal};
 use std::{
     io,
     os::unix::process::{CommandExt, ExitStatusExt},
     process::Stdio,
-    time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -26,7 +22,46 @@ impl Drop for ProcessGroup {
     }
 }
 
-pub async fn execute(command: &Command, principal: &Principal, limits: &Limits) -> Result<Event> {
+pub async fn execute(
+    command: &Command,
+    principal: &Principal,
+    mut output: impl FnMut(bool, &[u8]) -> Result<()>,
+) -> Result<Event> {
+    let (mut child, group) = start(command, principal)?;
+    let stdout = child.stdout.take().context("missing stdout")?;
+    let stderr = child.stderr.take().context("missing stderr")?;
+    let (tx, mut rx) = mpsc::channel(8);
+    let mut readers = tokio::task::JoinSet::new();
+    readers.spawn(pump(stdout, false, tx.clone()));
+    readers.spawn(pump(stderr, true, tx));
+    let mut status = None;
+    let mut eof = false;
+    loop {
+        if status.is_some() && eof {
+            break;
+        }
+        tokio::select! {
+            result = child.wait(), if status.is_none() => {
+                status = Some(result?);
+                // SAFETY: group.0 is the child process group created above.
+                unsafe { libc::kill(-(group.0 as i32), libc::SIGKILL); }
+            }
+            chunk = rx.recv(), if !eof => match chunk {
+                Some((is_err, bytes)) => output(is_err, &bytes?)?,
+                None => eof = true,
+            }
+        }
+    }
+    let status = status.context("missing exit status")?;
+    Ok(Event::Completed {
+        code: status.code(),
+        signal: status.signal(),
+        stdout: String::new(),
+        stderr: String::new(),
+    })
+}
+
+fn start(command: &Command, principal: &Principal) -> Result<(process::Child, ProcessGroup)> {
     let mut cmd = process::Command::new(&command.program);
     cmd.args(&command.args)
         .current_dir(&principal.cwd)
@@ -71,54 +106,11 @@ pub async fn execute(command: &Command, principal: &Principal, limits: &Limits) 
             Ok(())
         });
     }
-    let mut child = cmd
+    let child = cmd
         .spawn()
         .with_context(|| format!("execute {}", command.program))?;
     let group = ProcessGroup(child.id().context("child has no PID")?);
-    let stdout = child.stdout.take().context("missing stdout")?;
-    let stderr = child.stderr.take().context("missing stderr")?;
-    let (tx, mut rx) = mpsc::channel(8);
-    let mut readers = tokio::task::JoinSet::new();
-    readers.spawn(pump(stdout, false, tx.clone()));
-    readers.spawn(pump(stderr, true, tx));
-    let run = async {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let mut status = None;
-        let mut eof = false;
-        loop {
-            if status.is_some() && eof {
-                break;
-            }
-            tokio::select! {
-                result = child.wait(), if status.is_none() => {
-                    status = Some(result?);
-                    // Close pipes inherited by background children after the main command exits.
-                    // SAFETY: group.0 is the child process group created above.
-                    unsafe { libc::kill(-(group.0 as i32), libc::SIGKILL); }
-                }
-                chunk = rx.recv(), if !eof => match chunk {
-                    Some((is_err, bytes)) => {
-                        let bytes = bytes?;
-                        if out.len() + err.len() + bytes.len() > limits.max_output_bytes { bail!("command output limit exceeded"); }
-                        if is_err { err.extend(bytes); } else { out.extend(bytes); }
-                    }
-                    None => eof = true,
-                }
-            }
-        }
-        let status = status.context("missing exit status")?;
-        use base64::{Engine, engine::general_purpose::STANDARD};
-        Ok(Event::Completed {
-            code: status.code(),
-            signal: status.signal(),
-            stdout: STANDARD.encode(out),
-            stderr: STANDARD.encode(err),
-        })
-    };
-    tokio::time::timeout(Duration::from_secs(limits.command_timeout_secs), run)
-        .await
-        .context("command timed out")?
+    Ok((child, group))
 }
 
 async fn pump(

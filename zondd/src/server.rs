@@ -39,6 +39,7 @@ struct Active {
     config: Arc<Config>,
     revision: String,
     pending: BTreeMap<String, Entry>,
+    jobs: BTreeMap<String, tokio::task::AbortHandle>,
     running: usize,
     connections: usize,
     history: History,
@@ -62,6 +63,18 @@ struct State {
 struct RequestGuard {
     state: Arc<State>,
     id: String,
+}
+struct AttachedGuard {
+    state: Arc<State>,
+    id: String,
+    armed: bool,
+}
+impl Drop for AttachedGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = cancel_job_with_reason(&self.state, None, &self.id, "caller disconnected");
+        }
+    }
 }
 impl Drop for RequestGuard {
     fn drop(&mut self) {
@@ -90,6 +103,7 @@ impl Drop for RequestGuard {
             {
                 tracing::error!(%error, "could not record cancellation");
             }
+            self.state.changed.send_replace(());
         }
     }
 }
@@ -123,6 +137,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
             history: History::open(&config_path)?,
             stopping: false,
             pending: BTreeMap::new(),
+            jobs: BTreeMap::new(),
             running: 0,
             connections: 0,
         }),
@@ -130,7 +145,6 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
         changed,
     });
     let mut listeners = JoinSet::new();
-    let mut retries = JoinSet::new();
     let (_admin_stop, admin_shutdown) = watch::channel(false);
     listeners.spawn(accept(admin_socket, None, state.clone(), admin_shutdown));
     let mut endpoints = Endpoints::new();
@@ -172,15 +186,11 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
                         submit(&state, old.principal, old.input, Some(request_id))
                     })();
                     let result = record.map(|record| {
-                        let request_id = record.request_id.clone();
-                        let state = state.clone();
-                        retries.spawn(async move { let _ = execute_request(state, record, 0, &mut tokio::io::sink()).await; });
-                        Event::Submitted { request_id }
+                        spawn_job(&state, record)
                     });
                     let _ = reply.send(result);
                 }
             },
-            _ = retries.join_next(), if !retries.is_empty() => {},
             result = listeners.join_next() => {
                 // Retired principal listeners finish after their existing clients drain.
                 if !matches!(result, Some(Ok(Ok(())))) { break Err(anyhow::anyhow!("listener stopped: {result:?}")); }
@@ -192,8 +202,9 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
         active.stopping = true;
         active.history.audit(None, "daemon_stopping", json!({}))?;
     }
-    retries.abort_all();
-    while retries.join_next().await.is_some() {}
+    for job in state.active.lock().unwrap().jobs.values() {
+        job.abort();
+    }
     listeners.abort_all();
     while listeners.join_next().await.is_some() {}
     drop(runtime);
@@ -512,10 +523,14 @@ fn submit(
         matches!(input, Request::Run { .. } | Request::Invoke { .. }),
         "not an executable request"
     );
+    let backgrounded = retry_of.is_some();
     let mut record = RequestRecord {
         sequence: 0,
         request_id: uuid::Uuid::new_v4().to_string(),
         retry_of,
+        detached: true,
+        backgrounded,
+        output_truncated: false,
         approval_id: None,
         principal,
         input,
@@ -539,6 +554,200 @@ fn submit(
     Ok(record)
 }
 
+fn spawn_job(state: &Arc<State>, record: RequestRecord) -> Event {
+    let request_id = record.request_id.clone();
+    let id = request_id.clone();
+    let state_for_task = state.clone();
+    let mut active = state.active.lock().unwrap();
+    let task = tokio::spawn(async move {
+        let result = execute_request(state_for_task.clone(), record).await;
+        if let Err(error) = result {
+            tracing::error!(request_id=%id, %error, "detached request failed");
+        }
+        state_for_task.active.lock().unwrap().jobs.remove(&id);
+        state_for_task.changed.send_replace(());
+    });
+    active.jobs.insert(request_id.clone(), task.abort_handle());
+    Event::Submitted { request_id }
+}
+
+async fn wait_attached(
+    state: Arc<State>,
+    request_id: String,
+    wire_id: u64,
+    write: &mut (impl AsyncWrite + Unpin),
+) -> Result<Event> {
+    let mut guard = AttachedGuard {
+        state: state.clone(),
+        id: request_id.clone(),
+        armed: true,
+    };
+    let mut changed = state.changed.subscribe();
+    let mut notice = None;
+    let mut deadline = None;
+    loop {
+        let (record, pending, timeout_secs) = {
+            let active = state.active.lock().unwrap();
+            (
+                active.history.get(&request_id)?,
+                active
+                    .pending
+                    .get(&request_id)
+                    .map(|entry| entry.request.clone()),
+                active.config.limits.command_timeout_secs,
+            )
+        };
+        if record.is_terminal() {
+            guard.armed = false;
+            return Ok(match record.result {
+                Some(result) => serde_json::from_value(result)?,
+                None => reject(&record.reason),
+            });
+        }
+        if let Some(request) = pending
+            && matches!(record.status.as_str(), "pending" | "approved")
+        {
+            let current = (request.approval_id.clone(), request.reason.clone());
+            if notice.as_ref() != Some(&current) {
+                notice = Some(current);
+                wire::write(write, &Envelope::new(wire_id, Event::Pending { request })).await?;
+            }
+        }
+        if record.status == "running" && deadline.is_none() {
+            let elapsed = now().saturating_sub(record.updated_unix_ms);
+            let remaining = timeout_secs.saturating_mul(1000).saturating_sub(elapsed);
+            deadline = Some(Instant::now() + Duration::from_millis(remaining));
+        }
+        if let Some(until) = deadline {
+            if Instant::now() >= until {
+                let mut active = state.active.lock().unwrap();
+                let mut latest = active.history.get(&request_id)?;
+                if latest.is_terminal() {
+                    continue;
+                }
+                latest.backgrounded = true;
+                active.history.record(
+                    &mut latest,
+                    "request_backgrounded",
+                    json!({"deadline_secs":timeout_secs}),
+                )?;
+                state.changed.send_replace(());
+                guard.armed = false;
+                return Ok(Event::Submitted { request_id });
+            }
+            tokio::select! {
+                result = changed.changed() => result?,
+                _ = tokio::time::sleep_until(until) => {},
+            }
+        } else {
+            changed.changed().await?;
+        }
+    }
+}
+
+fn visible_job(state: &State, principal: Option<&str>, id: &str) -> Result<RequestRecord> {
+    let record = state.active.lock().unwrap().history.get(id)?;
+    ensure!(
+        record.detached && principal.is_none_or(|name| name == record.principal),
+        "unknown job"
+    );
+    Ok(record)
+}
+
+fn cancel_job(state: &State, principal: Option<&str>, id: &str) -> Result<Event> {
+    cancel_job_with_reason(state, principal, id, "cancelled by operator")
+}
+
+fn cancel_job_with_reason(
+    state: &State,
+    principal: Option<&str>,
+    id: &str,
+    reason: &str,
+) -> Result<Event> {
+    let mut active = state.active.lock().unwrap();
+    let mut record = active.history.get(id)?;
+    ensure!(
+        record.detached && principal.is_none_or(|name| name == record.principal),
+        "unknown job"
+    );
+    ensure!(!record.is_terminal(), "job already finished");
+    let abort = active.jobs.get(id).cloned().context("job is not running")?;
+    record.status = "cancelled".into();
+    record.reason = reason.into();
+    active
+        .history
+        .record(&mut record, "request_cancelled", json!({"reason":reason}))?;
+    active.pending.remove(id);
+    abort.abort();
+    state.changed.send_replace(());
+    Ok(Event::Cancelled {
+        request_id: id.into(),
+    })
+}
+
+async fn follow_job(
+    state: &State,
+    principal: Option<&str>,
+    request_id: &str,
+    mut after: u64,
+    wire_id: u64,
+    write: &mut (impl AsyncWrite + Unpin),
+) -> Result<Event> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let mut changed = state.changed.subscribe();
+    loop {
+        let (record, first, truncated, chunks) = {
+            let active = state.active.lock().unwrap();
+            let record = active.history.get(request_id)?;
+            ensure!(
+                record.detached && principal.is_none_or(|name| name == record.principal),
+                "unknown job"
+            );
+            let (first, truncated, chunks) = active.history.output(request_id, after, 32)?;
+            (record, first, truncated, chunks)
+        };
+        if after.saturating_add(1) < first || (after == 0 && truncated) {
+            wire::write(
+                write,
+                &Envelope::new(
+                    wire_id,
+                    Event::OutputTruncated {
+                        request_id: request_id.into(),
+                        next_sequence: first,
+                    },
+                ),
+            )
+            .await?;
+            after = first - 1;
+        }
+        if !chunks.is_empty() {
+            for chunk in chunks {
+                wire::write(
+                    write,
+                    &Envelope::new(
+                        wire_id,
+                        Event::Output {
+                            request_id: request_id.into(),
+                            sequence: chunk.sequence,
+                            stderr: chunk.stderr,
+                            data: STANDARD.encode(chunk.data),
+                        },
+                    ),
+                )
+                .await?;
+                after = chunk.sequence;
+            }
+            continue;
+        }
+        if record.is_terminal() {
+            return Ok(Event::Job {
+                request: Box::new(record),
+            });
+        }
+        changed.changed().await?;
+    }
+}
+
 async fn dispatch(
     state: Arc<State>,
     principal: Option<String>,
@@ -546,12 +755,25 @@ async fn dispatch(
     id: u64,
     write: &mut tokio::net::unix::OwnedWriteHalf,
 ) -> Result<Event> {
+    if let Request::Follow { request_id, after } = &request {
+        return follow_job(&state, principal.as_deref(), request_id, *after, id, write).await;
+    }
+    if let Request::Job { request_id } = &request {
+        return Ok(Event::Job {
+            request: Box::new(visible_job(&state, principal.as_deref(), request_id)?),
+        });
+    }
+    if let Request::Cancel { request_id } = &request {
+        return cancel_job(&state, principal.as_deref(), request_id);
+    }
     let Some(name) = principal else {
         return admin(&state, request).await;
     };
     if matches!(request, Request::Run { .. } | Request::Invoke { .. }) {
         let record = submit(&state, name, request, None)?;
-        return execute_request(state, record, id, write).await;
+        let request_id = record.request_id.clone();
+        spawn_job(&state, record);
+        return wait_attached(state, request_id, id, write).await;
     }
     let active = state.active.lock().unwrap();
     active.history.audit(
@@ -670,6 +892,7 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
     let request = Pending {
         approval_id: uuid::Uuid::new_v4().to_string(),
         principal: record.principal.clone(),
+        detached: record.detached,
         command,
         operation,
         reason: "command not permitted without one-time approval".into(),
@@ -703,11 +926,12 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
             had_pending: decision == Decision::Ask,
         },
     );
+    state.changed.send_replace(());
     Ok(None)
 }
 
 enum Step {
-    Wait(Pending, Instant),
+    Wait(Instant),
     Execute {
         config: Arc<Config>,
         principal: Principal,
@@ -748,11 +972,12 @@ fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
                 "allowed by policy"
             }
             .into();
-            let detail = json!({"revision":active.revision,"authorization":entry.record.reason,"command":entry.request.command,"cwd":entry.request.cwd,"command_timeout_secs":config.limits.command_timeout_secs,"max_output_bytes":config.limits.max_output_bytes});
+            let detail = json!({"revision":active.revision,"authorization":entry.record.reason,"command":entry.request.command,"cwd":entry.request.cwd,"detached":entry.record.detached,"command_timeout_secs":config.limits.command_timeout_secs,"max_output_bytes":config.limits.max_output_bytes});
             active
                 .history
                 .record(&mut entry.record, "execution_started", detail)?;
             active.running += 1;
+            state.changed.send_replace(());
             return Ok(Step::Execute {
                 config,
                 principal,
@@ -768,17 +993,12 @@ fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
         }
         entry.request.reason = "Authorized; waiting for execution capacity".into();
     }
-    let step = Step::Wait(entry.request.clone(), entry.deadline);
+    let step = Step::Wait(entry.deadline);
     active.pending.insert(id.to_owned(), entry);
     Ok(step)
 }
 
-async fn execute_request(
-    state: Arc<State>,
-    mut record: RequestRecord,
-    wire_id: u64,
-    write: &mut (impl AsyncWrite + Unpin),
-) -> Result<Event> {
+async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result<Event> {
     let _guard = RequestGuard {
         state: state.clone(),
         id: record.request_id.clone(),
@@ -788,7 +1008,6 @@ async fn execute_request(
         if let Some(event) = prepare(&state, &mut record)? {
             return Ok(event);
         }
-        let mut notice = None;
         loop {
             match advance(&state, &record.request_id)? {
                 Step::Done(event) => return Ok(event),
@@ -799,30 +1018,57 @@ async fn execute_request(
                     permit,
                 } => {
                     let _permit = permit;
-                    return execution::execute(&command, &principal, &config.limits).await;
+                    let id = record.request_id.clone();
+                    let state = state.clone();
+                    return execution::execute(&command, &principal, move |stderr, bytes| {
+                        let mut active = state.active.lock().unwrap();
+                        let truncated = active.history.append_output(
+                            &id,
+                            stderr,
+                            bytes,
+                            config.limits.max_output_bytes,
+                        )?;
+                        let backgrounded = active.history.get(&id)?.backgrounded;
+                        drop(active);
+                        state.changed.send_replace(());
+                        ensure!(!truncated || backgrounded, "command output limit exceeded");
+                        Ok(())
+                    })
+                    .await;
                 }
-                Step::Wait(request, deadline) => {
-                    let current = (request.approval_id.clone(), request.reason.clone());
-                    if notice.as_ref() != Some(&current) {
-                        notice = Some(current);
-                        wire::write(write, &Envelope::new(wire_id, Event::Pending { request }))
-                            .await?;
-                        continue;
-                    }
+                Step::Wait(deadline) => {
                     let _ = tokio::time::timeout_at(deadline, changed.changed()).await;
                 }
             }
         }
     }
     .await;
-    let event = result.unwrap_or_else(|error| Event::Error {
+    let mut event = result.unwrap_or_else(|error| Event::Error {
         message: format!("{error:#}"),
     });
     let mut active = state.active.lock().unwrap();
     // A refreshed request or admission may have replaced the initial command/context.
     let stored = active.history.get(&record.request_id)?;
+    if stored.status == "cancelled" {
+        state.changed.send_replace(());
+        return Ok(event);
+    }
     if stored.command.is_some() {
         record = stored;
+    }
+    if record.detached && matches!(event, Event::Completed { .. }) {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let (stdout, stderr, truncated) = active.history.retained_output(&record.request_id)?;
+        record.output_truncated = truncated;
+        if let Event::Completed {
+            stdout: out,
+            stderr: err,
+            ..
+        } = &mut event
+        {
+            *out = STANDARD.encode(stdout);
+            *err = STANDARD.encode(stderr);
+        }
     }
     match &event {
         Event::Completed { code, signal, .. } => {
@@ -849,6 +1095,7 @@ async fn execute_request(
     active
         .history
         .record(&mut record, "request_finished", detail)?;
+    state.changed.send_replace(());
     Ok(event)
 }
 

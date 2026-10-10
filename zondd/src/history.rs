@@ -17,6 +17,12 @@ pub fn now() -> u64 {
         .as_millis() as u64
 }
 
+pub struct OutputChunk {
+    pub sequence: u64,
+    pub stderr: bool,
+    pub data: Vec<u8>,
+}
+
 pub struct History(Connection);
 impl History {
     pub fn open(config: &Path) -> Result<Self> {
@@ -38,7 +44,9 @@ impl History {
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS requests(sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, record TEXT NOT NULL, result TEXT);
             CREATE TABLE IF NOT EXISTS actions(sequence INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, request_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS actions_request ON actions(request_id, sequence);")?;
+            CREATE INDEX IF NOT EXISTS actions_request ON actions(request_id, sequence);
+            CREATE TABLE IF NOT EXISTS job_output_state(request_id TEXT PRIMARY KEY, next_sequence INTEGER NOT NULL, retained_bytes INTEGER NOT NULL, truncated INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS job_output(request_id TEXT NOT NULL, sequence INTEGER NOT NULL, stderr INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(request_id, sequence));")?;
         let mut history = Self(db);
         let unfinished: Vec<String> = {
             let mut q = history.0.prepare("SELECT record FROM requests WHERE json_extract(record, '$.status') IN ('received','pending','approved','allowed','running')")?;
@@ -183,5 +191,122 @@ impl History {
             })
         })
         .collect()
+    }
+
+    pub fn append_output(
+        &mut self,
+        id: &str,
+        stderr: bool,
+        data: &[u8],
+        max_bytes: usize,
+    ) -> Result<bool> {
+        let partial = data.len() > max_bytes;
+        let data = &data[data.len().saturating_sub(max_bytes)..];
+        let tx = self.0.transaction()?;
+        let (sequence, mut retained, mut truncated): (i64, i64, bool) = tx
+            .query_row(
+                "SELECT next_sequence, retained_bytes, truncated FROM job_output_state WHERE request_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? != 0)),
+            )
+            .optional()?
+            .unwrap_or((1, 0, false));
+        truncated |= partial;
+        tx.execute(
+            "INSERT INTO job_output(request_id,sequence,stderr,data) VALUES (?1,?2,?3,?4)",
+            params![id, sequence, stderr, data],
+        )?;
+        retained += data.len() as i64;
+        while retained > max_bytes as i64 {
+            let (old_sequence, size): (i64, i64) = tx.query_row(
+                "SELECT sequence,length(data) FROM job_output WHERE request_id=?1 ORDER BY sequence LIMIT 1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            tx.execute(
+                "DELETE FROM job_output WHERE request_id=?1 AND sequence=?2",
+                params![id, old_sequence],
+            )?;
+            retained -= size;
+            truncated = true;
+        }
+        tx.execute(
+            "INSERT INTO job_output_state(request_id,next_sequence,retained_bytes,truncated) VALUES (?1,?2,?3,?4) ON CONFLICT(request_id) DO UPDATE SET next_sequence=excluded.next_sequence,retained_bytes=excluded.retained_bytes,truncated=excluded.truncated",
+            params![id, sequence + 1, retained, truncated],
+        )?;
+        tx.commit()?;
+        Ok(truncated)
+    }
+
+    pub fn output(
+        &self,
+        id: &str,
+        after: u64,
+        limit: usize,
+    ) -> Result<(u64, bool, Vec<OutputChunk>)> {
+        let (next, truncated): (i64, bool) = self
+            .0
+            .query_row(
+                "SELECT next_sequence, truncated FROM job_output_state WHERE request_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
+            )
+            .optional()?
+            .unwrap_or((1, false));
+        let first: i64 = self
+            .0
+            .query_row(
+                "SELECT MIN(sequence) FROM job_output WHERE request_id=?1",
+                [id],
+                |row| row.get::<_, Option<i64>>(0),
+            )?
+            .unwrap_or(next);
+        let mut q = self.0.prepare(
+            "SELECT sequence,stderr,data FROM job_output WHERE request_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
+        )?;
+        let rows = q.query_map(
+            params![id, after.min(i64::MAX as u64) as i64, limit as i64],
+            |row| {
+                Ok(OutputChunk {
+                    sequence: row.get::<_, i64>(0)? as u64,
+                    stderr: row.get::<_, i64>(1)? != 0,
+                    data: row.get(2)?,
+                })
+            },
+        )?;
+        Ok((
+            first as u64,
+            truncated,
+            rows.collect::<rusqlite::Result<Vec<_>>>()?,
+        ))
+    }
+
+    pub fn retained_output(&self, id: &str) -> Result<(Vec<u8>, Vec<u8>, bool)> {
+        let truncated: bool = self
+            .0
+            .query_row(
+                "SELECT truncated FROM job_output_state WHERE request_id=?1",
+                [id],
+                |row| Ok(row.get::<_, i64>(0)? != 0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut q = self
+            .0
+            .prepare("SELECT stderr,data FROM job_output WHERE request_id=?1 ORDER BY sequence")?;
+        let rows = q.query_map([id], |row| {
+            Ok((row.get::<_, i64>(0)? != 0, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (is_stderr, data) = row?;
+            if is_stderr {
+                stderr.extend(data);
+            } else {
+                stdout.extend(data);
+            }
+        }
+        Ok((stdout, stderr, truncated))
     }
 }

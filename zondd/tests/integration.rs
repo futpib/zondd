@@ -122,11 +122,12 @@ fn execution_limits_and_disconnect_kill_the_actual_process() {
             .unwrap()
             .contains("output limit")
     );
-    assert!(
-        env.request("exec", command("/usr/bin/sleep", &["10"]))["message"]
-            .as_str()
-            .unwrap()
-            .contains("timed out")
+    let long = env.request("exec", command("/usr/bin/sleep", &["10"]));
+    assert_eq!(long["type"], "submitted", "{long}");
+    let long_id = long["request_id"].as_str().unwrap();
+    assert_eq!(
+        env.request("exec", json!({"method":"cancel","request_id":long_id}))["type"],
+        "cancelled"
     );
     let marker = env.owned_workdir().join("child.pid");
     let (session, id) = env.pending(command(
