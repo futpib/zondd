@@ -17,16 +17,26 @@ android {
     defaultConfig {
         applicationId = "io.github.futpib.zondd_control"
         minSdk = flutter.minSdkVersion
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        if (project.findProperty("split-per-abi") != "true") {
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        }
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = System.getenv("KEYSTORE_PATH")?.takeIf { it.isNotBlank() }?.let { file(it) }
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "release"
+            keyPassword = System.getenv("KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: storePassword
+        }
+    }
+
     buildTypes {
         release {
-            // Development signing only; supply a release key before publishing.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }
@@ -41,7 +51,22 @@ flutter {
     source = "../.."
 }
 
+val validateReleaseCredentials by tasks.registering {
+    doLast {
+        val keystorePath = System.getenv("KEYSTORE_PATH")
+        require(!keystorePath.isNullOrBlank()) { "Set KEYSTORE_PATH for release signing" }
+        require(file(keystorePath).isFile) { "KEYSTORE_PATH must point to a release keystore" }
+        require(!System.getenv("KEYSTORE_PASSWORD").isNullOrBlank()) {
+            "Set KEYSTORE_PASSWORD for release signing"
+        }
+    }
+}
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(validateReleaseCredentials)
+}
+
 val buildIrohTransport by tasks.registering(Exec::class) {
+    mustRunAfter(validateReleaseCredentials)
     workingDir = file("../..")
     commandLine("bash", "scripts/build-native.sh")
 }

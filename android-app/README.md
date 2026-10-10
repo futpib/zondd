@@ -3,6 +3,45 @@
 A focused controller for your zondd user daemon: approvals, policy editing, and
 systemd user-service controls. GPL-3.0-or-later; see [LICENSE](../LICENSE).
 
+[<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" height="80" alt="Get it on Obtainium">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/futpib/zondd)
+
+## Obtainium and APK downloads
+
+Once the first Android release is published, open the badge above or add
+`https://github.com/futpib/zondd` in Obtainium. Use the release-title filter
+`^Android ` to track Android releases if the repository also publishes daemon
+releases. Choose `app-release.apk` for a universal ARM64/x86-64 installation,
+or `app-arm64-v8a-release.apk` / `app-x86_64-release.apk` for a smaller download.
+Each file installs independently. Keep the same APK filename when updating;
+Flutter adds architecture-specific version-code offsets to per-ABI builds.
+Obtainium handles update checks and Android's installation confirmation.
+
+The **Build Android APK** workflow is manually triggered and publishes signed
+APKs plus `SHA256SUMS` to GitHub Releases. Tags start with `android-`; the build
+number increases from the highest published Android release. Release builds use
+the same application ID, `io.github.futpib.zondd_control`, and must always use
+the same signing key. Earlier development APKs use a different key and must be
+uninstalled before installing the first release, which removes their local data.
+
+Before the first release, publish the source repository and configure GitHub
+Actions secrets `KEYSTORE_BASE64` (the base64-encoded persistent keystore) and
+`KEYSTORE_PASSWORD`. The key alias defaults to `release`; set `KEY_ALIAS` if
+different, and `KEY_PASSWORD` if the key password differs from the store password.
+Create and back up a dedicated keystore outside the repository, for example:
+
+```sh
+umask 077
+keytool -genkeypair -keystore "$HOME/zondd-release.jks" -storetype JKS \
+  -alias release -keyalg RSA -keysize 3072 -validity 10000
+base64 -w0 "$HOME/zondd-release.jks" | gh secret set KEYSTORE_BASE64 --repo futpib/zondd
+gh secret set KEYSTORE_PASSWORD --repo futpib/zondd
+```
+
+Then run **Actions → Build Android APK → Run workflow**. Missing signing
+credentials fail the release build; no temporary or debug key is substituted.
+Do not delete the latest Android release or replace the signing key between
+updates. Both would break the version/signature continuity Obtainium relies on.
+
 ## Connect
 
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host
@@ -87,9 +126,18 @@ flutter build apk --debug --target-platform android-arm64,android-x64
 ```
 
 Set `ANDROID_HOME` to the SDK and optionally `ANDROID_NDK_HOME` to a different
-compatible NDK. `scripts/build-native.sh` can build just the adapter. The default
-APK is a development build. The release build also uses development signing
-until you supply your own signing configuration; it is not a published release.
+compatible NDK. `scripts/build-native.sh` can build just the adapter. Debug builds
+need no release credentials. To reproduce the release APKs locally, export
+`KEYSTORE_PATH` (an absolute path) and `KEYSTORE_PASSWORD`, with optional
+`KEY_ALIAS` and `KEY_PASSWORD`, then run:
+
+```sh
+bash scripts/build-release.sh 0.1.0 2 /tmp/zondd-release-apks
+```
+
+The helper builds the normal `lib/main.dart` app for both supported architectures,
+then builds each standalone architecture APK and writes `SHA256SUMS`. Choose a
+version code higher than previous releases. `FLUTTER` can select a Flutter binary.
 
 ## Real Android end-to-end test
 

@@ -3,6 +3,11 @@
 SSH-authenticated operations with exact command allowlists, named operations,
 and an optional local approval queue. Linux, Rust, GPL-3.0-or-later.
 
+[<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" height="80" alt="Get the Android controller on Obtainium">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/futpib/zondd)
+
+The Android controller's [Obtainium setup and release instructions](android-app/README.md#obtainium-and-apk-downloads)
+cover installation and updates. Downloads become available after the first Android release is published.
+
 Keep your existing OpenSSH server and iroh-ssh forwarding. OpenSSH authenticates
 the key; its fixed `authorized_keys` command bridges a versioned protocol to
 zondd. Both endpoints are included. No additional network listener or SSH server
