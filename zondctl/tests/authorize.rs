@@ -1,5 +1,5 @@
 use libzondtest::{
-    Process, SshEnv, TestEnv, checked, nix::pty::openpty, read_until, serde_json::json,
+    Process, SshEnv, TestEnv, checked, nix::pty::openpty, read_until, serde_json::json, wait_for,
 };
 use std::{
     ffi::OsStr,
@@ -18,10 +18,25 @@ fn begin(
     config: &Path,
     principal: &str,
 ) -> (Process, File) {
+    begin_with_runtime(env, key, keys, config, principal, None)
+}
+
+fn begin_with_runtime(
+    env: &TestEnv,
+    key: impl AsRef<OsStr>,
+    keys: &Path,
+    config: &Path,
+    principal: &str,
+    runtime: Option<&Path>,
+) -> (Process, File) {
     let pty = openpty(None, None).unwrap();
     let slave = File::from(pty.slave);
+    let mut command = env.cli();
+    if let Some(runtime) = runtime {
+        command.env("XDG_RUNTIME_DIR", runtime);
+    }
     let process = Process::spawn(
-        env.cli()
+        command
             .arg("authorize-key")
             .arg(key)
             .arg("--zondd")
@@ -75,9 +90,74 @@ fn inline_public_key_is_reviewed_and_installed_without_a_file_argument() {
     terminal.write_all(b"y\n").unwrap();
     assert!(process.wait(Duration::from_secs(5)).success());
     assert!(fs::read_to_string(&keys).unwrap().contains(public.trim()));
+    assert!(
+        fs::read_to_string(&keys)
+            .unwrap()
+            .contains(" --runtime-dir ")
+    );
     let (mut process, mut terminal) = begin(&env, public.trim(), &keys, &config, "default");
     read_until(&mut terminal, b"no changes");
     assert!(process.wait(Duration::from_secs(5)).success());
+}
+
+#[test]
+#[ignore = "requires ssh-keygen"]
+fn default_runtime_entry_omits_redundant_bridge_arguments() {
+    let env = TestEnv::new();
+    let key = key(&env);
+    let keys = env.dir.path().join("authorized_keys");
+    let config = env.dir.path().join("missing.toml");
+    let runtime = std::path::PathBuf::from(format!("/run/user/{}", libzond::paths::current_uid()));
+    let (mut process, mut terminal) =
+        begin_with_runtime(&env, &key, &keys, &config, "default", Some(&runtime));
+    let preview = read_until(&mut terminal, b"[y/N] ");
+    let public = fs::read_to_string(&key).unwrap();
+    let entry = format!(
+        "restrict,command=\"{} bridge\" {}",
+        env.daemon.display(),
+        public
+    );
+    assert!(String::from_utf8_lossy(&preview).contains(entry.trim()));
+    terminal.write_all(b"n\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    assert!(!keys.exists());
+}
+
+#[test]
+#[ignore = "requires ssh-keygen"]
+fn existing_managed_entry_is_shortened_and_remains_revocable() {
+    let env = TestEnv::new();
+    let key = key(&env);
+    let keys = env.dir.path().join("authorized_keys");
+    let config = env.dir.path().join("missing.toml");
+    let public = fs::read_to_string(&key).unwrap();
+    let previous = format!(
+        "restrict,command=\"'{}' bridge --runtime-dir '{}' --principal 'default'\" {}",
+        env.daemon.display(),
+        env.runtime.display(),
+        public
+    );
+    fs::write(&keys, previous).unwrap();
+    let (mut process, mut terminal) = begin(&env, &key, &keys, &config, "default");
+    let preview = read_until(&mut terminal, b"[y/N] ");
+    assert!(String::from_utf8_lossy(&preview).contains("-restrict,command="));
+    terminal.write_all(b"y\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    let updated = fs::read_to_string(&keys).unwrap();
+    assert_eq!(
+        updated,
+        format!(
+            "restrict,command=\"{} bridge --runtime-dir {}\" {}",
+            env.daemon.display(),
+            env.runtime.display(),
+            public
+        )
+    );
+    let (mut process, mut terminal) = begin_revoke(&env, None, &keys);
+    read_until(&mut terminal, b"[y/N] ");
+    terminal.write_all(b"y\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    assert!(fs::read_to_string(&keys).unwrap().is_empty());
 }
 
 fn key(env: &TestEnv) -> std::path::PathBuf {
@@ -118,7 +198,8 @@ fn revoke_one_and_all_only_remove_zondd_bridge_entries() {
     let legacy = format!(
         "restrict,command=\"/home/old/.cargo/bin/zondd bridge --principal default\" {first_public}"
     );
-    fs::write(&keys, format!("{managed}{unrelated}{legacy}")).unwrap();
+    let minimal = format!("restrict,command=\"/usr/bin/zondd bridge\" {second_public}");
+    fs::write(&keys, format!("{managed}{unrelated}{legacy}{minimal}")).unwrap();
     let original = fs::read_to_string(&keys).unwrap();
     let (mut process, mut terminal) =
         begin_revoke(&env, Some(OsStr::new(first_public.trim())), &keys);
@@ -134,7 +215,7 @@ fn revoke_one_and_all_only_remove_zondd_bridge_entries() {
     let remaining = fs::read_to_string(&keys).unwrap();
     assert!(!remaining.contains(&legacy));
     assert!(remaining.contains(&unrelated));
-    assert_eq!(remaining.matches("restrict,command=").count(), 2);
+    assert_eq!(remaining.matches("restrict,command=").count(), 3);
     let (mut process, mut terminal) = begin_revoke(&env, Some(first.as_os_str()), &keys);
     read_until(&mut terminal, b"no changes.");
     assert!(process.wait(Duration::from_secs(5)).success());
@@ -307,4 +388,29 @@ fn enrolled_key_runs_the_protocol_and_cannot_run_a_shell_command() {
     assert!(process.wait(Duration::from_secs(5)).success());
     assert_eq!(fs::read_to_string(&keys).unwrap(), original);
     checked(ssh.remote("unknown").arg("permissions"), 125);
+}
+
+#[test]
+#[ignore = "requires OpenSSH client/server"]
+fn bridge_without_principal_uses_the_default_policy() {
+    let ssh = SshEnv::new();
+    ssh.env.stop_daemon();
+    fs::remove_file(&ssh.env.config).unwrap();
+    ssh.env
+        .start(ssh.env.daemon_command().arg("serve"), "default-daemon");
+    wait_for(|| ssh.env.runtime.join("default.sock").exists());
+    let public = fs::read_to_string(ssh.env.dir.path().join("unknown-key.pub")).unwrap();
+    fs::write(
+        ssh.env.dir.path().join("authorized_keys"),
+        format!(
+            "restrict,command=\"{} bridge --runtime-dir {}\" {public}",
+            ssh.env.daemon.display(),
+            ssh.env.runtime.display()
+        ),
+    )
+    .unwrap();
+    let output = checked(ssh.remote("unknown").args(["--json", "permissions"]), 0);
+    let event: libzondtest::serde_json::Value =
+        libzondtest::serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(event["permissions"]["principal"], "default");
 }

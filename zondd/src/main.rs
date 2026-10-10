@@ -34,7 +34,7 @@ enum Action {
     Bridge {
         #[arg(long, default_value_os_t = libzond::paths::runtime_dir())]
         runtime_dir: PathBuf,
-        #[arg(long)]
+        #[arg(long, default_value = "default")]
         principal: String,
     },
 }

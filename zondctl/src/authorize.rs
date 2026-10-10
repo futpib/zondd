@@ -98,6 +98,29 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn simple_word(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'))
+}
+
+fn compact_command(binary: &str, runtime: &Path, principal: &str) -> Option<String> {
+    let runtime = runtime.to_str()?;
+    if !binary.ends_with("/zondd") || !simple_word(binary) || !simple_word(runtime) {
+        return None;
+    }
+    let default_runtime = PathBuf::from(format!("/run/user/{}/zondd", paths::current_uid()));
+    let mut command = format!("{binary} bridge");
+    if runtime != default_runtime.to_str()? || paths::runtime_dir() != default_runtime {
+        command.push_str(&format!(" --runtime-dir {runtime}"));
+    }
+    if principal != "default" {
+        command.push_str(&format!(" --principal {principal}"));
+    }
+    Some(command)
+}
+
 fn key_type(field: &str) -> bool {
     field.starts_with("ssh-") || field.starts_with("ecdsa-") || field.starts_with("sk-")
 }
@@ -204,7 +227,27 @@ fn managed_entry_key(line: &str) -> Option<(&str, &str)> {
                 && program.ends_with("/zondd")
                 && libzond::config::valid_name(principal)
         });
-    if current.is_none() && !legacy {
+    let compact = {
+        let parts: Vec<_> = command.split(' ').collect();
+        let (program, args) = parts.split_first()?;
+        program.starts_with('/')
+            && program.ends_with("/zondd")
+            && simple_word(program)
+            && match *args {
+                ["bridge"] => true,
+                ["bridge", "--principal", principal] => libzond::config::valid_name(principal),
+                ["bridge", "--runtime-dir", runtime] => {
+                    runtime.starts_with('/') && simple_word(runtime)
+                }
+                ["bridge", "--runtime-dir", runtime, "--principal", principal] => {
+                    runtime.starts_with('/')
+                        && simple_word(runtime)
+                        && libzond::config::valid_name(principal)
+                }
+                _ => false,
+            }
+    };
+    if current.is_none() && !legacy && !compact {
         return None;
     }
     let kind = *parts.get(1)?;
@@ -298,12 +341,15 @@ pub async fn run(options: &Options) -> Result<u8> {
         "control character in bridge path"
     );
     let public = load_public_key(&options.public_key)?;
-    let command = format!(
-        "{} bridge --runtime-dir {} --principal {}",
-        quote(binary),
-        quote(runtime),
-        quote(&options.principal)
-    );
+    let command =
+        compact_command(binary, &config.runtime_dir, &options.principal).unwrap_or_else(|| {
+            format!(
+                "{} bridge --runtime-dir {} --principal {}",
+                quote(binary),
+                quote(runtime),
+                quote(&options.principal)
+            )
+        });
     let command = command.replace('"', "\\\"");
     let entry = format!("restrict,command=\"{command}\" {}\n", public.text);
     let path = std::path::absolute(&options.authorized_keys)?;
@@ -318,7 +364,9 @@ pub async fn run(options: &Options) -> Result<u8> {
             && parts.get(2) == Some(&public.blob.as_str());
         if plain || with_options {
             ensure!(
-                !with_options || line.trim_end() == entry.trim_end(),
+                !with_options
+                    || line.trim_end() == entry.trim_end()
+                    || managed_entry_key(line) == Some((&*public.kind, &*public.blob)),
                 "this key already has SSH options; merge those restrictions manually to avoid losing them"
             );
             if !installed {

@@ -199,14 +199,18 @@ the selected principal must already exist, or be the built-in `default`.
 Enrollment is logged when the daemon is reachable. Keep a separate ordinary SSH
 key for management.
 
-For manual installation, the equivalent entry is:
+For manual installation with the default principal and runtime directory, the
+equivalent entry is:
 
 ```text
-restrict,command="/home/alice/.cargo/bin/zondd bridge --principal default" ssh-ed25519 AAAA... caller-key
+restrict,command="/usr/bin/zondd bridge" ssh-ed25519 AAAA... caller-key
 ```
 
-For a custom runtime directory, add `--runtime-dir /absolute/path` to the fixed
-command. `restrict` disables forwarding, PTYs, agent/X11 forwarding and user
+Use the installed absolute path to `zondd` on the receiver.
+For a custom principal, add `--principal NAME`; for a custom runtime directory,
+add `--runtime-dir /absolute/path` to the fixed command. The helper includes
+these arguments when needed and quotes paths containing shell metacharacters.
+`restrict` disables forwarding, PTYs, agent/X11 forwarding and user
 SSH rc execution for that key. The bridge rejects nonempty
 `SSH_ORIGINAL_COMMAND`; the caller opens a session without a shell command and
 writes protocol frames. Other keys can retain their normal SSH access.
