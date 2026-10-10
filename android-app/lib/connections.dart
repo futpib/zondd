@@ -5,6 +5,7 @@ import 'control.dart';
 import 'dashboard.dart';
 import 'identities.dart';
 import 'keys_page.dart';
+import 'qr_scan.dart';
 import 'ui.dart';
 
 class Target {
@@ -343,19 +344,30 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
           decoration: InputDecoration(
             labelText: 'Target',
             hintText: iroh ? 'user@endpoint_id' : 'user@host:port',
-            suffixIcon: IconButton(
-              tooltip: 'Paste target',
-              icon: const Icon(Icons.content_paste),
-              onPressed: busy
-                  ? null
-                  : () async {
-                      final data = await Clipboard.getData(
-                        Clipboard.kTextPlain,
-                      );
-                      if (mounted && data != null) {
-                        target.text = data.text?.trim() ?? '';
-                      }
-                    },
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                QrScanButton(
+                  controller: target,
+                  label: 'target',
+                  enabled: !busy,
+                  trim: true,
+                ),
+                IconButton(
+                  tooltip: 'Paste target',
+                  icon: const Icon(Icons.content_paste),
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final data = await Clipboard.getData(
+                            Clipboard.kTextPlain,
+                          );
+                          if (mounted && data != null) {
+                            target.text = data.text?.trim() ?? '';
+                          }
+                        },
+                ),
+              ],
             ),
           ),
           onSubmitted: (_) => busy ? null : quickConnect(),
@@ -551,7 +563,17 @@ class _ProfilePageState extends State<ProfilePage> {
       obscureText: secret,
       autocorrect: false,
       enableSuggestions: false,
-      decoration: InputDecoration(labelText: label ?? key, hintText: hint),
+      decoration: InputDecoration(
+        labelText: label ?? key,
+        hintText: hint,
+        suffixIcon: ['Target', 'Password', 'Relays'].contains(key)
+            ? QrScanButton(
+                controller: fields[key]!,
+                label: key.toLowerCase(),
+                trim: !secret,
+              )
+            : null,
+      ),
       validator: (text) {
         if (required && text!.trim().isEmpty) return 'Required';
         if (key == 'Target') {

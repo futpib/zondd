@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import 'control.dart';
 import 'identities.dart';
+import 'qr_scan.dart';
 import 'ui.dart';
 
 class KeysPage extends StatefulWidget {
@@ -287,12 +288,17 @@ class _AddKeyPageState extends State<AddKeyPage> {
               style: mono,
               autocorrect: false,
               enableSuggestions: false,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Private key',
                 hintText: 'Or paste a PEM / OpenSSH private key',
+                suffixIcon: QrScanButton(
+                  controller: pem,
+                  label: 'private key',
+                  enabled: !busy,
+                ),
               ),
               validator: (v) => v!.trim().isEmpty
-                  ? 'Choose a file or paste a private key'
+                  ? 'Choose a file, paste, or scan a private key'
                   : null,
             ),
             const SizedBox(height: 16),
@@ -301,8 +307,13 @@ class _AddKeyPageState extends State<AddKeyPage> {
               obscureText: true,
               autocorrect: false,
               enableSuggestions: false,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Passphrase (if encrypted)',
+                suffixIcon: QrScanButton(
+                  controller: passphrase,
+                  label: 'passphrase',
+                  enabled: !busy,
+                ),
               ),
             ),
           ],

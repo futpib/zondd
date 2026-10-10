@@ -52,7 +52,7 @@ Plain SSH connections do not depend on Iroh versions.
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host
    using the [receiver instructions](../readme.md#configure-the-receiver). No policy
    file is needed: the built-in caller requires manual approval for every command.
-2. Open **SSH keys**. Import a PEM/OpenSSH private key from a file or paste it,
+2. Open **SSH keys**. Import a PEM/OpenSSH private key from a file, paste it, or scan its QR code,
    including its passphrase if encrypted. Or generate an Ed25519 key and copy
    its public key to the server. Identities are reusable across connections.
 3. Select **SSH** or **Iroh**, enter `user@host[:port]` or
@@ -68,6 +68,12 @@ Plain SSH connections do not depend on Iroh versions.
    verify the new fingerprint out of band and use **Forget host key** first.
 5. Tap **Approve once** or **Reject** on an exact command request. The caller
    remains connected while waiting and receives command output or rejection.
+
+QR scan buttons are available beside connection targets (including quick connect),
+private keys, passphrases, passwords, and relay URLs. Scan with the camera or choose
+a QR image from the gallery. The decoded text fills the field for review; it does
+not save or connect automatically. Cancelling leaves the field unchanged. Private
+keys retain their line breaks, and passwords/passphrases retain whitespace.
 
 Advanced connection settings select the remote `zondctl` executable (default
 `.cargo/bin/zondctl`, relative to the SSH user's home), config file, runtime
@@ -173,6 +179,19 @@ screenshots (requires Python 3 and `adb` on PATH):
 FLUTTER=/path/to/flutter python3 android-app/scripts/capture-screenshots.py \
   --device emulator-5554 --output /tmp/zondd-screenshots
 ```
+
+To exercise QR import through real camera frames, start a disposable emulator
+with `-camera-back virtualscene`, install `qrencode` and Python Pillow
+(`qrencode python3-pil` on Ubuntu), then run:
+
+```sh
+FLUTTER=/path/to/flutter python3 android-app/scripts/test-qr.py --device emulator-5554
+```
+
+This scans targets, passwords, relay URLs, a generated private key, and a
+passphrase, verifies whitespace and cancellation, and imports the scanned key
+through the UI. It restores stored identities and the camera pose, resets the
+wall poster, and deletes temporary QR images. CI runs both emulator suites.
 
 Ephemeral fixture credentials are embedded in the test APK. Never distribute
 that APK; build the normal `lib/main.dart` app again afterward. Rust drop guards

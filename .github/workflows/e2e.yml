@@ -66,7 +66,7 @@ jobs:
       - name: Install transport test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server acl
+          sudo apt-get install -y openssh-server acl qrencode python3-pil
           sudo mkdir -p /run/sshd
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
           sudo loginctl enable-linger "$(id -un)"
@@ -90,5 +90,7 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: cargo test --locked -p zondctl --test android -- --ignored --nocapture
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back virtualscene
+          script: |
+            cargo test --locked -p zondctl --test android -- --ignored --nocapture
+            python3 android-app/scripts/test-qr.py
