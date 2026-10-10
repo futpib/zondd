@@ -1,15 +1,56 @@
-use libzondtest::{TestEnv, checked, command, decoded, serde_json::json, wait_for};
-use std::{fs, os::unix::fs::MetadataExt};
+use libzondtest::{
+    Session, TestEnv, checked, command, decoded,
+    nix::{libc, sys::stat::Mode, unistd::mkfifo},
+    serde_json::json,
+    wait_for,
+};
+use std::{
+    fs,
+    io::Write,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::{Path, PathBuf},
+};
+
+fn capacity_policy(policy: &str) -> String {
+    format!(
+        "{}\n[[principals.exec.rules]]\nprogram = \"/usr/bin/cat\"\ndecision = \"allow\"\n",
+        policy
+            .replace("timeout_secs = 4", "timeout_secs = 30")
+            .replace("command_timeout_secs = 2", "command_timeout_secs = 30")
+    )
+}
+
+fn hold_capacity(env: &TestEnv) -> (Session, PathBuf) {
+    let gate = env.dir.path().join("gate");
+    mkfifo(&gate, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+    let session = env.session("exec", command("/usr/bin/cat", &[gate.to_str().unwrap()]));
+    wait_for(|| env.request("admin", json!({"method":"status"}))["running"] == 1);
+    (session, gate)
+}
+
+fn release_capacity(gate: &Path) {
+    let mut writer = None;
+    wait_for(|| {
+        writer = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(gate)
+            .ok();
+        writer.is_some()
+    });
+    writer.unwrap().write_all(b"released").unwrap();
+}
 
 #[test]
 fn reload_replaces_principals_and_policy_without_interrupting_running_commands() {
     let env = TestEnv::new();
+    let policy = capacity_policy(&env.policy);
+    fs::write(&env.config, &policy).unwrap();
+    checked(env.cli().arg("reload"), 0);
     let admin_inode = fs::metadata(env.runtime.join("admin.sock")).unwrap().ino();
-    let mut running = env.session("exec", command("/usr/bin/sleep", &["1"]));
-    wait_for(|| env.request("admin", json!({"method":"status"}))["running"] == 1);
+    let (mut running, gate) = hold_capacity(&env);
     let (mut waiting, id) = env.pending(command("/usr/bin/printf", &["manual"]));
-    let changed = env
-        .policy
+    let changed = policy
         .replace("principals.exec", "principals.replacement")
         .replace("max_running = 2", "max_running = 1")
         .replace("hello %s", "updated %s");
@@ -36,6 +77,7 @@ fn reload_replaces_principals_and_policy_without_interrupting_running_commands()
         full["message"].as_str().unwrap().contains("capacity"),
         "{full}"
     );
+    release_capacity(&gate);
     assert_eq!(running.event()["code"], 0);
     assert_eq!(
         env.request("replacement", command("/usr/bin/id", &["-u"]))["code"],
@@ -233,11 +275,10 @@ fn changed_operation_and_directory_require_fresh_review_without_reconnecting() {
 #[test]
 fn approval_waiting_for_capacity_cannot_bypass_a_later_denial() {
     let env = TestEnv::new();
-    let policy = env.policy.replace("max_running = 2", "max_running = 1");
+    let policy = capacity_policy(&env.policy.replace("max_running = 2", "max_running = 1"));
     fs::write(&env.config, &policy).unwrap();
     checked(env.cli().arg("reload"), 0);
-    let mut running = env.session("exec", command("/usr/bin/sleep", &["1"]));
-    wait_for(|| env.request("admin", json!({"method":"status"}))["running"] == 1);
+    let (mut running, gate) = hold_capacity(&env);
     let (mut caller, id) = env.pending(command("/usr/bin/printf", &["manual"]));
     env.resolve(&id, true);
     fs::write(
@@ -251,17 +292,17 @@ fn approval_waiting_for_capacity_cannot_bypass_a_later_denial() {
         result = caller.event();
     }
     assert_eq!(result["reason"], "command denied by updated policy");
+    release_capacity(&gate);
     assert_eq!(running.event()["code"], 0);
 }
 
 #[test]
 fn newly_allowed_requests_wait_for_capacity_and_use_current_limits() {
     let env = TestEnv::new();
-    let policy = env.policy.replace("max_running = 2", "max_running = 1");
+    let policy = capacity_policy(&env.policy.replace("max_running = 2", "max_running = 1"));
     fs::write(&env.config, &policy).unwrap();
     checked(env.cli().arg("reload"), 0);
-    let mut running = env.session("exec", command("/usr/bin/sleep", &["1"]));
-    wait_for(|| env.request("admin", json!({"method":"status"}))["running"] == 1);
+    let (mut running, gate) = hold_capacity(&env);
     let (mut caller, _) = env.pending(command("/usr/bin/printf", &["%s", "new"]));
     fs::write(
         &env.config,
@@ -272,6 +313,7 @@ fn newly_allowed_requests_wait_for_capacity_and_use_current_limits() {
     .unwrap();
     let result = env.request("admin", json!({"method":"reload"}));
     assert_eq!(result["allowed_approvals"], 1);
+    release_capacity(&gate);
     assert_eq!(running.event()["code"], 0);
     let mut result = caller.event();
     while result["type"] == "pending" {
