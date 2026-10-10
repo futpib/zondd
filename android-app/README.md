@@ -87,7 +87,7 @@ not save or connect automatically. Cancelling leaves the field unchanged. Privat
 keys retain their line breaks, and passwords/passphrases retain whitespace.
 
 Advanced connection settings select the remote `zondctl` executable (default
-`.cargo/bin/zondctl`, relative to the SSH user's home), config file, runtime
+`zondctl`, resolved through the remote shell's `PATH`), config file, runtime
 directory, and custom Iroh relay URLs. The executable is a path/name, not a shell
 command; each argument is quoted separately. SSH login banners on stdout or
 startup scripts that change the login working directory can interfere; use an

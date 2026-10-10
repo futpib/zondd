@@ -412,7 +412,7 @@ as well:
 
 ```sh
 printf '%s\n' '{"version":1,"method":"pending"}' | zondctl control
-printf '%s\n' '{"version":1,"method":"pending"}' | ssh alice@server .cargo/bin/zondctl control
+printf '%s\n' '{"version":1,"method":"pending"}' | ssh alice@server zondctl control
 ```
 
 One newline-terminated JSON request per process, with `version: 1` and `method`.

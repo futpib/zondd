@@ -517,7 +517,7 @@ class _ProfilePageState extends State<ProfilePage> {
         'Target': p == null ? '' : Target.of(p),
         'Password': p?.password ?? '',
         'Relays': p?.relays.join('\n') ?? '',
-        'Executable': p?.executable ?? '.cargo/bin/zondctl',
+        'Executable': p?.executable ?? 'zondctl',
         'Runtime': p?.runtime ?? '',
         'Config': p?.config ?? '',
       }.entries)

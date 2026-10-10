@@ -20,7 +20,7 @@ class Profile {
     this.passphrase = '',
     this.keyId = '',
     this.relays = const [],
-    this.executable = '.cargo/bin/zondctl',
+    this.executable = 'zondctl',
     this.runtime = '',
     this.config = '',
   });
