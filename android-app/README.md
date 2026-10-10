@@ -44,6 +44,11 @@ updates. Both would break the version/signature continuity Obtainium relies on.
 
 ## Connect
 
+Iroh connections use the same pinned bridge as `iroh-ssh-android`, with Iroh
+0.96.1. The receiving Iroh SSH server must use a compatible wire version;
+upstream `iroh-ssh` 0.2.12 uses Iroh 0.94 and cannot connect to this bridge.
+Plain SSH connections do not depend on Iroh versions.
+
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host
    using the [receiver instructions](../readme.md#configure-the-receiver). No policy
    file is needed: the built-in caller requires manual approval for every command.
@@ -150,7 +155,9 @@ FLUTTER=/path/to/flutter ZONDD_ANDROID_DEVICE=emulator-5554 \
 ```
 
 The Rust test owns an isolated user daemon, an OpenSSH server, ephemeral caller
-and management keys, and an Iroh server. The Flutter integration test exercises
+and management keys, and an Iroh server built from `native/Cargo.lock`. It uses
+the same Iroh SSH library as the app; no separately installed Iroh CLI is needed.
+The Flutter integration test exercises
 actual Android SSH and native Iroh connections, taps approval/rejection buttons,
 checks caller results, validates/saves configuration, rejects stale saves and
 invalid policy, rejects untrusted host keys and restricted management keys, and

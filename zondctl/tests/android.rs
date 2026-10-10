@@ -1,5 +1,5 @@
 //! A real Android app, SSH server, Iroh server, and user daemon; no mocked transport.
-use libzondtest::{Process, SshEnv, checked, serde_json::json};
+use libzondtest::{Process, SshEnv, checked, serde_json::json, wait_for};
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
@@ -8,8 +8,20 @@ use std::{
 };
 
 #[test]
-#[ignore = "requires Flutter, Android SDK/NDK, a running emulator, OpenSSH and iroh-ssh"]
+#[ignore = "requires Flutter, Android SDK/NDK, a running emulator and OpenSSH"]
 fn android_management_over_ssh_and_iroh() {
+    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../android-app");
+    let target = app.join("native/target");
+    // The CLI transport tests use a different Iroh wire version. Build this server
+    // from the app's lockfile so the emulator exercises its pinned protocol.
+    let mut build = Process::spawn(
+        Command::new("cargo")
+            .args(["build", "--locked", "--manifest-path"])
+            .arg(app.join("native/Cargo.toml"))
+            .args(["--example", "test-server", "--target-dir"])
+            .arg(&target),
+    );
+    assert!(build.wait(Duration::from_secs(1200)).success());
     let ssh = SshEnv::new();
     ssh.env.stop_daemon();
     fs::write(
@@ -20,7 +32,19 @@ fn android_management_over_ssh_and_iroh() {
     )
     .unwrap();
     ssh.env.start_daemon();
-    let endpoint = ssh.start_iroh();
+    ssh.env.start(
+        Command::new(target.join("debug/examples/test-server")).arg(ssh.port.to_string()),
+        "iroh",
+    );
+    let mut endpoint = None;
+    wait_for(|| {
+        endpoint = fs::read_to_string(ssh.env.dir.path().join("iroh.log"))
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("endpoint=").map(str::to_owned));
+        endpoint.is_some()
+    });
+    let endpoint = endpoint.unwrap();
     let fingerprint = checked(
         Command::new("ssh-keygen")
             .arg("-lf")
@@ -51,13 +75,14 @@ fn android_management_over_ssh_and_iroh() {
     )
     .unwrap();
     fs::set_permissions(&definitions, fs::Permissions::from_mode(0o600)).unwrap();
-    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../android-app");
     let log = fs::File::create(ssh.env.dir.path().join("android.log")).unwrap();
     let mut process = Process::spawn(
         Command::new(std::env::var("FLUTTER").unwrap_or_else(|_| "flutter".into()))
             .current_dir(app)
             .args([
                 "test",
+                "--reporter",
+                "expanded",
                 "integration_test/control_test.dart",
                 "integration_test/workflow_test.dart",
                 "-d",

@@ -72,7 +72,6 @@ jobs:
           sudo loginctl enable-linger "$(id -un)"
           sudo systemctl start "user@$(id -u).service"
           cargo install cargo-ndk --version 4.1.2 --locked
-          cargo install --git https://github.com/rustonbsd/iroh-ssh --rev "$IROH_SSH_REV" --locked iroh-ssh
       - name: Check native adapter
         run: |
           cargo fmt --manifest-path android-app/native/Cargo.toml -- --check
