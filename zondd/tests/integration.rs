@@ -340,7 +340,7 @@ fn shipped_user_service_runs_and_executes_as_the_current_user() {
         Command::new("systemctl").args(["--user", "start", &service.name]),
         0,
     );
-    libzondtest::wait_for(|| runtime.join("admin.sock").exists());
+    libzondtest::wait_for(|| runtime.join("exec.sock").exists());
     checked(
         Command::new("systemctl").args(["--user", "is-active", &service.name]),
         0,
