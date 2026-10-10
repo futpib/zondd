@@ -56,6 +56,12 @@ Plain SSH connections do not depend on Iroh versions.
 2. Open **SSH keys**. Import a PEM/OpenSSH private key from a file, paste it, or scan its QR code,
    including its passphrase if encrypted. Or generate an Ed25519 key and copy
    its public key to the server. Identities are reusable across connections.
+   **Add from OpenKeychain** selects a key from an installed OpenKeychain-compatible
+   provider. Only its reference and public key are saved in zondd; signing stays
+   with the provider. Choose that identity for either SSH or Iroh and approve
+   provider prompts when connecting. Removing it from zondd leaves the provider's
+   key intact. RSA keys use SHA-256 signatures; Ed25519 and ECDSA are also supported
+   when the provider supports them.
 3. Select **SSH** or **Iroh**, enter `user@host[:port]` or
    `user@<64-hex-endpoint-id>`, choose a key, and connect. IPv6 addresses use
    `user@[address]:port`. Successful quick connections are saved automatically.
@@ -160,6 +166,15 @@ cargo build --workspace --bins
 FLUTTER=/path/to/flutter ZONDD_ANDROID_DEVICE=emulator-5554 \
   cargo test -p zondctl --test android -- --ignored --nocapture
 ```
+
+For external signing, install OpenKeychain on a disposable emulator, add a test
+key there, and export its **OpenSSH public key** to a host file. Run the same
+command with `ZONDD_ANDROID_EXTERNAL_PUBLIC_KEY=/path/to/test-key.pub`. This
+selects the external-key test, authorizes that public key on the disposable SSH
+server, and exercises signing over both SSH and Iroh. Select the matching key
+and approve access in the real provider UI when prompted. The test never reads
+the provider's private key. Ordinary CI runs the unattended suite without this
+environment variable.
 
 The Rust test owns an isolated user daemon, an OpenSSH server, ephemeral caller
 and management keys, and an Iroh server built from `native/Cargo.lock`. It uses

@@ -3,10 +3,41 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/identities.dart';
+import 'package:zondd_control/open_keychain.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+
+  test(
+    'external references persist alongside local keys without private material',
+    () async {
+      final store = IdentityStore();
+      final local = await store.generate('Local');
+      final reference = OpenKeychainKey(
+        providerPackage: 'org.example.provider',
+        providerLabel: 'Provider',
+        keyId: '1234',
+        description: 'External',
+        publicKeyString: local.publicKey,
+      );
+      final external = await store.importExternal(reference);
+      await store.importExternal(reference);
+      expect((await store.load()).length, 2);
+      final saved = await store.get(external.id);
+      expect(saved.pem, isEmpty);
+      expect(saved.passphrase, isEmpty);
+      expect(saved.externalKey!.toJson(), reference.toJson());
+      expect(saved.fingerprint, local.fingerprint);
+      expect(saved.createIdentities().single.shouldProbe, isTrue);
+      expect((await store.get(local.id)).pem, local.pem);
+      const profiles = ProfileStore();
+      await profiles.save([
+        Profile(name: 'Server', host: 'host', user: 'alice', keyId: saved.id),
+      ]);
+      expect((await profiles.load()).single.keyId, saved.id);
+    },
+  );
 
   test('an invalid legacy key does not hide the connection list', () async {
     const store = ProfileStore();

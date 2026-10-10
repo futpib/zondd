@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import 'control.dart';
 import 'identities.dart';
+import 'open_keychain.dart';
 import 'qr_scan.dart';
 import 'ui.dart';
 
@@ -19,6 +20,7 @@ class _KeysPageState extends State<KeysPage> {
   final store = IdentityStore();
   List<Identity> keys = [];
   String? error;
+  bool importingExternal = false;
   @override
   void initState() {
     super.initState();
@@ -40,6 +42,63 @@ class _KeysPageState extends State<KeysPage> {
     );
     await load();
     if (key != null && mounted) await publicKey(key);
+  }
+
+  Future<void> addExternal() async {
+    setState(() {
+      importingExternal = true;
+      error = null;
+    });
+    try {
+      final client = OpenKeychainClient.instance;
+      final providers = await client.listProviders();
+      if (!mounted) return;
+      if (providers.isEmpty) {
+        throw StateError(
+          'No OpenKeychain provider is installed. Install OpenKeychain and add a key there first.',
+        );
+      }
+      final provider = providers.length == 1
+          ? providers.single
+          : await showDialog<OpenKeychainProvider>(
+              context: context,
+              builder: (context) => SimpleDialog(
+                title: const Text('Choose key provider'),
+                children: [
+                  for (final provider in providers)
+                    SimpleDialogOption(
+                      onPressed: () => Navigator.pop(context, provider),
+                      child: Text(provider.label),
+                    ),
+                ],
+              ),
+            );
+      if (provider == null) return;
+      final selection = await client.selectKey(provider.packageName);
+      final publicKeyString = await client.getSshPublicKey(
+        providerPackage: provider.packageName,
+        keyId: selection.keyId,
+      );
+      final key = await store.importExternal(
+        OpenKeychainKey(
+          providerPackage: provider.packageName,
+          providerLabel: provider.label,
+          keyId: selection.keyId,
+          description: selection.description,
+          publicKeyString: publicKeyString,
+        ),
+      );
+      await load();
+      if (mounted) await publicKey(key);
+    } on PlatformException catch (e) {
+      if (mounted && e.code != 'openkeychain_cancelled') {
+        setState(() => error = e.message ?? e.code);
+      }
+    } catch (e) {
+      if (mounted) setState(() => error = '$e');
+    } finally {
+      if (mounted) setState(() => importingExternal = false);
+    }
   }
 
   Future<void> publicKey(Identity key) => showDialog<void>(
@@ -93,7 +152,9 @@ class _KeysPageState extends State<KeysPage> {
         builder: (context) => AlertDialog(
           title: const Text('Delete SSH key?'),
           content: Text(
-            'Remove ${key.name} from this device? You cannot recover a generated private key after deleting it.',
+            key.externalKey == null
+                ? 'Remove ${key.name} from this device? You cannot recover a generated private key after deleting it.'
+                : 'Remove ${key.name} from zondd? The private key stays in ${key.externalKey!.providerLabel}.',
           ),
           actions: [
             TextButton(
@@ -129,7 +190,7 @@ class _KeysPageState extends State<KeysPage> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Import an existing identity or generate an Ed25519 key. Private keys stay encrypted on this device.',
+          'Import or generate a local key, or use a key held by OpenKeychain. Local private keys stay encrypted on this device; external keys stay with their provider.',
         ),
         const SizedBox(height: 24),
         Row(
@@ -151,13 +212,21 @@ class _KeysPageState extends State<KeysPage> {
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: importingExternal ? null : addExternal,
+          icon: const Icon(Icons.security),
+          label: Text(
+            importingExternal ? 'Opening provider…' : 'Add from OpenKeychain',
+          ),
+        ),
         if (error != null) ...[const SizedBox(height: 16), ErrorBox(error!)],
         SectionHeading('Identities · ${keys.length}'),
         if (keys.isEmpty)
           const EmptyState(
             Icons.key_outlined,
             'No SSH keys yet',
-            'Your public key goes on the server. Your private key stays here.',
+            'Your public key goes on the server. Choose where to keep your private key.',
           ),
         for (final key in keys)
           Card(
@@ -166,10 +235,12 @@ class _KeysPageState extends State<KeysPage> {
                 horizontal: 16,
                 vertical: 8,
               ),
-              leading: const Icon(Icons.key),
+              leading: Icon(
+                key.externalKey == null ? Icons.key : Icons.security,
+              ),
               title: Text(key.name),
               subtitle: Text(
-                '${key.publicKey.split(' ').first}\n${key.fingerprint}',
+                '${key.externalKey == null ? key.publicKey.split(' ').first : key.externalKey!.providerLabel}\n${key.fingerprint}',
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 style: mono.copyWith(fontSize: 11),

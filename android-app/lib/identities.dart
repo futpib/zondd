@@ -6,25 +6,47 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:pinenacl/ed25519.dart' as ed25519;
 
+import 'open_keychain.dart';
+
 class Identity {
-  const Identity(this.id, this.name, this.pem, this.passphrase, this.publicKey);
+  const Identity(this.id, this.name, this.pem, this.passphrase, this.publicKey)
+    : externalKey = null;
+  Identity.external(OpenKeychainKey key)
+    : id = 'openkeychain:${key.providerPackage}:${key.keyId}',
+      name = key.description,
+      pem = '',
+      passphrase = '',
+      publicKey = key.publicKeyString,
+      externalKey = key;
   final String id, name, pem, passphrase, publicKey;
+  final OpenKeychainKey? externalKey;
+  String get label =>
+      externalKey == null ? name : '$name · ${externalKey!.providerLabel}';
+  List<SSHIdentity> createIdentities() => externalKey == null
+      ? SSHKeyPair.fromPem(pem, passphrase.isEmpty ? null : passphrase)
+      : [externalKey!.createIdentity()];
   String get fingerprint =>
-      'SHA256:${base64Encode(sha256.convert(base64Decode(publicKey.split(' ')[1])).bytes).replaceAll('=', '')}';
-  Map<String, String> toJson() => {
+      'SHA256:${base64Encode(sha256.convert(parseOpenSshPublicKey(publicKey).blob).bytes).replaceAll('=', '')}';
+  Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
     'pem': pem,
     'passphrase': passphrase,
     'publicKey': publicKey,
+    if (externalKey != null) 'externalKey': externalKey!.toJson(),
   };
-  factory Identity.fromJson(Map<String, dynamic> json) => Identity(
-    json['id'],
-    json['name'],
-    json['pem'],
-    json['passphrase'],
-    json['publicKey'],
-  );
+  factory Identity.fromJson(Map<String, dynamic> json) =>
+      json['externalKey'] != null
+      ? Identity.external(
+          OpenKeychainKey.fromJson(json['externalKey'] as Map<String, dynamic>),
+        )
+      : Identity(
+          json['id'],
+          json['name'],
+          json['pem'],
+          json['passphrase'],
+          json['publicKey'],
+        );
 }
 
 class IdentityStore {
@@ -87,5 +109,13 @@ class IdentityStore {
       name,
     );
     return import(name, pair.toPem());
+  }
+
+  Future<Identity> importExternal(OpenKeychainKey reference) async {
+    reference.createIdentity();
+    final key = Identity.external(reference);
+    final keys = await load();
+    await save([...keys.where((existing) => existing.id != key.id), key]);
+    return key;
   }
 }

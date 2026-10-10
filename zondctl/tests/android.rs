@@ -10,6 +10,9 @@ use std::{
 #[test]
 #[ignore = "requires Flutter, Android SDK/NDK, a running emulator and OpenSSH"]
 fn android_management_over_ssh_and_iroh() {
+    let external_public_key = std::env::var("ZONDD_ANDROID_EXTERNAL_PUBLIC_KEY")
+        .ok()
+        .map(|path| fs::read_to_string(path).expect("read provider OpenSSH public key"));
     let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../android-app");
     let target = app.join("native/target");
     // Build this server from the app's lockfile so the emulator exercises its
@@ -23,6 +26,14 @@ fn android_management_over_ssh_and_iroh() {
     );
     assert!(build.wait(Duration::from_secs(1200)).success());
     let ssh = SshEnv::new();
+    if let Some(key) = &external_public_key {
+        use std::io::Write;
+        let mut authorized = fs::OpenOptions::new()
+            .append(true)
+            .open(ssh.env.dir.path().join("authorized_keys"))
+            .unwrap();
+        writeln!(authorized, "{}", key.trim()).unwrap();
+    }
     ssh.env.stop_daemon();
     fs::write(
         &ssh.env.config,
@@ -79,14 +90,16 @@ fn android_management_over_ssh_and_iroh() {
     let mut process = Process::spawn(
         Command::new(std::env::var("FLUTTER").unwrap_or_else(|_| "flutter".into()))
             .current_dir(app)
-            .args([
-                "test",
-                "--reporter",
-                "expanded",
-                "integration_test/control_test.dart",
-                "integration_test/workflow_test.dart",
-                "-d",
-            ])
+            .args(["test", "--reporter", "expanded"])
+            .args(if external_public_key.is_some() {
+                vec!["integration_test/external_key_test.dart"]
+            } else {
+                vec![
+                    "integration_test/control_test.dart",
+                    "integration_test/workflow_test.dart",
+                ]
+            })
+            .arg("-d")
             .arg(std::env::var("ZONDD_ANDROID_DEVICE").unwrap_or_else(|_| "emulator-5554".into()))
             .arg("--dart-define-from-file")
             .arg(&definitions)

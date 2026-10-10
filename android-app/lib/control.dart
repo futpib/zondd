@@ -146,7 +146,9 @@ class SshControl implements ControlApi {
           : await IdentityStore().get(profile.keyId);
       final pem = identity?.pem ?? profile.privateKey;
       final passphrase = identity?.passphrase ?? profile.passphrase;
-      final identities = pem.trim().isEmpty
+      final identities = identity != null
+          ? identity.createIdentities()
+          : pem.trim().isEmpty
           ? null
           : SSHKeyPair.fromPem(pem, passphrase.isEmpty ? null : passphrase);
       if (profile.iroh) {

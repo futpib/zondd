@@ -386,7 +386,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
                 .map(
                   (k) => DropdownMenuItem(
                     value: k.id,
-                    child: Text(k.name, overflow: TextOverflow.ellipsis),
+                    child: Text(k.label, overflow: TextOverflow.ellipsis),
                   ),
                 )
                 .toList(),
@@ -682,7 +682,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   items: keys
                       .map(
                         (k) =>
-                            DropdownMenuItem(value: k.id, child: Text(k.name)),
+                            DropdownMenuItem(value: k.id, child: Text(k.label)),
                       )
                       .toList(),
                   onChanged: (v) => setState(() => keyId = v),
