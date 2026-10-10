@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Exercise QR import using real frames from an emulator's virtual-scene camera."""
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image, ImageOps
@@ -38,10 +41,50 @@ def camera_pose(path):
     path.write_bytes(struct.pack(">I", len(header)) + header)
 
 
-with tempfile.TemporaryDirectory(prefix="zondd-qr-") as directory:
-    previous_pose = Path(directory) / "previous-pose"
-    adb("emu", "automation", "record", str(previous_pose))
-    adb("emu", "automation", "stop-record")
+def wait_for_camera_close():
+    # Flutter route teardown does not await the native camera's disposal.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        cameras = adb("shell", "dumpsys", "media.camera")
+        if re.search(rb"Active Camera Clients:\s*\[\s*\]", cameras):
+            return
+        time.sleep(0.1)
+    raise RuntimeError("Previous QR scanner did not release the camera")
+
+
+@contextmanager
+def preserved_camera_pose():
+    name = f"zondd-qr-{uuid.uuid4().hex}.recording"
+    avd_path = adb("emu", "avd", "path").decode().splitlines()[0].strip()
+    avd = Path(avd_path)
+    if not avd.is_absolute() or not avd.is_dir():
+        raise RuntimeError(f"Cannot access emulator AVD directory: {avd_path}")
+    # New emulators restrict recording to a bare filename under the AVD.
+    # Older versions resolve bare recording names relative to the user's home.
+    candidates = [avd / "console_out" / name, avd / name, Path.home() / name]
+    previous_pose = None
+    recording = False
+    try:
+        adb("emu", "automation", "record", name)
+        recording = True
+        adb("emu", "automation", "stop-record")
+        recording = False
+        previous_pose = next((path for path in candidates if path.is_file()), None)
+        if previous_pose is None:
+            raise RuntimeError(f"Emulator did not create the pose recording {name}")
+        yield
+    finally:
+        try:
+            if recording:
+                adb("emu", "automation", "stop-record")
+            if previous_pose is not None:
+                adb("emu", "automation", "play", str(previous_pose))
+        finally:
+            for path in candidates:
+                path.unlink(missing_ok=True)
+
+
+with tempfile.TemporaryDirectory(prefix="zondd-qr-") as directory, preserved_camera_pose():
     pose = Path(directory) / "camera-pose"
     camera_pose(pose)
     adb("emu", "automation", "play", str(pose))
@@ -53,6 +96,7 @@ with tempfile.TemporaryDirectory(prefix="zondd-qr-") as directory:
                 self.send_error(400)
                 return
             try:
+                wait_for_camera_close()
                 with tempfile.NamedTemporaryFile(
                     suffix=".png", dir=directory, delete=False
                 ) as image:
@@ -99,5 +143,4 @@ with tempfile.TemporaryDirectory(prefix="zondd-qr-") as directory:
         server.server_close()
         thread.join()
         adb("emu", "virtualscene-image", "wall")
-        adb("emu", "automation", "play", str(previous_pose))
     raise SystemExit(result.returncode)
