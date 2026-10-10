@@ -39,6 +39,27 @@ fn begin(
     (process, File::from(pty.master))
 }
 
+fn begin_revoke(env: &TestEnv, key: Option<&OsStr>, keys: &Path) -> (Process, File) {
+    let pty = openpty(None, None).unwrap();
+    let slave = File::from(pty.slave);
+    let mut command = env.cli();
+    command.arg("revoke-key");
+    if let Some(key) = key {
+        command.arg(key);
+    } else {
+        command.arg("--all");
+    }
+    let process = Process::spawn(
+        command
+            .arg("--authorized-keys")
+            .arg(keys)
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave),
+    );
+    (process, File::from(pty.master))
+}
+
 #[test]
 #[ignore = "requires ssh-keygen"]
 fn inline_public_key_is_reviewed_and_installed_without_a_file_argument() {
@@ -60,7 +81,11 @@ fn inline_public_key_is_reviewed_and_installed_without_a_file_argument() {
 }
 
 fn key(env: &TestEnv) -> std::path::PathBuf {
-    let key = env.dir.path().join("caller");
+    key_named(env, "caller")
+}
+
+fn key_named(env: &TestEnv, name: &str) -> std::path::PathBuf {
+    let key = env.dir.path().join(name);
     checked(
         Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "", "-f"])
@@ -68,6 +93,100 @@ fn key(env: &TestEnv) -> std::path::PathBuf {
         0,
     );
     key.with_extension("pub")
+}
+
+#[test]
+#[ignore = "requires ssh-keygen"]
+fn revoke_one_and_all_only_remove_zondd_bridge_entries() {
+    let env = TestEnv::new();
+    let first = key(&env);
+    let second = key_named(&env, "second");
+    let first_public = fs::read_to_string(&first).unwrap();
+    let second_public = fs::read_to_string(&second).unwrap();
+    let keys = env.dir.path().join("authorized_keys");
+    let config = env.dir.path().join("missing.toml");
+    for key in [&first, &second] {
+        let (mut process, mut terminal) = begin(&env, key, &keys, &config, "default");
+        read_until(&mut terminal, b"[y/N] ");
+        terminal.write_all(b"y\n").unwrap();
+        assert!(process.wait(Duration::from_secs(5)).success());
+    }
+    let managed = fs::read_to_string(&keys).unwrap();
+    let unrelated = format!(
+        "# keep this comment\n{first_public}from=\"127.0.0.1\" {first_public}restrict,command=\"/usr/bin/id\" {second_public}"
+    );
+    let legacy = format!(
+        "restrict,command=\"/home/old/.cargo/bin/zondd bridge --principal default\" {first_public}"
+    );
+    fs::write(&keys, format!("{managed}{unrelated}{legacy}")).unwrap();
+    let original = fs::read_to_string(&keys).unwrap();
+    let (mut process, mut terminal) =
+        begin_revoke(&env, Some(OsStr::new(first_public.trim())), &keys);
+    let preview = read_until(&mut terminal, b"[y/N] ");
+    assert!(String::from_utf8_lossy(&preview).contains("-restrict,command="));
+    terminal.write_all(b"n\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    assert_eq!(fs::read_to_string(&keys).unwrap(), original);
+    let (mut process, mut terminal) = begin_revoke(&env, Some(first.as_os_str()), &keys);
+    read_until(&mut terminal, b"[y/N] ");
+    terminal.write_all(b"y\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    let remaining = fs::read_to_string(&keys).unwrap();
+    assert!(!remaining.contains(&legacy));
+    assert!(remaining.contains(&unrelated));
+    assert_eq!(remaining.matches("restrict,command=").count(), 2);
+    let (mut process, mut terminal) = begin_revoke(&env, Some(first.as_os_str()), &keys);
+    read_until(&mut terminal, b"no changes.");
+    assert!(process.wait(Duration::from_secs(5)).success());
+    assert_eq!(fs::read_to_string(&keys).unwrap(), remaining);
+    let (mut process, mut terminal) = begin_revoke(&env, None, &keys);
+    read_until(&mut terminal, b"[y/N] ");
+    terminal.write_all(b"yes\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    assert_eq!(fs::read_to_string(&keys).unwrap(), unrelated);
+    assert_eq!(
+        fs::metadata(&keys).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let actions = env.request("admin", json!({"method":"actions"}));
+    for action in ["control.revoke_key", "control.revoke_all_keys"] {
+        assert!(
+            actions["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["action"] == action)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires ssh-keygen"]
+fn revoke_rejects_concurrent_edits_and_symlinks() {
+    let env = TestEnv::new();
+    let key = key(&env);
+    let keys = env.dir.path().join("authorized_keys");
+    let config = env.dir.path().join("missing.toml");
+    let (mut process, mut terminal) = begin(&env, &key, &keys, &config, "default");
+    read_until(&mut terminal, b"[y/N] ");
+    terminal.write_all(b"y\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    let original = fs::read_to_string(&keys).unwrap();
+    let (mut process, mut terminal) = begin_revoke(&env, None, &keys);
+    read_until(&mut terminal, b"[y/N] ");
+    fs::write(&keys, format!("{original}# concurrent edit\n")).unwrap();
+    terminal.write_all(b"y\n").unwrap();
+    assert_eq!(process.wait(Duration::from_secs(5)).code(), Some(125));
+    assert!(
+        fs::read_to_string(&keys)
+            .unwrap()
+            .ends_with("# concurrent edit\n")
+    );
+    let link = env.dir.path().join("linked_keys");
+    std::os::unix::fs::symlink(&keys, &link).unwrap();
+    let (mut process, mut terminal) = begin_revoke(&env, None, &link);
+    read_until(&mut terminal, b"symlink");
+    assert_eq!(process.wait(Duration::from_secs(5)).code(), Some(125));
 }
 
 #[test]
@@ -182,4 +301,10 @@ fn enrolled_key_runs_the_protocol_and_cannot_run_a_shell_command() {
             .arg("/usr/bin/id"),
         1,
     );
+    let (mut process, mut terminal) = begin_revoke(&ssh.env, Some(key.as_os_str()), &keys);
+    read_until(&mut terminal, b"[y/N] ");
+    terminal.write_all(b"y\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    assert_eq!(fs::read_to_string(&keys).unwrap(), original);
+    checked(ssh.remote("unknown").arg("permissions"), 125);
 }

@@ -197,7 +197,9 @@ The binary defaults to `zondd` beside the running `zondctl`; the runtime directo
 comes from the selected policy/environment. Only authorized_keys is changed;
 the selected principal must already exist, or be the built-in `default`.
 Enrollment is logged when the daemon is reachable. Keep a separate ordinary SSH
-key for management. For manual installation, the equivalent entry is:
+key for management.
+
+For manual installation, the equivalent entry is:
 
 ```text
 restrict,command="/home/alice/.cargo/bin/zondd bridge --principal default" ssh-ed25519 AAAA... caller-key
@@ -208,6 +210,22 @@ command. `restrict` disables forwarding, PTYs, agent/X11 forwarding and user
 SSH rc execution for that key. The bridge rejects nonempty
 `SSH_ORIGINAL_COMMAND`; the caller opens a session without a shell command and
 writes protocol frames. Other keys can retain their normal SSH access.
+
+To remove one caller or every zondd bridge entry from the selected
+`authorized_keys` file:
+
+```sh
+zondctl revoke-key /path/to/caller.pub
+zondctl revoke-key 'ssh-ed25519 AAAA... caller@example'
+zondctl revoke-key --all
+# For a nondefault key file, add --authorized-keys /path/to/authorized_keys.
+```
+
+Revocation shows a diff and requires terminal confirmation. It removes only
+recognized zondd bridge entries, leaving ordinary SSH keys and other forced
+commands untouched. Concurrent file edits abort the change. Revocation affects
+new SSH connections; it does not disconnect a session already authenticated.
+The daemon records the change when reachable.
 
 The forced command binds the key to a principal socket; the daemon also checks
 the local peer UID. The remote protocol cannot select another principal or

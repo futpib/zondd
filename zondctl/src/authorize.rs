@@ -28,10 +28,33 @@ pub struct Options {
     zondd: Option<PathBuf>,
 }
 
+#[derive(Args)]
+pub struct RevokeOptions {
+    /// An OpenSSH public key line or file; omit with --all.
+    #[arg(
+        value_name = "KEY_OR_FILE",
+        required_unless_present = "all",
+        conflicts_with = "all"
+    )]
+    public_key: Option<PathBuf>,
+    /// Remove every zondd-managed key entry in the selected file.
+    #[arg(long)]
+    all: bool,
+    #[arg(long, default_value_os_t = paths::home_dir().join(".ssh/authorized_keys"))]
+    authorized_keys: PathBuf,
+}
+
 #[derive(PartialEq)]
 struct Snapshot {
     text: String,
     identity: Option<(u64, u64, u32)>,
+}
+
+struct PublicKey {
+    text: String,
+    kind: String,
+    blob: String,
+    fingerprint: String,
 }
 
 fn snapshot(path: &Path) -> Result<Snapshot> {
@@ -84,6 +107,48 @@ fn looks_like_public_key(value: &str) -> bool {
     fields.next().is_some_and(key_type) && fields.next().is_some()
 }
 
+fn load_public_key(input: &Path) -> Result<PublicKey> {
+    let public = if let Some(value) = input.to_str().filter(|value| looks_like_public_key(value)) {
+        value.to_owned()
+    } else {
+        let mut public = String::new();
+        File::open(input)
+            .context("read public key")?
+            .take(64 * 1024 + 1)
+            .read_to_string(&mut public)?;
+        public
+    };
+    ensure!(public.len() <= 64 * 1024, "public key exceeds 64 KiB");
+    let public = public.trim();
+    ensure!(
+        !public.chars().any(char::is_control),
+        "expected one public key line without control characters"
+    );
+    let key: Vec<_> = public.split_whitespace().collect();
+    ensure!(
+        key.len() >= 2 && key_type(key[0]),
+        "expected an OpenSSH public key without authorized_keys options"
+    );
+    ensure!(
+        !key[0].contains("-cert-"),
+        "use the plain public key, not an SSH certificate"
+    );
+    let mut key_file = tempfile::NamedTempFile::new()?;
+    writeln!(key_file, "{} {}", key[0], key[1])?;
+    let check = Command::new("ssh-keygen")
+        .args(["-l", "-f"])
+        .arg(key_file.path())
+        .output()
+        .context("ssh-keygen is required to validate the public key")?;
+    ensure!(check.status.success(), "invalid SSH public key");
+    Ok(PublicKey {
+        text: public.to_owned(),
+        kind: key[0].to_owned(),
+        blob: key[1].to_owned(),
+        fingerprint: String::from_utf8_lossy(&check.stdout).trim().to_owned(),
+    })
+}
+
 // Options can contain quoted spaces. Only the first three fields are needed to identify a key.
 fn fields(line: &str) -> Vec<&str> {
     let mut fields = Vec::new();
@@ -113,6 +178,87 @@ fn fields(line: &str) -> Vec<&str> {
         fields.push(&line[start..]);
     }
     fields
+}
+
+fn managed_entry_key(line: &str) -> Option<(&str, &str)> {
+    let parts = fields(line.trim());
+    let options = parts.first()?;
+    let command = options
+        .strip_prefix("restrict,command=\"")?
+        .strip_suffix('"')?;
+    let current = command
+        .split_once(" bridge --runtime-dir '")
+        .and_then(|(program, rest)| {
+            let (runtime, principal) = rest.rsplit_once("' --principal '")?;
+            let principal = principal.strip_suffix('\'')?;
+            (program.starts_with("'/")
+                && program.ends_with('\'')
+                && runtime.starts_with('/')
+                && libzond::config::valid_name(principal))
+            .then_some(())
+        });
+    let legacy = command
+        .split_once(" bridge --principal ")
+        .is_some_and(|(program, principal)| {
+            program.starts_with('/')
+                && program.ends_with("/zondd")
+                && libzond::config::valid_name(principal)
+        });
+    if current.is_none() && !legacy {
+        return None;
+    }
+    let kind = *parts.get(1)?;
+    let blob = *parts.get(2)?;
+    (key_type(kind) && !blob.is_empty()).then_some((kind, blob))
+}
+
+fn confirm_change(path: &Path, before: &str, after: &str) -> Result<bool> {
+    let label = path.to_string_lossy();
+    print!(
+        "{}",
+        TextDiff::from_lines(before, after)
+            .unified_diff()
+            .header(&label, &label)
+    );
+    print!("Apply this authorized_keys change? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes") {
+        println!("Not applied.");
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn persist_change(path: &Path, before: &Snapshot, after: &str) -> Result<()> {
+    let parent = path.parent().context("authorized_keys has no parent")?;
+    paths::create_private_dir_all(parent)?;
+    let lock_path = path.with_extension("zondd.lock");
+    paths::trusted_location(&lock_path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&lock_path)?;
+    lock.lock_exclusive()?;
+    ensure!(
+        snapshot(path)? == *before,
+        "authorized_keys changed during review; run the command again"
+    );
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.as_file().set_permissions(fs::Permissions::from_mode(
+        before.identity.map_or(0o600, |(_, _, mode)| mode & 0o777),
+    ))?;
+    file.write_all(after.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(path)?;
+    File::open(parent)?.sync_all()?;
+    println!("Updated {}. sshd does not need a restart.", path.display());
+    Ok(())
 }
 
 pub async fn run(options: &Options) -> Result<u8> {
@@ -151,43 +297,7 @@ pub async fn run(options: &Options) -> Result<u8> {
         !binary.chars().chain(runtime.chars()).any(char::is_control),
         "control character in bridge path"
     );
-    let public = if let Some(value) = options
-        .public_key
-        .to_str()
-        .filter(|value| looks_like_public_key(value))
-    {
-        value.to_owned()
-    } else {
-        let mut public = String::new();
-        File::open(&options.public_key)
-            .context("read public key")?
-            .take(64 * 1024 + 1)
-            .read_to_string(&mut public)?;
-        public
-    };
-    ensure!(public.len() <= 64 * 1024, "public key exceeds 64 KiB");
-    let public = public.trim();
-    ensure!(
-        !public.chars().any(char::is_control),
-        "expected one public key line without control characters"
-    );
-    let key: Vec<_> = public.split_whitespace().collect();
-    ensure!(
-        key.len() >= 2 && key_type(key[0]),
-        "expected an OpenSSH public key without authorized_keys options"
-    );
-    ensure!(
-        !key[0].contains("-cert-"),
-        "use the plain public key, not an SSH certificate"
-    );
-    let mut key_file = tempfile::NamedTempFile::new()?;
-    writeln!(key_file, "{} {}", key[0], key[1])?;
-    let check = Command::new("ssh-keygen")
-        .args(["-l", "-f"])
-        .arg(key_file.path())
-        .output()
-        .context("ssh-keygen is required to validate the public key")?;
-    ensure!(check.status.success(), "invalid SSH public key");
+    let public = load_public_key(&options.public_key)?;
     let command = format!(
         "{} bridge --runtime-dir {} --principal {}",
         quote(binary),
@@ -195,15 +305,17 @@ pub async fn run(options: &Options) -> Result<u8> {
         quote(&options.principal)
     );
     let command = command.replace('"', "\\\"");
-    let entry = format!("restrict,command=\"{command}\" {public}\n");
+    let entry = format!("restrict,command=\"{command}\" {}\n", public.text);
     let path = std::path::absolute(&options.authorized_keys)?;
     let before = snapshot(&path)?;
     let mut after = String::new();
     let mut installed = false;
     for line in before.text.split_inclusive('\n') {
         let parts = fields(line.trim());
-        let plain = parts.first() == Some(&key[0]) && parts.get(1) == Some(&key[1]);
-        let with_options = parts.get(1) == Some(&key[0]) && parts.get(2) == Some(&key[1]);
+        let plain = parts.first() == Some(&public.kind.as_str())
+            && parts.get(1) == Some(&public.blob.as_str());
+        let with_options = parts.get(1) == Some(&public.kind.as_str())
+            && parts.get(2) == Some(&public.blob.as_str());
         if plain || with_options {
             ensure!(
                 !with_options || line.trim_end() == entry.trim_end(),
@@ -227,67 +339,80 @@ pub async fn run(options: &Options) -> Result<u8> {
         println!("Key is already configured; no changes.");
         return Ok(0);
     }
-    println!(
-        "Caller: {}\nKey: {}",
-        options.principal,
-        String::from_utf8_lossy(&check.stdout).trim()
-    );
+    println!("Caller: {}\nKey: {}", options.principal, public.fingerprint);
     println!(
         "This key will accept only the zondd protocol. Keep a separate normal SSH login for management."
     );
-    let label = path.to_string_lossy();
-    print!(
-        "{}",
-        TextDiff::from_lines(&before.text, &after)
-            .unified_diff()
-            .header(&label, &label)
-    );
-    print!("Apply this authorized_keys change? [y/N] ");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    if !matches!(answer.trim(), "y" | "Y" | "yes") {
-        println!("Not applied.");
+    if !confirm_change(&path, &before.text, &after)? {
         return Ok(0);
     }
     ensure!(
         libzond::config::read(&config_path)? == config_text,
         "policy changed during review; run authorize-key again"
     );
-    let parent = path.parent().context("authorized_keys has no parent")?;
-    paths::create_private_dir_all(parent)?;
-    let lock_path = path.with_extension("zondd.lock");
-    paths::trusted_location(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&lock_path)?;
-    lock.lock_exclusive()?;
-    ensure!(
-        snapshot(&path)? == before,
-        "authorized_keys changed during review; run authorize-key again"
-    );
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    file.as_file().set_permissions(fs::Permissions::from_mode(
-        before.identity.map_or(0o600, |(_, _, mode)| mode & 0o777),
-    ))?;
-    file.write_all(after.as_bytes())?;
-    file.as_file().sync_all()?;
-    file.persist(&path)?;
-    File::open(parent)?.sync_all()?;
-    println!("Updated {}. sshd does not need a restart.", path.display());
+    persist_change(&path, &before, &after)?;
     if let Ok(mut client) = libzondctl::Client::local(&config.runtime_dir.join("admin.sock")).await
     {
         let result = client.request(libzond::Request::Audit {
             action: "authorize_key".into(),
-            detail: serde_json::json!({"path":path,"principal":options.principal,"fingerprint":String::from_utf8_lossy(&check.stdout).trim()}),
+            detail: serde_json::json!({"path":path,"principal":options.principal,"fingerprint":public.fingerprint}),
         }).await;
         if !matches!(result, Ok(libzond::Event::Audited)) {
             eprintln!("Key installed, but could not record management action: {result:?}");
+        }
+    }
+    Ok(0)
+}
+
+pub async fn revoke(options: &RevokeOptions, runtime_dir: &Path) -> Result<u8> {
+    ensure!(
+        std::io::stdin().is_terminal(),
+        "revoke-key requires an interactive terminal to approve the diff"
+    );
+    let public = options
+        .public_key
+        .as_deref()
+        .map(load_public_key)
+        .transpose()?;
+    let path = std::path::absolute(&options.authorized_keys)?;
+    let before = snapshot(&path)?;
+    let mut after = String::new();
+    let mut removed = 0;
+    for line in before.text.split_inclusive('\n') {
+        let matches = managed_entry_key(line).is_some_and(|(kind, blob)| {
+            options.all
+                || public
+                    .as_ref()
+                    .is_some_and(|key| key.kind == kind && key.blob == blob)
+        });
+        if matches {
+            removed += 1;
+        } else {
+            after.push_str(line);
+        }
+    }
+    if removed == 0 {
+        println!("No matching zondd-managed keys; no changes.");
+        return Ok(0);
+    }
+    println!("Removing {removed} zondd-managed key entry(s).");
+    if !confirm_change(&path, &before.text, &after)? {
+        return Ok(0);
+    }
+    persist_change(&path, &before, &after)?;
+    if let Ok(mut client) = libzondctl::Client::local(&runtime_dir.join("admin.sock")).await {
+        let result = client
+            .request(libzond::Request::Audit {
+                action: if options.all {
+                    "revoke_all_keys".into()
+                } else {
+                    "revoke_key".into()
+                },
+                detail: serde_json::json!({"path": path, "count": removed, "fingerprint": public.map(|key| key.fingerprint)}),
+            })
+            .await;
+        if !matches!(result, Ok(libzond::Event::Audited)) {
+            eprintln!("Key removed, but could not record management action: {result:?}");
         }
     }
     Ok(0)

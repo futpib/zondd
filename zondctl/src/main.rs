@@ -51,6 +51,8 @@ struct Cli {
 enum Action {
     /// Preview and confirm a restricted caller key in this account's authorized_keys.
     AuthorizeKey(authorize::Options),
+    /// Remove one or all zondd-managed entries from this account's authorized_keys.
+    RevokeKey(authorize::RevokeOptions),
     /// Execute an absolute program with argv, subject to policy. No implicit shell.
     Exec {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
@@ -173,6 +175,13 @@ async fn run(cli: Cli) -> Result<u8> {
         );
         return authorize::run(options).await;
     }
+    if let Action::RevokeKey(options) = &cli.command {
+        ensure!(
+            cli.host.is_none() && cli.socket.is_none() && cli.principal.is_none(),
+            "revoke-key runs on the receiving host; use a normal SSH login with a terminal"
+        );
+        return authorize::revoke(options, &cli.runtime_dir).await;
+    }
     if let Action::Control { config } = &cli.command {
         ensure!(
             cli.host.is_none() && cli.socket.is_none() && cli.principal.is_none(),
@@ -250,7 +259,12 @@ async fn run(cli: Cli) -> Result<u8> {
             before: *before,
             limit: *limit,
         },
-        Action::Review | Action::Control { .. } | Action::AuthorizeKey(_) => unreachable!(),
+        Action::Review
+        | Action::Control { .. }
+        | Action::AuthorizeKey(_)
+        | Action::RevokeKey(_) => {
+            unreachable!()
+        }
     };
     let mut client = cli.connect().await?;
     client.send(request).await?;
