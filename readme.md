@@ -177,6 +177,8 @@ Enroll a caller public key on the receiver, as the daemon's Unix user:
 
 ```sh
 zondctl authorize-key /path/to/caller.pub
+# Or paste the complete public key as a single quoted argument, without a file:
+zondctl authorize-key 'ssh-ed25519 AAAA... caller@example'
 # To select a principal already defined in a custom policy:
 zondctl authorize-key /path/to/caller.pub --principal automation
 ```

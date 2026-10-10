@@ -13,7 +13,8 @@ use std::{
 
 #[derive(Args)]
 pub struct Options {
-    /// A single OpenSSH public key file (never a private key).
+    /// A single OpenSSH public key line or a file containing one (never a private key).
+    #[arg(value_name = "KEY_OR_FILE")]
     public_key: PathBuf,
     /// Existing policy principal; the built-in policy provides "default".
     #[arg(long, default_value = "default")]
@@ -72,6 +73,15 @@ fn snapshot(path: &Path) -> Result<Snapshot> {
 
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn key_type(field: &str) -> bool {
+    field.starts_with("ssh-") || field.starts_with("ecdsa-") || field.starts_with("sk-")
+}
+
+fn looks_like_public_key(value: &str) -> bool {
+    let mut fields = value.split_whitespace();
+    fields.next().is_some_and(key_type) && fields.next().is_some()
 }
 
 // Options can contain quoted spaces. Only the first three fields are needed to identify a key.
@@ -141,11 +151,20 @@ pub async fn run(options: &Options) -> Result<u8> {
         !binary.chars().chain(runtime.chars()).any(char::is_control),
         "control character in bridge path"
     );
-    let mut public = String::new();
-    File::open(&options.public_key)
-        .context("read public key")?
-        .take(64 * 1024 + 1)
-        .read_to_string(&mut public)?;
+    let public = if let Some(value) = options
+        .public_key
+        .to_str()
+        .filter(|value| looks_like_public_key(value))
+    {
+        value.to_owned()
+    } else {
+        let mut public = String::new();
+        File::open(&options.public_key)
+            .context("read public key")?
+            .take(64 * 1024 + 1)
+            .read_to_string(&mut public)?;
+        public
+    };
     ensure!(public.len() <= 64 * 1024, "public key exceeds 64 KiB");
     let public = public.trim();
     ensure!(
@@ -154,10 +173,7 @@ pub async fn run(options: &Options) -> Result<u8> {
     );
     let key: Vec<_> = public.split_whitespace().collect();
     ensure!(
-        key.len() >= 2
-            && (key[0].starts_with("ssh-")
-                || key[0].starts_with("ecdsa-")
-                || key[0].starts_with("sk-")),
+        key.len() >= 2 && key_type(key[0]),
         "expected an OpenSSH public key without authorized_keys options"
     );
     ensure!(

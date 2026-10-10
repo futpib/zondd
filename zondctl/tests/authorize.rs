@@ -2,6 +2,7 @@ use libzondtest::{
     Process, SshEnv, TestEnv, checked, nix::pty::openpty, read_until, serde_json::json,
 };
 use std::{
+    ffi::OsStr,
     fs::{self, File},
     io::Write,
     os::unix::fs::PermissionsExt,
@@ -12,7 +13,7 @@ use std::{
 
 fn begin(
     env: &TestEnv,
-    key: &Path,
+    key: impl AsRef<OsStr>,
     keys: &Path,
     config: &Path,
     principal: &str,
@@ -36,6 +37,26 @@ fn begin(
             .stderr(slave),
     );
     (process, File::from(pty.master))
+}
+
+#[test]
+#[ignore = "requires ssh-keygen"]
+fn inline_public_key_is_reviewed_and_installed_without_a_file_argument() {
+    let env = TestEnv::new();
+    let key = key(&env);
+    let public = fs::read_to_string(&key).unwrap();
+    let config = env.dir.path().join("missing/config.toml");
+    let keys = env.dir.path().join("new-ssh/authorized_keys");
+    let (mut process, mut terminal) = begin(&env, public.trim(), &keys, &config, "default");
+    let preview = read_until(&mut terminal, b"[y/N] ");
+    assert!(String::from_utf8_lossy(&preview).contains(public.trim()));
+    assert!(!keys.exists());
+    terminal.write_all(b"y\n").unwrap();
+    assert!(process.wait(Duration::from_secs(5)).success());
+    assert!(fs::read_to_string(&keys).unwrap().contains(public.trim()));
+    let (mut process, mut terminal) = begin(&env, public.trim(), &keys, &config, "default");
+    read_until(&mut terminal, b"no changes");
+    assert!(process.wait(Duration::from_secs(5)).success());
 }
 
 fn key(env: &TestEnv) -> std::path::PathBuf {
