@@ -78,8 +78,7 @@ GitHub Actions runs these workflows on pull requests and pushes to `master`:
   architectures. This also runs weekly and can be started manually. It uses
   public Iroh discovery/relays, so network failures fail the transport job.
 - **Dependency audit**: RustSec checks for both Rust lockfiles when they change,
-  weekly, or on manual dispatch. Dependabot proposes weekly updates for Rust,
-  Flutter and GitHub Actions dependencies.
+  weekly, or on manual dispatch.
 
 Tests run as the runner's ordinary user. CI installs test prerequisites and
 starts that user's systemd manager; the daemon and approval tests do not run as
