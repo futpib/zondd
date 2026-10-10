@@ -515,7 +515,35 @@ impl SshEnv {
                 .map(str::to_owned);
             endpoint.is_some()
         });
-        endpoint.unwrap()
+        let endpoint = endpoint.unwrap();
+        // The CLI prints its endpoint before discovery publication completes.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let result = pipe_output(
+                Command::new(&self.env.ctl)
+                    .arg("--host")
+                    .arg(format!("{}@{endpoint}", self.env.user.name))
+                    .arg("--iroh")
+                    .arg("--identity")
+                    .arg(self.env.dir.path().join("ops-key"))
+                    .arg("--ssh-config")
+                    .arg(&self.config)
+                    .args(["--json", "permissions"]),
+            );
+            if result.status.success() {
+                let event: Value = serde_json::from_slice(&result.stdout).unwrap();
+                assert_eq!(event["type"], "permissions");
+                assert_eq!(event["permissions"]["principal"], "ops");
+                return endpoint;
+            }
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("No addressing information available")
+                    && Instant::now() < deadline,
+                "Iroh server did not become reachable: {result:?}"
+            );
+            thread::sleep(Duration::from_secs(1));
+        }
     }
 }
 

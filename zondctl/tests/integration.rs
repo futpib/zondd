@@ -8,7 +8,7 @@ use std::{
     fs::File,
     io::Write,
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[test]
@@ -210,31 +210,19 @@ fn review_approves_and_denies_through_a_real_terminal() {
 fn iroh_ssh_operation_completes_and_proxy_exits() {
     let ssh = SshEnv::new();
     let endpoint = ssh.start_iroh();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let result = pipe_output(
-            Command::new(&ssh.env.ctl)
-                .arg("--host")
-                .arg(format!("{}@{endpoint}", ssh.env.user.name))
-                .arg("--iroh")
-                .arg("--identity")
-                .arg(ssh.env.dir.path().join("ops-key"))
-                .arg("--ssh-config")
-                .arg(&ssh.config)
-                .args(["invoke", "greet", "world"]),
-        );
-        if result.status.success() {
-            assert_eq!(result.stdout, b"hello world");
-            break;
-        }
-        // The server prints its endpoint before discovery publication completes.
-        assert!(
-            String::from_utf8_lossy(&result.stderr).contains("No addressing information available")
-                && Instant::now() < deadline,
-            "{result:?}"
-        );
-        std::thread::sleep(Duration::from_secs(1));
-    }
+    let result = pipe_output(
+        Command::new(&ssh.env.ctl)
+            .arg("--host")
+            .arg(format!("{}@{endpoint}", ssh.env.user.name))
+            .arg("--iroh")
+            .arg("--identity")
+            .arg(ssh.env.dir.path().join("ops-key"))
+            .arg("--ssh-config")
+            .arg(&ssh.config)
+            .args(["invoke", "greet", "world"]),
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"hello world");
     for args in [
         vec!["permissions"],
         vec!["check", "invoke", "greet", "world"],

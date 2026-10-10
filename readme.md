@@ -83,10 +83,11 @@ GitHub Actions runs these workflows on pull requests and pushes to `master`:
 Tests run as the runner's ordinary user. CI installs test prerequisites and
 starts that user's systemd manager; the daemon and approval tests do not run as
 root. Android E2E uses disposable fixture keys and does not upload its test APK.
-The CLI transport tests use a pinned upstream Iroh SSH CLI. Android E2E builds
-an ephemeral test server from the app's native lockfile, using the same pinned
-Iroh SSH library as the app. These pins use different, incompatible Iroh wire
-versions; an Android connection requires a server compatible with Iroh 0.96.1.
+The CLI transport tests and Android app pin `futpib/iroh-ssh` at
+`f7e04ea411b198a334d118675de5e015ae527dae`, using Iroh 1.3.0, matching
+`iroh-ssh-android`. Android E2E builds an ephemeral test server from the app's
+native lockfile. Android connections require a server with a compatible Iroh
+wire version.
 
 **Release Linux binaries** runs when a `vMAJOR.MINOR.PATCH` tag is pushed, or when
 manually dispatched against such a tag. The version must match the Rust workspace

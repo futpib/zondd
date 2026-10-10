@@ -12,8 +12,8 @@ use std::{
 fn android_management_over_ssh_and_iroh() {
     let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../android-app");
     let target = app.join("native/target");
-    // The CLI transport tests use a different Iroh wire version. Build this server
-    // from the app's lockfile so the emulator exercises its pinned protocol.
+    // Build this server from the app's lockfile so the emulator exercises its
+    // pinned protocol, independently of any installed Iroh CLI.
     let mut build = Process::spawn(
         Command::new("cargo")
             .args(["build", "--locked", "--manifest-path"])

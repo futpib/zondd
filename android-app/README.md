@@ -44,9 +44,10 @@ updates. Both would break the version/signature continuity Obtainium relies on.
 
 ## Connect
 
-Iroh connections use the same pinned bridge as `iroh-ssh-android`, with Iroh
-0.96.1. The receiving Iroh SSH server must use a compatible wire version;
-upstream `iroh-ssh` 0.2.12 uses Iroh 0.94 and cannot connect to this bridge.
+Iroh connections use the same pinned bridge as `iroh-ssh-android`:
+`futpib/iroh-ssh` at `f7e04ea411b198a334d118675de5e015ae527dae`
+(`iroh-ssh` 0.2.12, Iroh 1.3.0). The receiving Iroh SSH server must use a
+compatible wire version; CI tests the server built from this same revision.
 Plain SSH connections do not depend on Iroh versions.
 
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host

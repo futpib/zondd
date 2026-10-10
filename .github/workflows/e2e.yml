@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IROH_SSH_REV: bade3f7dbed4ca8dc364396b55f6a951cbd89938
+  IROH_SSH_REV: f7e04ea411b198a334d118675de5e015ae527dae
 
 jobs:
   iroh:
@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y openssh-server
           sudo mkdir -p /run/sshd
-          cargo install --git https://github.com/rustonbsd/iroh-ssh --rev "$IROH_SSH_REV" --locked iroh-ssh
+          cargo install --git https://github.com/futpib/iroh-ssh --rev "$IROH_SSH_REV" --locked iroh-ssh
       - run: cargo build --locked --workspace --bins
       - name: Test real SSH and Iroh transports
         run: cargo test --locked -p zondctl --test integration -- --ignored --test-threads=1
