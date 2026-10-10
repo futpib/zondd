@@ -103,16 +103,18 @@ users can also filter release titles with `^Android `.
 
 ## Configure the receiver
 
-For Arch Linux, the separate `zondd-git` AUR packaging repository builds the
-package from Git. It installs both binaries in `/usr/bin`, the user
-service in `/usr/lib/systemd/user`, and the example policy in
-`/usr/share/doc/zondd`. It does not create a policy, enroll SSH keys, or start
-the service. Once the source and AUR repositories are published:
+On Arch Linux, install the [`zondd-git`](https://aur.archlinux.org/packages/zondd-git)
+package from the AUR:
 
 ```sh
-git clone https://aur.archlinux.org/zondd-git.git
-cd zondd-git
-makepkg -si
+yay -S zondd-git
+```
+
+The package installs `zondd` and `zondctl` in `/usr/bin`, the systemd user
+service in `/usr/lib/systemd/user`, and the example policy in
+`/usr/share/doc/zondd`. To check the configuration and start the user service:
+
+```sh
 zondd check
 systemctl --user daemon-reload
 systemctl --user enable --now zondd.service
