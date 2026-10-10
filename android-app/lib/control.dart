@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'transport.dart';
@@ -126,6 +127,82 @@ abstract class ControlApi {
   Future<void> close();
 }
 
+class ConnectionLost implements Exception {
+  const ConnectionLost();
+  @override
+  String toString() => 'Connection lost. Reconnect to continue.';
+}
+
+/// Keeps the dashboard and its drafts alive while replacing the transport.
+/// Requests are never retried: a lost response may hide a completed mutation.
+class ControlConnection extends ChangeNotifier implements ControlApi {
+  ControlConnection(this._api, this._connect);
+  ControlApi? _api;
+  final Future<ControlApi> Function() _connect;
+  Future<void>? _reconnection;
+  bool disconnected = false, _closed = false;
+  bool get reconnecting => _reconnection != null;
+
+  @override
+  Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
+    final api = _api;
+    if (_closed || disconnected || reconnecting || api == null) {
+      throw const ConnectionLost();
+    }
+    try {
+      final result = await api.request(body);
+      if (_closed || api != _api) throw const ConnectionLost();
+      return result;
+    } on ConnectionLost {
+      if (!_closed && api == _api && !disconnected) {
+        disconnected = true;
+        notifyListeners();
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> reconnect() {
+    if (_closed) return Future.error(const ConnectionLost());
+    if (_reconnection != null) return _reconnection!;
+    final done = Completer<void>();
+    _reconnection = done.future;
+    disconnected = true;
+    notifyListeners();
+    () async {
+      try {
+        final old = _api;
+        _api = null;
+        await old?.close();
+        if (_closed) throw const ConnectionLost();
+        final next = await _connect();
+        if (_closed) {
+          await next.close();
+          throw const ConnectionLost();
+        }
+        _api = next;
+        disconnected = false;
+        done.complete();
+      } catch (error, stack) {
+        done.completeError(error, stack);
+      } finally {
+        _reconnection = null;
+        if (!_closed) notifyListeners();
+      }
+    }();
+    return done.future;
+  }
+
+  @override
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    final api = _api;
+    _api = null;
+    await api?.close();
+  }
+}
+
 typedef AuthenticationRequest =
     Future<List<String>?> Function(SSHUserInfoRequest request, bool retry);
 
@@ -140,6 +217,7 @@ class SshControl implements ControlApi {
   final SSHClient _ssh;
   final Profile profile;
   final int? _tunnel;
+  bool _closed = false;
 
   static Future<SshControl> connect(
     Profile profile,
@@ -267,6 +345,18 @@ class SshControl implements ControlApi {
 
   @override
   Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
+    try {
+      return await _request(body);
+    } on TimeoutException {
+      _ssh.close();
+      throw const ConnectionLost();
+    } catch (_) {
+      if (_ssh.isClosed) throw const ConnectionLost();
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> _request(Map<String, dynamic> body) async {
     final session = await _ssh
         .execute(command)
         .timeout(const Duration(seconds: 15));
@@ -317,6 +407,8 @@ class SshControl implements ControlApi {
 
   @override
   Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
     _ssh.close();
     if (_tunnel != null) await IrohTransport.disconnect(_tunnel);
   }

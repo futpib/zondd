@@ -27,6 +27,69 @@ void main() {
     config: fixture['config'] as String,
   );
 
+  for (final iroh in [false, true]) {
+    testWidgets('recover a closed ${iroh ? 'Iroh' : 'SSH'} session in place', (
+      tester,
+    ) async {
+      var connections = 0;
+      Future<SshControl> open() async {
+        connections++;
+        return SshControl.connect(
+          profile(iroh),
+          (_, fp) async => fp == fixture['fingerprint'],
+        );
+      }
+
+      final transport = await open();
+      final api = ControlConnection(transport, open);
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Dashboard(api: api, name: 'Recovery'),
+          ),
+        );
+        for (
+          var i = 0;
+          i < 200 && find.text('All caught up').evaluate().isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(find.text('All caught up'), findsOneWidget);
+        await transport.close();
+        for (
+          var i = 0;
+          i < 200 && find.text('Reconnect').evaluate().isEmpty;
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(
+          find.text('Connection lost. Reconnect to continue.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
+        for (
+          var i = 0;
+          i < 400 &&
+              (api.disconnected ||
+                  find.text('All caught up').evaluate().isEmpty);
+          i++
+        ) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(api.disconnected, isFalse);
+        expect(find.text('All caught up'), findsOneWidget);
+        expect(connections, 2);
+        expect((await api.request({'method': 'pending'}))['requests'], isEmpty);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await api.close();
+        api.dispose();
+      }
+    });
+  }
+
   testWidgets(
     'saved credentials connect through the normal SSH management UI',
     (tester) async {

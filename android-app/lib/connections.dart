@@ -174,75 +174,77 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
       busy = true;
       error = null;
     });
-    final authentication = AuthenticationDialog(context, Target.of(profile));
-    try {
-      final api = await SshControl.connect(
-        profile,
-        (type, fingerprint) async {
-          final saved = await store.hostKey(profile.hostIdentity),
-              key = '$type $fingerprint';
-          if (saved != null) {
-            if (saved != key) {
-              throw StateError(
-                'SSH host key changed for ${profile.host}.\nSaved: $saved\nReceived: $key',
-              );
-            }
-            return true;
+    Future<ControlApi> open() async {
+      final authentication = AuthenticationDialog(context, Target.of(profile));
+      return SshControl.connect(profile, (type, fingerprint) async {
+        final saved = await store.hostKey(profile.hostIdentity),
+            key = '$type $fingerprint';
+        if (saved != null) {
+          if (saved != key) {
+            throw StateError(
+              'SSH host key changed for ${profile.host}.\nSaved: $saved\nReceived: $key',
+            );
           }
-          if (!mounted) return false;
-          final trusted =
-              await showDialog<bool>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  icon: const Icon(Icons.fingerprint, size: 32),
-                  title: const Text('Trust SSH host key?'),
-                  content: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          profile.name,
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          profile.host,
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 20),
-                        Text(
-                          type,
-                          style: Theme.of(context).textTheme.labelMedium,
-                        ),
-                        const SizedBox(height: 8),
-                        SelectableText(fingerprint, style: mono),
-                        const SizedBox(height: 20),
-                        const Text(
-                          'Compare this fingerprint with your server. Future connections must use the same key.',
-                        ),
-                      ],
-                    ),
+          return true;
+        }
+        if (!mounted) return false;
+        final trusted =
+            await showDialog<bool>(
+              context: context,
+              builder: (context) => AlertDialog(
+                icon: const Icon(Icons.fingerprint, size: 32),
+                title: const Text('Trust SSH host key?'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        profile.name,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        profile.host,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        type,
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      SelectableText(fingerprint, style: mono),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Compare this fingerprint with your server. Future connections must use the same key.',
+                      ),
+                    ],
                   ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      child: const Text('Cancel'),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      child: const Text('Trust'),
-                    ),
-                  ],
                 ),
-              ) ??
-              false;
-          if (trusted) await store.trust(profile.hostIdentity, key);
-          return trusted;
-        },
-        onAuthenticationRequest: authentication.request,
-      ).whenComplete(authentication.close);
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Trust'),
+                  ),
+                ],
+              ),
+            ) ??
+            false;
+        if (trusted) await store.trust(profile.hostIdentity, key);
+        return trusted;
+      }, onAuthenticationRequest: authentication.request).whenComplete(
+        authentication.close,
+      );
+    }
+
+    try {
+      final api = ControlConnection(await open(), open);
       try {
         if (save &&
             !profiles.any(
@@ -265,13 +267,12 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
         );
       } finally {
         await api.close();
+        api.dispose();
       }
     } on AuthenticationCancelled {
       // Cancelling authentication returns to the connection list.
     } catch (e) {
       if (mounted) setState(() => error = '$e');
-    } finally {
-      authentication.close();
     }
     if (mounted) setState(() => busy = false);
   }

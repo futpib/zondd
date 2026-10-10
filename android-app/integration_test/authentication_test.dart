@@ -112,6 +112,17 @@ void main() {
           await answer(['wrong password']);
           await waitFor(tester, find.text('Authentication failed. Try again.'));
           await answer(['android test password']);
+          await waitFor(tester, find.text('All caught up'));
+          // Reconnection must create a fresh prompt, preserve the dashboard on
+          // cancellation, and reuse the saved host-key pin.
+          await tester.tap(find.byTooltip('Reconnect'));
+          await waitFor(tester, find.text('SSH password'));
+          await tester.tap(find.text('Cancel'));
+          await waitFor(tester, find.text('Authentication cancelled'));
+          expect(find.byType(Dashboard), findsOneWidget);
+          await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
+          await waitFor(tester, find.text('SSH password'));
+          await answer(['android test password']);
           await connected();
 
           // A stale saved password must be used only once before asking again.

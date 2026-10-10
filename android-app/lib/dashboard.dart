@@ -21,6 +21,28 @@ class Dashboard extends StatefulWidget {
 
 class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   Timer? timer;
+  ControlConnection? get connection =>
+      widget.api is ControlConnection ? widget.api as ControlConnection : null;
+  bool get reconnecting => connection?.reconnecting ?? false;
+  bool get disconnected => connection?.disconnected ?? false;
+
+  void connectionChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> reconnect() async {
+    if (acting || reconnecting) return;
+    await action(() async {
+      await connection!.reconnect();
+    });
+    if (!mounted || disconnected) return;
+    // Preserve the editor's draft and revision for the normal stale-save check.
+    if (tab == 0) await refresh();
+    if (tab == 1 && loadedConfig == null) await loadConfig();
+    if (tab == 2) await service('status');
+    if (tab == 3) await historyKey.currentState?.fetch();
+  }
+
   List<dynamic> queue = [];
   String? error, message;
   bool polling = false, acting = false;
@@ -38,6 +60,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    connection?.addListener(connectionChanged);
     refresh();
     timer = Timer.periodic(const Duration(seconds: 2), (_) => refresh());
   }
@@ -45,6 +68,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   @override
   void dispose() {
     timer?.cancel();
+    connection?.removeListener(connectionChanged);
     config.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -60,7 +84,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   }
 
   Future<void> refresh() async {
-    if (polling || acting || tab != 0) return;
+    if (polling || acting || disconnected || tab != 0) return;
     polling = true;
     try {
       final result = await widget.api.request({'method': 'pending'});
@@ -205,9 +229,11 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => PopScope(
-    canPop: loadedConfig == null || config.text == loadedConfig,
+    canPop:
+        !reconnecting && (loadedConfig == null || config.text == loadedConfig),
     onPopInvokedWithResult: (didPop, _) async {
       if (!didPop &&
+          !reconnecting &&
           await confirm(
             'Discard unsaved edits?',
             'Disconnect from ${widget.name}.',
@@ -234,9 +260,15 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
           ],
         ),
         actions: [
+          if (connection != null)
+            IconButton(
+              tooltip: 'Reconnect',
+              onPressed: acting || reconnecting ? null : reconnect,
+              icon: const Icon(Icons.sync),
+            ),
           IconButton(
             tooltip: 'Refresh',
-            onPressed: acting
+            onPressed: acting || disconnected
                 ? null
                 : () {
                     if (tab == 0) {
@@ -289,7 +321,30 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       body: Column(
         children: [
           if (acting) const LinearProgressIndicator(),
-          if (error != null) ErrorBox(error!),
+          if (disconnected)
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  const Icon(Icons.cloud_off),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      reconnecting
+                          ? 'Reconnecting…'
+                          : 'Connection lost. Reconnect to continue.',
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: acting || reconnecting ? null : reconnect,
+                    child: const Text('Reconnect'),
+                  ),
+                ],
+              ),
+            ),
+          if (error != null &&
+              (!disconnected || error != const ConnectionLost().toString()))
+            ErrorBox(error!),
           if (message != null)
             Padding(
               padding: const EdgeInsets.all(12),
@@ -338,9 +393,9 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         const SizedBox(height: 8),
         const Text('Review requests that need your permission.'),
         const SizedBox(height: 24),
-        if (!loaded && error == null)
+        if (!loaded && error == null && !disconnected)
           const Center(child: CircularProgressIndicator()),
-        if (loaded && queue.isEmpty && error == null)
+        if (loaded && queue.isEmpty && error == null && !disconnected)
           const EmptyState(
             Icons.task_alt,
             'All caught up',
@@ -449,14 +504,18 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: acting ? null : () => resolve(request, false),
+                    onPressed: acting || disconnected
+                        ? null
+                        : () => resolve(request, false),
                     child: const Text('Reject'),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton(
-                    onPressed: acting ? null : () => resolve(request, true),
+                    onPressed: acting || disconnected
+                        ? null
+                        : () => resolve(request, true),
                     child: const Text('Approve once'),
                   ),
                 ),

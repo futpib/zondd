@@ -93,6 +93,15 @@ command; each argument is quoted separately. SSH login banners on stdout or
 startup scripts that change the login working directory can interfere; use an
 absolute executable path for the latter.
 
+If the SSH connection drops, tap **Reconnect** on the dashboard to open a new
+SSH session (and a new Iroh tunnel when applicable). The same host-key checks and
+authentication prompts apply. Reconnection keeps your current tab and unsaved
+policy edits; failed or cancelled attempts can be retried. The toolbar also has
+**Reconnect** for a stalled connection. Pending approvals, service status, and
+history refresh after recovery. Actions are never replayed automatically: if a
+connection failed during an approval, save, or command, check its state before
+trying that action again.
+
 The approval screen polls every two seconds while foregrounded. There is no
 background notification service. Closing the controller does not reject callers;
 they remain pending until their existing deadline, disconnection, or a decision.
