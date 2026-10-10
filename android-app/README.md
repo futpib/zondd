@@ -1,4 +1,4 @@
-# zondd for Android
+# zond for Android
 
 A focused controller for your zondd user daemon: approvals, policy editing, and
 systemd user-service controls. GPL-3.0-or-later; see [LICENSE](../LICENSE).
@@ -57,9 +57,9 @@ Plain SSH connections do not depend on Iroh versions.
    including its passphrase if encrypted. Or generate an Ed25519 key and copy
    its public key to the server. Identities are reusable across connections.
    **Add from OpenKeychain** selects a key from an installed OpenKeychain-compatible
-   provider. Only its reference and public key are saved in zondd; signing stays
+   provider. Only its reference and public key are saved in zond; signing stays
    with the provider. Choose that identity for either SSH or Iroh and approve
-   provider prompts when connecting. Removing it from zondd leaves the provider's
+   provider prompts when connecting. Removing it from zond leaves the provider's
    key intact. RSA keys use SHA-256 signatures; Ed25519 and ECDSA are also supported
    when the provider supports them.
 3. Select **SSH** or **Iroh**, enter `user@host[:port]` or

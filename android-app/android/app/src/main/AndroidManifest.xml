@@ -4,7 +4,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:allowBackup="false"
-        android:label="zondd"
+        android:label="zond"
         android:name="${applicationName}"
         android:icon="@drawable/ic_zondd">
         <activity

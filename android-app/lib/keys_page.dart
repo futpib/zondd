@@ -154,7 +154,7 @@ class _KeysPageState extends State<KeysPage> {
           content: Text(
             key.externalKey == null
                 ? 'Remove ${key.name} from this device? You cannot recover a generated private key after deleting it.'
-                : 'Remove ${key.name} from zondd? The private key stays in ${key.externalKey!.providerLabel}.',
+                : 'Remove ${key.name} from zond? The private key stays in ${key.externalKey!.providerLabel}.',
           ),
           actions: [
             TextButton(

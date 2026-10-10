@@ -10,7 +10,7 @@ class ZonddApp extends StatelessWidget {
   const ZonddApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'zondd',
+    title: 'zond',
     debugShowCheckedModeBanner: false,
     theme: appTheme(Brightness.light),
     darkTheme: appTheme(Brightness.dark),

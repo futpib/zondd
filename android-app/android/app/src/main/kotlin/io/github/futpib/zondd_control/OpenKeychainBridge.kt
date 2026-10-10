@@ -281,7 +281,7 @@ object OpenKeychainBridge {
                     finishError(
                         operation,
                         "openkeychain_interaction_required",
-                        "Open zondd to approve the OpenKeychain request",
+                        "Open zond to approve the OpenKeychain request",
                     )
                 } else {
                     if (nextRequestCode > 65000) nextRequestCode = FIRST_REQUEST_CODE

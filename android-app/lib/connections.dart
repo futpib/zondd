@@ -316,7 +316,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('zondd'),
+      title: const Text('zond'),
       actions: [
         IconButton(
           tooltip: 'SSH keys',

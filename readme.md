@@ -5,7 +5,7 @@ and an optional local approval queue. Linux, Rust, GPL-3.0-or-later.
 
 [<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" height="80" alt="Get the Android controller on Obtainium">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/futpib/zondd)
 
-The Android controller's [Obtainium setup and release instructions](android-app/README.md#obtainium-and-apk-downloads)
+The zond Android controller's [Obtainium setup and release instructions](android-app/README.md#obtainium-and-apk-downloads)
 cover installation and updates. Downloads become available after the first Android release is published.
 
 Keep your existing OpenSSH server and iroh-ssh forwarding. OpenSSH authenticates
@@ -399,7 +399,7 @@ History, retry and activity are available only on the admin endpoint.
 
 ## Android management
 
-[The Android app](android-app/README.md) connects through a **normal SSH login**
+[zond for Android](android-app/README.md) connects through a **normal SSH login**
 as the daemon user, directly or through your existing iroh-ssh server. Give its
 key ordinary SSH access, without a forced caller command. It can review and
 approve/reject requests, read/validate/save/apply policy, and start/stop/restart the
