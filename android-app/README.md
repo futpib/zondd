@@ -63,9 +63,13 @@ Plain SSH connections do not depend on Iroh versions.
    key intact. RSA keys use SHA-256 signatures; Ed25519 and ECDSA are also supported
    when the provider supports them.
 3. Select **SSH** or **Iroh**, enter `user@host[:port]` or
-   `user@<64-hex-endpoint-id>`, choose a key, and connect. IPv6 addresses use
+   `user@<64-hex-endpoint-id>`, optionally choose a key, and connect. IPv6 addresses use
    `user@[address]:port`. Successful quick connections are saved automatically.
-   **Connection options** also supports passwords, display names, and custom paths.
+   The app asks for a password when needed and displays server-provided
+   keyboard-interactive prompts, including verification codes. Cancel returns to
+   the connection list; rejected answers can be retried. Prompted answers are
+   never saved. **Connection options** supports an optional saved password,
+   display names, and custom paths. Leave the password blank to ask each time.
    Use the Unix account running zondd and an ordinary SSH identity; a restricted
    caller key cannot manage zondd. Keys and passwords are encrypted in Android
    storage; backups are disabled. Existing inline profile keys migrate to the
@@ -159,6 +163,10 @@ version code higher than previous releases. `FLUTTER` can select a Flutter binar
 
 ## Real Android end-to-end test
 
+Install Python Paramiko (`python3-paramiko` on Ubuntu), or set `PYTHON` to a
+Python interpreter with Paramiko installed. The authentication fixture listens
+only on loopback and runs the real control helper after authenticating.
+
 Start an Android emulator. From the Rust workspace root:
 
 ```sh
@@ -179,7 +187,10 @@ environment variable.
 The Rust test owns an isolated user daemon, an OpenSSH server, ephemeral caller
 and management keys, and an Iroh server built from `native/Cargo.lock`. It uses
 the same Iroh SSH library as the app; no separately installed Iroh CLI is needed.
-The Flutter integration test exercises
+The authentication tests exercise password entry, cancellation, rejected-answer
+retry, stale saved passwords, and multi-round keyboard-interactive challenges
+through the normal app UI over both SSH and Iroh. The other Flutter integration
+tests exercise
 actual Android SSH and native Iroh connections, taps approval/rejection buttons,
 checks caller results, validates/saves configuration, rejects stale saves and
 invalid policy, rejects untrusted host keys and restricted management keys, and

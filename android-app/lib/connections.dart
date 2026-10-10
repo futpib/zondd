@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'control.dart';
+import 'authentication.dart';
 import 'dashboard.dart';
 import 'identities.dart';
 import 'keys_page.dart';
@@ -154,25 +155,13 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   Future<void> quickConnect() async {
     try {
       final address = Target.parse(target.text, iroh);
-      if (keyId == null) {
-        await edit(
-          Profile(
-            name: '',
-            host: address.host,
-            user: address.user,
-            port: address.port,
-            iroh: iroh,
-          ),
-        );
-        return;
-      }
       final p = Profile(
         name: address.host,
         host: address.host,
         user: address.user,
         port: address.port,
         iroh: iroh,
-        keyId: keyId!,
+        keyId: keyId ?? '',
       );
       await connect(p, save: true);
     } catch (e) {
@@ -185,70 +174,75 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
       busy = true;
       error = null;
     });
+    final authentication = AuthenticationDialog(context, Target.of(profile));
     try {
-      final api = await SshControl.connect(profile, (type, fingerprint) async {
-        final saved = await store.hostKey(profile.hostIdentity),
-            key = '$type $fingerprint';
-        if (saved != null) {
-          if (saved != key) {
-            throw StateError(
-              'SSH host key changed for ${profile.host}.\nSaved: $saved\nReceived: $key',
-            );
+      final api = await SshControl.connect(
+        profile,
+        (type, fingerprint) async {
+          final saved = await store.hostKey(profile.hostIdentity),
+              key = '$type $fingerprint';
+          if (saved != null) {
+            if (saved != key) {
+              throw StateError(
+                'SSH host key changed for ${profile.host}.\nSaved: $saved\nReceived: $key',
+              );
+            }
+            return true;
           }
-          return true;
-        }
-        if (!mounted) return false;
-        final trusted =
-            await showDialog<bool>(
-              context: context,
-              builder: (context) => AlertDialog(
-                icon: const Icon(Icons.fingerprint, size: 32),
-                title: const Text('Trust SSH host key?'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        profile.name,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        profile.host,
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 20),
-                      Text(
-                        type,
-                        style: Theme.of(context).textTheme.labelMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      SelectableText(fingerprint, style: mono),
-                      const SizedBox(height: 20),
-                      const Text(
-                        'Compare this fingerprint with your server. Future connections must use the same key.',
-                      ),
-                    ],
+          if (!mounted) return false;
+          final trusted =
+              await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  icon: const Icon(Icons.fingerprint, size: 32),
+                  title: const Text('Trust SSH host key?'),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          profile.name,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          profile.host,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          type,
+                          style: Theme.of(context).textTheme.labelMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        SelectableText(fingerprint, style: mono),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'Compare this fingerprint with your server. Future connections must use the same key.',
+                        ),
+                      ],
+                    ),
                   ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Trust'),
+                    ),
+                  ],
                 ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('Cancel'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    child: const Text('Trust'),
-                  ),
-                ],
-              ),
-            ) ??
-            false;
-        if (trusted) await store.trust(profile.hostIdentity, key);
-        return trusted;
-      });
+              ) ??
+              false;
+          if (trusted) await store.trust(profile.hostIdentity, key);
+          return trusted;
+        },
+        onAuthenticationRequest: authentication.request,
+      ).whenComplete(authentication.close);
       try {
         if (save &&
             !profiles.any(
@@ -272,8 +266,12 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
       } finally {
         await api.close();
       }
+    } on AuthenticationCancelled {
+      // Cancelling authentication returns to the connection list.
     } catch (e) {
       if (mounted) setState(() => error = '$e');
+    } finally {
+      authentication.close();
     }
     if (mounted) setState(() => busy = false);
   }
@@ -508,7 +506,10 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     final p = widget.profile;
     iroh = p?.iroh ?? true;
-    password = p?.password.isNotEmpty ?? false;
+    password =
+        p == null ||
+        p.password.isNotEmpty ||
+        (p.keyId.isEmpty && p.privateKey.isEmpty);
     keyId = p?.keyId.isNotEmpty == true ? p!.keyId : null;
     fields = {
       for (final e in {
@@ -671,7 +672,12 @@ class _ProfilePageState extends State<ProfilePage> {
             ),
             const SizedBox(height: 16),
             if (password)
-              field('Password', secret: true, required: true)
+              field(
+                'Password',
+                label: 'Password (optional)',
+                hint: 'Ask when connecting',
+                secret: true,
+              )
             else ...[
               if (keys.isNotEmpty)
                 DropdownButtonFormField<String>(

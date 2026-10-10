@@ -43,19 +43,45 @@ fn android_management_over_ssh_and_iroh() {
     )
     .unwrap();
     ssh.env.start_daemon();
+    let start_iroh = |port: u16, name: &str| {
+        ssh.env.start(
+            Command::new(target.join("debug/examples/test-server")).arg(port.to_string()),
+            name,
+        );
+        let mut endpoint = None;
+        wait_for(|| {
+            endpoint = fs::read_to_string(ssh.env.dir.path().join(format!("{name}.log")))
+                .unwrap()
+                .lines()
+                .find_map(|line| line.strip_prefix("endpoint=").map(str::to_owned));
+            endpoint.is_some()
+        });
+        endpoint.unwrap()
+    };
+    let endpoint = start_iroh(ssh.port, "iroh");
     ssh.env.start(
-        Command::new(target.join("debug/examples/test-server")).arg(ssh.port.to_string()),
-        "iroh",
+        Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".into()))
+            .arg(app.join("scripts/test-auth-server.py"))
+            .arg(ssh.env.dir.path().join("host"))
+            .arg(&ssh.env.ctl)
+            .arg("--runtime-dir")
+            .arg(&ssh.env.runtime)
+            .arg("control")
+            .arg("--config")
+            .arg(&ssh.env.config),
+        "authentication",
     );
-    let mut endpoint = None;
+    let mut auth_port = None;
     wait_for(|| {
-        endpoint = fs::read_to_string(ssh.env.dir.path().join("iroh.log"))
+        auth_port = fs::read_to_string(ssh.env.dir.path().join("authentication.log"))
             .unwrap()
             .lines()
-            .find_map(|line| line.strip_prefix("endpoint=").map(str::to_owned));
-        endpoint.is_some()
+            .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .and_then(|value| value["port"].as_u64().map(|p| p as u16));
+        auth_port.is_some()
     });
-    let endpoint = endpoint.unwrap();
+    let auth_port = auth_port.unwrap();
+    let auth_endpoint = start_iroh(auth_port, "authentication-iroh");
     let fingerprint = checked(
         Command::new("ssh-keygen")
             .arg("-lf")
@@ -70,6 +96,7 @@ fn android_management_over_ssh_and_iroh() {
         .to_owned();
     let fixture = json!({
         "host":"10.0.2.2", "port":ssh.port, "endpoint":endpoint,
+        "authPort":auth_port, "authEndpoint":auth_endpoint,
         "user":ssh.env.user.name, "runtime":ssh.env.runtime, "config":ssh.env.config,
         "executable":ssh.env.ctl, "fingerprint":fingerprint,
         "key":fs::read_to_string(ssh.env.dir.path().join("management-key")).unwrap(),
@@ -95,6 +122,7 @@ fn android_management_over_ssh_and_iroh() {
                 vec!["integration_test/external_key_test.dart"]
             } else {
                 vec![
+                    "integration_test/authentication_test.dart",
                     "integration_test/control_test.dart",
                     "integration_test/workflow_test.dart",
                 ]

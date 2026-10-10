@@ -66,7 +66,7 @@ jobs:
       - name: Install transport test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server acl qrencode python3-pil
+          sudo apt-get install -y openssh-server acl qrencode python3-pil python3-paramiko
           sudo mkdir -p /run/sshd
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
           sudo loginctl enable-linger "$(id -un)"

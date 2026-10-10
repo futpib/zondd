@@ -126,6 +126,15 @@ abstract class ControlApi {
   Future<void> close();
 }
 
+typedef AuthenticationRequest =
+    Future<List<String>?> Function(SSHUserInfoRequest request, bool retry);
+
+class AuthenticationCancelled implements Exception {
+  const AuthenticationCancelled();
+  @override
+  String toString() => 'Authentication cancelled';
+}
+
 class SshControl implements ControlApi {
   SshControl._(this._ssh, this.profile, this._tunnel);
   final SSHClient _ssh;
@@ -134,12 +143,54 @@ class SshControl implements ControlApi {
 
   static Future<SshControl> connect(
     Profile profile,
-    Future<bool> Function(String type, String fingerprint) verify,
-  ) async {
+    Future<bool> Function(String type, String fingerprint) verify, {
+    AuthenticationRequest? onAuthenticationRequest,
+  }) async {
+    for (var attempt = 0; ; attempt++) {
+      var submitted = false;
+      try {
+        return await _connect(
+          profile,
+          verify,
+          onAuthenticationRequest: onAuthenticationRequest,
+          retry: attempt > 0,
+          onSubmitted: () => submitted = true,
+        );
+      } on SSHAuthFailError {
+        // dartssh2 tries each authentication method once per connection.
+        if (onAuthenticationRequest == null || !submitted || attempt >= 2) {
+          rethrow;
+        }
+      }
+    }
+  }
+
+  static Future<SshControl> _connect(
+    Profile profile,
+    Future<bool> Function(String type, String fingerprint) verify, {
+    required AuthenticationRequest? onAuthenticationRequest,
+    required bool retry,
+    required void Function() onSubmitted,
+  }) async {
     int? tunnel;
     SSHClient? client;
     SSHSocket? socket;
     (Object, StackTrace)? verificationFailure;
+    var cancelled = false, active = true, savedPasswordUsed = retry;
+    Future<List<String>?> ask(SSHUserInfoRequest request) async {
+      if (!active) return null;
+      if (request.prompts.isEmpty) return <String>[];
+      final responses = await onAuthenticationRequest!(request, retry);
+      if (!active) return null;
+      if (responses == null) {
+        cancelled = true;
+        client?.close();
+        return null;
+      }
+      onSubmitted();
+      return responses;
+    }
+
     try {
       final identity = profile.keyId.isEmpty
           ? null
@@ -163,8 +214,22 @@ class SshControl implements ControlApi {
         socket,
         username: profile.user,
         identities: identities,
-        onPasswordRequest: () =>
-            profile.password.isEmpty ? null : profile.password,
+        onPasswordRequest: () async {
+          if (!active) return null;
+          if (!savedPasswordUsed && profile.password.isNotEmpty) {
+            savedPasswordUsed = true;
+            onSubmitted();
+            return profile.password;
+          }
+          if (onAuthenticationRequest == null) return null;
+          final responses = await ask(
+            SSHUserInfoRequest('SSH password', '', [
+              SSHUserInfoPrompt('Password', false),
+            ]),
+          );
+          return responses?.single;
+        },
+        onUserInfoRequest: onAuthenticationRequest == null ? null : ask,
         onVerifyHostKey: (type, fingerprint) async {
           try {
             return await verify(type, utf8.decode(fingerprint));
@@ -181,9 +246,12 @@ class SshControl implements ControlApi {
       client?.close();
       if (client == null) socket?.close();
       if (tunnel != null) await IrohTransport.disconnect(tunnel);
+      if (cancelled) throw const AuthenticationCancelled();
       final failure = verificationFailure;
       if (failure != null) Error.throwWithStackTrace(failure.$1, failure.$2);
       rethrow;
+    } finally {
+      active = false;
     }
   }
 
