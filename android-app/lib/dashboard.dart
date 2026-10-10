@@ -37,8 +37,12 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       await connection!.reconnect();
     });
     if (!mounted || disconnected) return;
-    // Preserve the editor's draft and revision for the normal stale-save check.
     if (tab == 0) await refresh();
+    if (loadedConfig != null) {
+      await action(() async {
+        await reconcilePolicy();
+      });
+    }
     if (tab == 1 && loadedConfig == null) await loadConfig();
     if (tab == 2) await service('status');
     if (tab == 3) await historyKey.currentState?.fetch();
@@ -51,7 +55,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   String? revision;
   final config = TextEditingController();
   final historyKey = GlobalKey<HistoryPageState>();
-  String? loadedConfig;
+  String? loadedConfig, attemptedSave;
   String configPath = '';
   bool editing = false, loaded = false;
   Map<String, String> serviceState = {};
@@ -188,6 +192,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
             {};
         config.text = result['content'] as String;
         loadedConfig = config.text;
+        attemptedSave = null;
         revision = result['revision'] as String;
         configPath = result['path'] as String;
         applyRequired = activeRevision != revision;
@@ -535,16 +540,75 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     });
     if (mounted) setState(() => message = 'Configuration is valid.');
   });
+  Future<bool> reconcilePolicy({bool reviewConflict = false}) async {
+    final remote = await widget.api.request({'method': 'read_config'});
+    if (!mounted) return false;
+    final content = remote['content'] as String;
+    final remoteRevision = remote['revision'] as String;
+    if (content != loadedConfig && content != attemptedSave) {
+      if (!reviewConflict) {
+        setState(
+          () => error =
+              'The server policy changed. Your draft is preserved. '
+              'Save to review the server version before replacing it.',
+        );
+        return false;
+      }
+      final replace = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Replace changed server policy?'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Another version is saved on the server. Replace it with your current draft? '
+                  'Cancel keeps both versions unchanged. Server policy:',
+                ),
+                const SizedBox(height: 12),
+                SelectableText(content, style: mono),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Replace with draft'),
+            ),
+          ],
+        ),
+      );
+      if (replace != true || !mounted) return false;
+    }
+    setState(() {
+      if (revision != remoteRevision) applyRequired = true;
+      revision = remoteRevision;
+      loadedConfig = content;
+      attemptedSave = null;
+    });
+    return true;
+  }
+
   Future<void> savePolicy() => action(() async {
+    if (!await reconcilePolicy(reviewConflict: true) || !mounted) return;
+    final draft = config.text;
+    attemptedSave = draft;
     final result = await widget.api.request({
       'method': 'save_config',
-      'content': config.text,
+      'content': draft,
       'revision': revision,
     });
     if (mounted) {
       setState(() {
         revision = result['revision'] as String;
-        loadedConfig = config.text;
+        loadedConfig = draft;
+        attemptedSave = null;
         applyRequired = true;
         message = 'Saved. Apply to activate this policy.';
       });

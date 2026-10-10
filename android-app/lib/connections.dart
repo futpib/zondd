@@ -98,7 +98,8 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   List<Profile> profiles = [];
   List<Identity> keys = [];
   String? keyId, error;
-  bool busy = false, iroh = true;
+  bool busy = false, iroh = true, profilesReady = false, loading = false;
+  String? storageError;
   AuthenticationDialog? authentication;
   @override
   void initState() {
@@ -114,12 +115,41 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   }
 
   Future<void> load() async {
+    if (loading) return;
+    setState(() {
+      loading = true;
+      profilesReady = false;
+      storageError = null;
+    });
     try {
-      final saved = await store.load();
+      final snapshot = await store.read();
+      // Migrate legacy keys only when every entry is readable.
+      final saved = snapshot.unreadable.isEmpty
+          ? await store.load()
+          : snapshot.profiles;
+      if (!mounted) return;
+      setState(() {
+        profiles = saved;
+        profilesReady = true;
+        if (snapshot.unreadable.isNotEmpty) {
+          storageError =
+              '${snapshot.unreadable.length} saved connection(s) could not be read. '
+              'Usable connections are shown; unreadable records are preserved.';
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(
+          () => storageError =
+              'Saved connections could not be loaded. '
+              'Saving is disabled to protect your data. $e',
+        );
+      }
+    }
+    try {
       final identities = await IdentityStore().load();
       if (mounted) {
         setState(() {
-          profiles = saved;
           keys = identities;
           if (keyId == null) {
             keyId = keys.firstOrNull?.id ?? '';
@@ -130,6 +160,8 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
       }
     } catch (e) {
       if (mounted) setState(() => error = '$e');
+    } finally {
+      if (mounted) setState(() => loading = false);
     }
   }
 
@@ -141,6 +173,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   }
 
   Future<void> edit([Profile? original]) async {
+    if (!profilesReady || loading) return;
     final result = await Navigator.of(context).push<Profile>(
       MaterialPageRoute(builder: (_) => ProfilePage(profile: original)),
     );
@@ -160,6 +193,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   }
 
   Future<void> quickConnect() async {
+    if (!profilesReady || loading || busy) return;
     try {
       final address = Target.parse(target.text, iroh);
       final p = Profile(
@@ -316,7 +350,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
         ],
       ),
     );
-    if (yes != true) return;
+    if (yes != true || !profilesReady || loading) return;
     try {
       if (keyOnly) {
         await store.forget(profile.hostIdentity);
@@ -421,7 +455,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
         Align(
           alignment: Alignment.centerRight,
           child: TextButton.icon(
-            onPressed: busy
+            onPressed: busy || loading || !profilesReady
                 ? null
                 : () async {
                     Profile? p;
@@ -448,8 +482,15 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
           ),
         ),
         if (error != null) ErrorBox(error!),
+        if (storageError != null) ErrorBox(storageError!),
+        if (storageError != null)
+          TextButton.icon(
+            onPressed: loading || busy ? null : load,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Retry loading connections'),
+          ),
         FilledButton.icon(
-          onPressed: busy ? null : quickConnect,
+          onPressed: busy || loading || !profilesReady ? null : quickConnect,
           icon: busy
               ? const SizedBox.square(
                   dimension: 18,
@@ -462,11 +503,11 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
           'Saved connections',
           trailing: IconButton(
             tooltip: 'Add connection',
-            onPressed: busy ? null : () => edit(),
+            onPressed: busy || loading || !profilesReady ? null : () => edit(),
             icon: const Icon(Icons.add),
           ),
         ),
-        if (profiles.isEmpty)
+        if (profiles.isEmpty && profilesReady)
           const EmptyState(
             Icons.dns_outlined,
             'Your servers, one tap away',
@@ -491,7 +532,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
               ),
               onTap: busy ? null : () => connect(p),
               trailing: PopupMenuButton<String>(
-                enabled: !busy,
+                enabled: !busy && !loading && profilesReady,
                 onSelected: (v) =>
                     v == 'edit' ? edit(p) : forget(p, v == 'key'),
                 itemBuilder: (_) => const [

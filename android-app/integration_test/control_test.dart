@@ -9,6 +9,24 @@ import 'package:integration_test/integration_test.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
 import 'package:zondd_control/identities.dart';
+import 'package:zondd_control/history.dart';
+
+// Let the real server commit, then lose the response before the UI receives it.
+class LostSaveReply implements ControlApi {
+  LostSaveReply(this.transport);
+  final SshControl transport;
+  @override
+  Future<void> close() => transport.close();
+  @override
+  Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
+    final result = await transport.request(body);
+    if (body['method'] == 'save_config') {
+      await transport.close();
+      throw const ConnectionLost();
+    }
+    return result;
+  }
+}
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -114,6 +132,119 @@ void main() {
   );
 
   for (final iroh in [false, true]) {
+    testWidgets(
+      'reconcile a lost policy-save reply over ${iroh ? 'Iroh' : 'SSH'}',
+      (tester) async {
+        Future<SshControl> open() => SshControl.connect(
+          profile(iroh),
+          (_, fp) async => fp == fixture['fingerprint'],
+        );
+        final first = await open();
+        final original = await first.request({'method': 'read_config'});
+        final api = ControlConnection(LostSaveReply(first), open);
+        // Integration binding otherwise keeps the real IME attached. Injected
+        // enterText values do not update that IME's buffer, which can send its
+        // old value when the editor disables during reconnect.
+        tester.testTextInput.register();
+        Future<void> waitFor(Finder finder) async {
+          for (var i = 0; i < 400 && finder.evaluate().isEmpty; i++) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          expect(finder, findsWidgets);
+          await tester.pump(const Duration(milliseconds: 350));
+        }
+
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Dashboard(api: api, name: 'Lost save'),
+            ),
+          );
+          await waitFor(find.text('All caught up'));
+          await tester.tap(find.text('Policy'));
+          await waitFor(find.text('Edit TOML'));
+          for (
+            var i = 0;
+            i < 200 &&
+                tester
+                        .widget<TextButton>(
+                          find.widgetWithText(TextButton, 'Edit TOML'),
+                        )
+                        .onPressed ==
+                    null;
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          await tester.tap(find.text('Edit TOML'));
+          await waitFor(find.byType(TextField));
+          final draft = '${original['content']}\n# saved with lost response\n';
+          await tester.enterText(find.byType(TextField), draft);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Save & apply'));
+          await waitFor(find.widgetWithText(TextButton, 'Reconnect'));
+          final newer = '$draft# edited while disconnected\n';
+          await tester.enterText(find.byType(TextField), newer);
+          await tester.pumpAndSettle();
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller!.text,
+            newer,
+          );
+          await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
+          for (
+            var i = 0;
+            i < 400 && (api.disconnected || api.reconnecting);
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          // Reconciliation also reads the server after authentication completes.
+          for (
+            var i = 0;
+            i < 200 &&
+                tester
+                        .widget<FilledButton>(
+                          find.widgetWithText(FilledButton, 'Save & apply'),
+                        )
+                        .onPressed ==
+                    null;
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).controller!.text,
+            newer,
+          );
+          await tester.tap(find.text('Save & apply'));
+          await waitFor(find.text('Policy applied.'));
+          expect(
+            (await api.request({'method': 'read_config'}))['content'],
+            newer,
+          );
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          tester.testTextInput.unregister();
+          await api.close();
+          api.dispose();
+          final cleanup = await open();
+          try {
+            final current = await cleanup.request({'method': 'read_config'});
+            final saved = await cleanup.request({
+              'method': 'save_config',
+              'content': original['content'],
+              'revision': current['revision'],
+            });
+            await cleanup.request({
+              'method': 'reload_config',
+              'revision': saved['revision'],
+            });
+          } finally {
+            await cleanup.close();
+          }
+        }
+      },
+    );
     testWidgets('recover a closed ${iroh ? 'Iroh' : 'SSH'} session in place', (
       tester,
     ) async {
@@ -489,6 +620,53 @@ void main() {
           final actions =
               (await api.request({'method': 'actions'}))['actions'] as List;
           expect(actions.any((a) => a['action'] == 'approval_denied'), isTrue);
+          final recovery = ControlConnection(
+            api,
+            () => SshControl.connect(
+              profile(iroh),
+              (_, fp) async => fp == fixture['fingerprint'],
+            ),
+          );
+          try {
+            await tester.pumpWidget(
+              MaterialApp(
+                home: RequestDetailsPage(
+                  api: recovery,
+                  requestId: retry['request_id'] as String,
+                ),
+              ),
+            );
+            for (
+              var i = 0;
+              i < 200 && find.text('Run again').evaluate().isEmpty;
+              i++
+            ) {
+              await tester.pump(const Duration(milliseconds: 100));
+            }
+            expect(find.text('Run again'), findsOneWidget);
+            await api.close();
+            await tester.tap(find.byTooltip('Refresh'));
+            for (var i = 0; i < 200 && !recovery.disconnected; i++) {
+              await tester.pump(const Duration(milliseconds: 100));
+            }
+            await tester.pump();
+            await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
+            for (var i = 0; i < 400 && recovery.disconnected; i++) {
+              await tester.pump(const Duration(milliseconds: 100));
+            }
+            expect(recovery.disconnected, isFalse);
+            expect(
+              (await recovery.request({
+                'method': 'request_detail',
+                'request_id': retry['request_id'],
+              }))['request']['status'],
+              'denied',
+            );
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            await recovery.close();
+            recovery.dispose();
+          }
         } finally {
           await api.close();
         }

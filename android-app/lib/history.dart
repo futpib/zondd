@@ -291,9 +291,37 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
   String? error;
   bool loading = false, acting = false, paged = false;
   Timer? timer;
+  int fetchGeneration = 0;
+  ControlConnection? get connection =>
+      widget.api is ControlConnection ? widget.api as ControlConnection : null;
+  bool get unavailable =>
+      connection?.disconnected == true || connection?.reconnecting == true;
+  void connectionChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> reconnect() async {
+    if (acting || connection!.reconnecting) return;
+    setState(() {
+      acting = true;
+      error = null;
+      fetchGeneration++;
+      loading = false;
+    });
+    try {
+      await connection!.reconnect();
+    } catch (e) {
+      if (mounted) setState(() => error = '$e');
+    } finally {
+      if (mounted) setState(() => acting = false);
+    }
+    if (mounted && !unavailable) await fetch();
+  }
+
   @override
   void initState() {
     super.initState();
+    connection?.addListener(connectionChanged);
     fetch();
     timer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (record == null || activeStatuses.contains(record!['status'])) fetch();
@@ -303,18 +331,20 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
   @override
   void dispose() {
     timer?.cancel();
+    connection?.removeListener(connectionChanged);
     super.dispose();
   }
 
   Future<void> fetch() async {
-    if (loading || acting) return;
-    loading = true;
+    if (loading || acting || unavailable) return;
+    final generation = ++fetchGeneration;
+    setState(() => loading = true);
     try {
       final result = await widget.api.request({
         'method': 'request_detail',
         'request_id': widget.requestId,
       });
-      if (mounted) {
+      if (mounted && generation == fetchGeneration) {
         setState(() {
           record = result['request'] as Map<String, dynamic>;
           final incoming = (result['actions'] as List)
@@ -340,14 +370,18 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && generation == fetchGeneration) {
+        setState(() => error = '$e');
+      }
     } finally {
-      loading = false;
+      if (mounted && generation == fetchGeneration) {
+        setState(() => loading = false);
+      }
     }
   }
 
   Future<void> earlier() async {
-    if (loading || acting) return;
+    if (loading || acting || unavailable) return;
     setState(() => acting = true);
     try {
       final result = await widget.api.request({
@@ -420,9 +454,15 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
       appBar: AppBar(
         title: const Text('Request history'),
         actions: [
+          if (connection != null)
+            IconButton(
+              tooltip: 'Reconnect',
+              onPressed: acting || connection!.reconnecting ? null : reconnect,
+              icon: const Icon(Icons.sync),
+            ),
           IconButton(
             tooltip: 'Refresh',
-            onPressed: acting ? null : fetch,
+            onPressed: acting || loading || unavailable ? null : fetch,
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -430,9 +470,26 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          if (error != null) ErrorBox(error!),
+          if (unavailable)
+            ListTile(
+              leading: const Icon(Icons.cloud_off),
+              title: Text(
+                connection!.reconnecting
+                    ? 'Reconnecting…'
+                    : 'Connection lost. Reconnect to continue.',
+              ),
+              trailing: TextButton(
+                onPressed: acting || connection!.reconnecting
+                    ? null
+                    : reconnect,
+                child: const Text('Reconnect'),
+              ),
+            ),
+          if (error != null &&
+              (!unavailable || error != const ConnectionLost().toString()))
+            ErrorBox(error!),
           if (acting) const LinearProgressIndicator(),
-          if (r == null && error == null)
+          if (r == null && error == null && !unavailable)
             const Center(child: CircularProgressIndicator()),
           if (r != null) ...[
             Row(
@@ -466,14 +523,18 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
                 children: [
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: acting ? null : () => resolve(false),
+                      onPressed: acting || loading || unavailable
+                          ? null
+                          : () => resolve(false),
                       child: const Text('Reject'),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: FilledButton(
-                      onPressed: acting ? null : () => resolve(true),
+                      onPressed: acting || loading || unavailable
+                          ? null
+                          : () => resolve(true),
                       child: const Text('Approve once'),
                     ),
                   ),
@@ -481,7 +542,7 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
               ),
             if (!activeStatuses.contains(r['status'])) ...[
               FilledButton.icon(
-                onPressed: acting ? null : retry,
+                onPressed: acting || loading || unavailable ? null : retry,
                 icon: const Icon(Icons.replay),
                 label: const Text('Run again'),
               ),
@@ -569,7 +630,7 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
               ActionTile(key: ValueKey(action['sequence']), action: action),
             if (before != null)
               TextButton(
-                onPressed: acting ? null : earlier,
+                onPressed: acting || loading || unavailable ? null : earlier,
                 child: const Text('Load earlier activity'),
               ),
           ],

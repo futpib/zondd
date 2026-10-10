@@ -68,20 +68,37 @@ class Profile {
     executable: value['executable'] as String,
     runtime: value['runtime'] as String,
     config: value['config'] as String,
-    relays: (value['relays'] as List).cast<String>(),
+    relays: List<String>.from(value['relays'] as List),
   );
 }
 
 class ProfileStore {
   const ProfileStore();
   static const storage = FlutterSecureStorage();
-  Future<List<Profile>> load() async {
+  Future<({List<Profile> profiles, List<dynamic> unreadable})> read() async {
     final value = await storage.read(key: 'profiles');
-    final profiles = value == null
-        ? <Profile>[]
-        : (jsonDecode(value) as List)
-              .map((v) => Profile.fromJson(v as Map<String, dynamic>))
-              .toList();
+    final entries = value == null ? <dynamic>[] : jsonDecode(value) as List;
+    final profiles = <Profile>[];
+    final unreadable = <dynamic>[];
+    for (final entry in entries) {
+      try {
+        profiles.add(Profile.fromJson(entry as Map<String, dynamic>));
+      } catch (_) {
+        unreadable.add(entry);
+      }
+    }
+    return (profiles: profiles, unreadable: unreadable);
+  }
+
+  // Strict callers (such as key deletion) must not overlook damaged references.
+  Future<List<Profile>> load() async {
+    final snapshot = await read();
+    if (snapshot.unreadable.isNotEmpty) {
+      throw StateError(
+        'Some saved connections could not be read. Their data is preserved.',
+      );
+    }
+    final profiles = snapshot.profiles;
     var migrated = false;
     for (var i = 0; i < profiles.length; i++) {
       final profile = profiles[i];
@@ -109,10 +126,19 @@ class ProfileStore {
     return profiles;
   }
 
-  Future<void> save(List<Profile> profiles) => storage.write(
-    key: 'profiles',
-    value: jsonEncode(profiles.map((p) => p.toJson()).toList()),
-  );
+  Future<void> save(List<Profile> profiles) async {
+    // Re-read before every write: a storage/JSON failure must never become an
+    // empty list. Keep damaged entries verbatim, even while editing valid ones.
+    final snapshot = await read();
+    await storage.write(
+      key: 'profiles',
+      value: jsonEncode([
+        ...profiles.map((p) => p.toJson()),
+        ...snapshot.unreadable,
+      ]),
+    );
+  }
+
   Future<String?> hostKey(String identity) =>
       storage.read(key: 'host:$identity');
   Future<void> trust(String identity, String fingerprint) =>

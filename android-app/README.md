@@ -96,14 +96,27 @@ command; each argument is quoted separately. SSH login banners on stdout or
 startup scripts that change the login working directory can interfere; use an
 absolute executable path for the latter.
 
-If the SSH connection drops, tap **Reconnect** on the dashboard to open a new
+If the SSH connection drops, tap **Reconnect** on the dashboard or request details to open a new
 SSH session (and a new Iroh tunnel when applicable). The same host-key checks and
 authentication prompts apply. Reconnection keeps your current tab and unsaved
 policy edits; failed or cancelled attempts can be retried. The toolbar also has
 **Reconnect** for a stalled connection. Pending approvals, service status, and
 history refresh after recovery. Actions are never replayed automatically: if a
 connection failed during an approval, save, or command, check its state before
-trying that action again.
+trying that action again. Policy recovery reads the saved server revision without
+replacing your draft. If a save succeeded but its reply was lost, subsequent edits
+can be saved normally. If someone else changed the server policy, **Save & apply**
+shows that version and asks before replacing it; cancelling preserves your draft.
+
+Unreadable saved-connection entries do not hide usable connections. Their raw
+records remain encrypted and are preserved when you save other connections. If
+the whole store cannot be read, saving is disabled; **Retry loading connections**
+tries again without overwriting it.
+
+**Cancel key import** stops an OpenKeychain import while waiting for the provider.
+Provider operations time out after two minutes and can be retried. Cancellation
+and timeouts release service bindings and pending interactions; late replies
+cannot finish a cancelled import.
 
 The approval screen polls every two seconds while foregrounded. There is no
 background notification service. Closing the controller does not reject callers;
@@ -243,3 +256,14 @@ Ephemeral fixture credentials are embedded in the test APK. Never distribute
 that APK; build the normal `lib/main.dart` app again afterward. Rust drop guards
 terminate fixture processes and remove their keys and files, including on test
 failure. Tests do not edit installed services or authorized keys.
+
+Android bridge recovery tests use a simulated provider to exercise stalled binding,
+late binder replies, cancellation, deadlines, and provider death on the emulator:
+
+```sh
+cd android
+./gradlew connectedDebugAndroidTest
+```
+
+These tests do not require a real OpenKeychain key. The external-signing test above
+remains the check for real provider interoperability.

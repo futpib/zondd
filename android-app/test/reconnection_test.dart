@@ -155,7 +155,7 @@ void main() {
   );
 
   testWidgets(
-    'reconnect retains policy draft and revision without saving or reloading it',
+    'reconnect checks server revision without replacing or saving the draft',
     (tester) async {
       final old = TestControl(), next = TestControl();
       final connecting = Completer<ControlApi>();
@@ -187,11 +187,12 @@ void main() {
         tester.widget<TextField>(find.byType(TextField)).controller!.text,
         draft,
       );
-      expect(next.calls, isEmpty);
+      expect(next.calls.map((c) => c['method']), ['read_config']);
       await tester.tap(find.text('Save & apply'));
       await tester.pumpAndSettle();
-      expect(next.calls.single['revision'], 'original');
-      expect(next.calls.single['content'], draft);
+      final save = next.calls.singleWhere((c) => c['method'] == 'save_config');
+      expect(save['revision'], 'original');
+      expect(save['content'], draft);
       expect(find.textContaining('configuration changed'), findsOneWidget);
       expect(
         tester.widget<TextField>(find.byType(TextField)).controller!.text,

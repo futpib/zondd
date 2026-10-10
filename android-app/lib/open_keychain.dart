@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -147,6 +148,67 @@ String _readSshString(Uint8List data) {
   }
 }
 
+/// One cancellable import, including provider lookup and both provider calls.
+class OpenKeychainOperation {
+  OpenKeychainOperation() {
+    _timer = Timer(const Duration(minutes: 2), () => cancel(timedOut: true));
+  }
+  static int _nextId = 0;
+  final String id = 'import-${++_nextId}';
+  final _cancelled = Completer<void>();
+  late final Timer _timer;
+  bool _timedOut = false;
+  Future<void>? _cleanup;
+
+  Future<void> cancel({bool timedOut = false}) {
+    if (!_cancelled.isCompleted) {
+      _timedOut = timedOut;
+      _timer.cancel();
+      // Native cancellation removes bindings and pending interactions before
+      // allowing a retry. The local deadline also handles a broken channel.
+      _cleanup = OpenKeychainClient._channel
+          .invokeMethod<void>('cancel', {'operationId': id})
+          .timeout(const Duration(seconds: 5))
+          .catchError((Object _) {});
+      _cancelled.complete();
+    }
+    return _cleanup!;
+  }
+
+  Future<T> run<T>(Future<T> Function() work) async {
+    if (_cancelled.isCompleted) return _failure<T>();
+    Future<T> guarded() async {
+      try {
+        final value = await work();
+        if (_cancelled.isCompleted) return _failure<T>();
+        return value;
+      } catch (_) {
+        if (_cancelled.isCompleted) return _failure<T>();
+        rethrow;
+      }
+    }
+
+    return Future.any([
+      guarded(),
+      _cancelled.future.then((_) => _failure<T>()),
+    ]);
+  }
+
+  Future<T> _failure<T>() async {
+    await _cleanup;
+    throw PlatformException(
+      code: _timedOut ? 'openkeychain_timeout' : 'openkeychain_cancelled',
+      message: _timedOut
+          ? 'The key provider did not respond within two minutes. Try again.'
+          : 'Key import cancelled.',
+    );
+  }
+
+  void dispose() {
+    _timer.cancel();
+  }
+}
+
 class OpenKeychainClient {
   static const sha1 = 0;
   static const sha224 = 1;
@@ -158,10 +220,19 @@ class OpenKeychainClient {
   static final instance = OpenKeychainClient._();
 
   OpenKeychainClient._();
+  Future<T> _run<T>(
+    OpenKeychainOperation? operation,
+    Future<T> Function() work,
+  ) => operation == null ? work() : operation.run(work);
 
-  Future<List<OpenKeychainProvider>> listProviders() async {
+  Future<List<OpenKeychainProvider>> listProviders({
+    OpenKeychainOperation? operation,
+  }) async {
     final values =
-        await _channel.invokeListMethod<Object?>('listProviders') ??
+        await _run(
+          operation,
+          () => _channel.invokeListMethod<Object?>('listProviders'),
+        ) ??
         const <Object?>[];
     return values
         .map(
@@ -171,23 +242,34 @@ class OpenKeychainClient {
         .toList();
   }
 
-  Future<OpenKeychainSelection> selectKey(String providerPackage) async {
-    final value = await _channel.invokeMapMethod<Object?, Object?>(
-      'selectKey',
-      {'providerPackage': providerPackage},
+  Future<OpenKeychainSelection> selectKey(
+    String providerPackage, {
+    OpenKeychainOperation? operation,
+  }) async {
+    final value = await _run(
+      operation,
+      () => _channel.invokeMapMethod<Object?, Object?>('selectKey', {
+        'providerPackage': providerPackage,
+        'operationId': operation?.id,
+      }),
     );
     if (value == null) throw StateError('OpenKeychain returned no key');
     return OpenKeychainSelection.fromJson(value);
   }
 
   Future<String> getSshPublicKey({
+    OpenKeychainOperation? operation,
     required String providerPackage,
     required String keyId,
   }) async {
-    final value = await _channel.invokeMethod<String>('getSshPublicKey', {
-      'providerPackage': providerPackage,
-      'keyId': keyId,
-    });
+    final value = await _run(
+      operation,
+      () => _channel.invokeMethod<String>('getSshPublicKey', {
+        'providerPackage': providerPackage,
+        'keyId': keyId,
+        'operationId': operation?.id,
+      }),
+    );
     if (value == null) {
       throw StateError('OpenKeychain returned no SSH public key');
     }

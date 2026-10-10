@@ -19,6 +19,7 @@ android {
     }
 
     defaultConfig {
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         applicationId = "io.github.futpib.zondd_control"
         minSdk = flutter.minSdkVersion
         if (project.findProperty("split-per-abi") != "true") {
@@ -84,4 +85,8 @@ repositories {
 val verifierLock = file("../../native/Cargo.lock").readText()
 val verifierVersion = Regex("name = \"rustls-platform-verifier-android\"\\nversion = \"([^\"]+)\"")
     .find(verifierLock)?.groupValues?.get(1) ?: error("Missing Rust Android verifier dependency")
-dependencies { implementation("org.rustls:rustls-platform-verifier:$verifierVersion") }
+dependencies {
+    implementation("org.rustls:rustls-platform-verifier:$verifierVersion")
+    // Match the runner supplied by Flutter integration_test.
+    androidTestImplementation("androidx.test:runner:1.3.0")
+}
