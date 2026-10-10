@@ -66,6 +66,41 @@ uses a uniquely named temporary unit and runtime directory, and removes both.
 Tests do not change your installed services or authorized keys. Iroh tests
 check pipe EOF after completion to catch orphaned proxy processes.
 
+## Continuous integration and releases
+
+GitHub Actions runs these workflows on pull requests and pushes to `master`:
+
+- **CI**: Rust formatting, Clippy, unit/integration tests, real SSH and key
+  enrollment, the systemd user service, and Linux archive builds on x86-64 and
+  ARM64; Flutter formatting, analysis and widget tests; workflow and shell linting.
+- **Transport and Android E2E**: real Iroh caller/management tests and the Android
+  controller tests on an API 35 emulator, including native builds for both app
+  architectures. This also runs weekly and can be started manually. It uses
+  public Iroh discovery/relays, so network failures fail the transport job.
+- **Dependency audit**: RustSec checks for both Rust lockfiles when they change,
+  weekly, or on manual dispatch. Dependabot proposes weekly updates for Rust,
+  Flutter and GitHub Actions dependencies.
+
+Tests run as the runner's ordinary user. CI installs test prerequisites and
+starts that user's systemd manager; the daemon and approval tests do not run as
+root. Android E2E uses disposable fixture keys and does not upload its test APK.
+The Iroh CLI is pinned separately from the Android bridge library: the CLI
+needs upstream support for `proxy` and `server --key-dir`. The E2E tests check
+interoperability between those two revisions.
+
+**Release Linux binaries** runs when a `vMAJOR.MINOR.PATCH` tag is pushed, or when
+manually dispatched against such a tag. The version must match the Rust workspace
+version. It tests and packages x86-64 and ARM64 Linux binaries, the user service,
+license, documentation and optional policy example, then publishes both archives
+and `SHA256SUMS`. Builds use Ubuntu 24.04 and require glibc 2.39 or newer.
+For a local native build, run `scripts/package-linux.sh 0.1.0 /tmp/zondd-dist`.
+Extract the archive, install `bin/zondd` and `bin/zondctl` into `~/.cargo/bin`, and
+follow the user-service setup below. No policy file is installed automatically.
+
+**Build Android APK** remains the manual signed Android release workflow. Linux
+releases do not replace Android as the repository's latest release; Obtainium
+users can also filter release titles with `^Android `.
+
 ## Configure the receiver
 
 For Arch Linux, the separate `zondd-git` AUR packaging repository builds the

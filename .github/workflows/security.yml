@@ -1,0 +1,42 @@
+name: Dependency audit
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '**/Cargo.lock'
+      - '.github/workflows/security.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.lock'
+      - '.github/workflows/security.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '47 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        lockfile: [Cargo.lock, android-app/native/Cargo.lock]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cargo-audit
+      - run: cargo install cargo-audit --locked
+      - name: Check known Rust vulnerabilities
+        env:
+          LOCKFILE: ${{ matrix.lockfile }}
+        run: cargo audit --file "$LOCKFILE"

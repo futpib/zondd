@@ -1,0 +1,93 @@
+name: Transport and Android E2E
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  IROH_SSH_REV: bade3f7dbed4ca8dc364396b55f6a951cbd89938
+
+jobs:
+  iroh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install transport test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          cargo install --git https://github.com/rustonbsd/iroh-ssh --rev "$IROH_SSH_REV" --locked iroh-ssh
+      - run: cargo build --locked --workspace --bins
+      - name: Test real SSH and Iroh transports
+        run: cargo test --locked -p zondctl --test integration -- --ignored --test-threads=1
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          cache: true
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK components
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            android-app/native -> target
+      - name: Install transport test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server acl
+          sudo mkdir -p /run/sshd
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          cargo install cargo-ndk --version 4.1.2 --locked
+          cargo install --git https://github.com/rustonbsd/iroh-ssh --rev "$IROH_SSH_REV" --locked iroh-ssh
+      - name: Check native adapter
+        run: |
+          cargo fmt --manifest-path android-app/native/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path android-app/native/Cargo.toml --all-targets -- -D warnings
+      - run: cargo build --locked --workspace --bins
+      - name: Build normal debug app for both supported ABIs
+        working-directory: android-app
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter build apk --debug --target-platform android-arm64,android-x64
+      - name: Test controller over real SSH and Iroh
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: cargo test --locked -p zondctl --test android -- --ignored --nocapture
