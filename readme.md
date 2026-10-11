@@ -6,6 +6,14 @@ An agent can request a command or propose a reusable rule. Review it from
 the zond Android app or CLI, then approve one execution, grant temporary
 permission, or allow the rule until revoked.
 
+## Screenshots
+
+<table><tr>
+<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="200" alt="Connect over Iroh or SSH and search saved connections"></td>
+<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="200" alt="Review a reusable rule and choose how long to approve it"></td>
+<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="200" alt="Search caller rules with active grants collapsed by default"></td>
+</tr></table>
+
 ## How it works
 
 1. Give the agent a dedicated SSH key restricted to the zond bridge.
