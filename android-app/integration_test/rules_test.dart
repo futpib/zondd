@@ -110,7 +110,10 @@ void main() {
             ),
           );
           await visible(find.text('Reusable rule proposal'));
-          expect(find.text(source), findsOneWidget);
+          expect(find.text(source), findsNothing);
+          final definition =
+              'Definition: ${proposal['review']['sections'][0]['fields'][0]['value']}';
+          expect(find.text(definition), findsOneWidget);
           expect(find.textContaining('repo-name: 1–100 ASCII'), findsOneWidget);
           for (final section in proposal['review']['sections'] as List) {
             expect(find.text(section['title'] as String), findsOneWidget);
@@ -185,7 +188,7 @@ void main() {
           expect(find.text(source), findsNothing);
           expect(find.text('Revoke rule'), findsNothing);
           await tester.tap(find.text(name));
-          await visible(find.text(source));
+          await visible(find.text(definition));
           await visible(find.text('Revoke rule'));
           await tester.tap(find.text('Revoke rule'));
           await tester.pump();

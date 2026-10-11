@@ -5,10 +5,19 @@ import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
 import 'package:zondd_control/rules.dart';
 
+const normalizedDefinition =
+    'rule deploy(ticket: ticket-id) { run /usr/bin/deploy }';
+
 Map<String, dynamic> reviewDocument() => {
   'version': 1,
   'title': 'deploy',
   'sections': [
+    {
+      'title': 'Normalized rule',
+      'fields': [
+        {'label': 'Definition', 'value': normalizedDefinition},
+      ],
+    },
     {
       'title': 'Authority',
       'fields': [
@@ -93,6 +102,37 @@ class RuleControl implements ControlApi {
 }
 
 void main() {
+  testWidgets(
+    'main review uses daemon definition and retains caller source in details',
+    (tester) async {
+      final proposal = RuleControl().proposal;
+      proposal['source'] =
+          '# misleading caller comment\nrule deploy() { run true }';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: RuleDefinition(proposal: proposal),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
+      expect(find.text(proposal['source']), findsNothing);
+      expect(find.byKey(const ValueKey('rule-yaml-proposal-1')), findsNothing);
+      await tester.ensureVisible(find.text('Rule details (YAML)'));
+      await tester.tap(find.text('Rule details (YAML)'));
+      await tester.pumpAndSettle();
+      final yaml = tester
+          .widget<SelectableText>(
+            find.byKey(const ValueKey('rule-yaml-proposal-1')),
+          )
+          .data!;
+      expect(loadYaml(yaml), equals(proposal));
+      expect(loadYaml(yaml)['source'], proposal['source']);
+    },
+  );
+
   Map<String, dynamic> otherRule() => {
     'proposal': {
       'id': 'proposal-2',
@@ -131,7 +171,8 @@ void main() {
       expect(find.text('Revoke rule'), findsNothing);
       await tester.tap(find.text('deploy'));
       await tester.pumpAndSettle();
-      expect(find.text(api.proposal['source']), findsOneWidget);
+      expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
+      expect(find.text(api.proposal['source']), findsNothing);
       expect(find.text('New daemon vocabulary'), findsOneWidget);
       await tester.tap(find.text('deploy'));
       await tester.pumpAndSettle();
@@ -194,11 +235,13 @@ void main() {
       expect(find.byType(RuleDefinition), findsNothing);
       await tester.enterText(find.byType(TextField), 'deploy');
       await tester.pumpAndSettle();
-      expect(find.text(api.proposal['source']), findsOneWidget);
+      expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
+      expect(find.text(api.proposal['source']), findsNothing);
       await tester.tap(find.byTooltip('Refresh rules'));
       await tester.pumpAndSettle();
       expect(find.text('1 of 2 rules'), findsOneWidget);
-      expect(find.text(api.proposal['source']), findsOneWidget);
+      expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
+      expect(find.text(api.proposal['source']), findsNothing);
       await tester.ensureVisible(find.text('Revoke rule'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Revoke rule'));
@@ -208,8 +251,10 @@ void main() {
       expect(find.text('Revoke rule'), findsNothing);
       await tester.tap(find.byTooltip('Clear search'));
       await tester.pumpAndSettle();
-      expect(find.text('Status: expired'), findsOneWidget);
       expect(find.byType(RuleDefinition), findsOneWidget);
+      await tester.drag(find.byType(ListView), const Offset(0, 10000));
+      await tester.pumpAndSettle();
+      expect(find.text('Status: expired'), findsOneWidget);
     },
   );
 

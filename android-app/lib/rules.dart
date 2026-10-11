@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'control.dart';
 import 'json_yaml.dart';
 import 'ui.dart';
@@ -135,9 +136,6 @@ class RuleDefinition extends StatelessWidget {
           '${proposal['principal']} · ${review?['title'] ?? proposal['id']}',
           style: Theme.of(context).textTheme.titleMedium,
         ),
-        const SizedBox(height: 12),
-        if (proposal['source'] is String)
-          SelectableText(proposal['source'] as String, style: mono),
         const SizedBox(height: 12),
         if (review == null) ...[
           Text(

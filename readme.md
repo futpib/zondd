@@ -388,6 +388,21 @@ the rule language or maintaining a list of type/check/effect names. New language
 constructs using this format need no Android update. The CLI also sends proposal
 source to the receiver for parsing, without requiring a matching local parser.
 
+The caller submits source only; additional compiled-definition or review fields
+are rejected. The receiver generates a normalized rule from the exact compiled
+definition it executes, including the resolved executable and explicit variable
+boundaries. Android uses that daemon-generated review as the main approval display;
+the caller's original spelling and comments remain in **Rule details (YAML)** and
+audit history. The Android client does not parse or regenerate the rule language.
+
+Before restoring saved proposals and grants, the daemon re-parses their original
+source, resolves the executable, compares the resulting definition and HOME binding,
+and verifies the proposal digest. Policy refresh also verifies the bound working
+directory. Inconsistent records are invalidated with an audit entry and cannot
+be approved or invoked. This detects inconsistent persistence; it does not protect
+against a compromised daemon or an administrator who controls its database and code.
+Valid older reviews without the normalized rendering remain usable.
+
 New rendering semantics can use a new review format version. When Android does
 not recognize a review's format or fields, or the review document is missing,
 it displays the complete proposal JSON as YAML directly in the approval card.

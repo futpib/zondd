@@ -63,6 +63,13 @@ fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
         }))
         .is_err()
     );
+    assert!(
+        serde_json::from_value::<libzond::Request>(json!({
+            "method": "propose_rule", "source": "rule benign() { run true }",
+            "bound": {"rule": {"program":"/usr/bin/sh", "args":["-c", "unexpected command"]}}
+        }))
+        .is_err()
+    );
     let proposal = &propose(&env, source);
     let review = &proposal["review"];
     assert_eq!(review["version"], 1);
@@ -297,6 +304,98 @@ fn approved_clone_runs_offline_survives_restart_and_is_observable_only_to_its_ca
     assert_eq!(event["type"], "rule_revoked");
     assert_eq!(states(&env, "exec")[0]["status"], "revoked");
     assert_eq!(invoke(&env, "clone-local", &["repo"])["type"], "error");
+}
+
+#[test]
+fn stored_source_ast_and_digest_must_agree_before_restoring_authority() {
+    let env = TestEnv::new();
+    fs::write(
+        &env.config,
+        env.policy.replace("timeout_secs = 4", "timeout_secs = 120"),
+    )
+    .unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["type"],
+        "reloaded"
+    );
+    let approved = approve(&env, "rule approved() { run true }");
+    let pending = propose(&env, "rule pending() { run true }");
+    let corrupt_digest = approve(&env, "rule digest() { run true }");
+    let legacy = approve(&env, "rule legacy() { run true }");
+    env.stop_daemon();
+    let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+    for proposal in [&approved, &pending, &corrupt_digest, &legacy] {
+        let id = proposal["id"].as_str().unwrap();
+        let text: String = db
+            .query_row("SELECT record FROM rule_states WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mut state: Value = serde_json::from_str(&text).unwrap();
+        if *proposal == legacy {
+            state["proposal"]["review"]["sections"]
+                .as_array_mut()
+                .unwrap()
+                .remove(0);
+        } else if *proposal == corrupt_digest {
+            state["proposal"]["source"] =
+                "# changed original text\nrule digest() { run true }".into();
+        } else {
+            let name = proposal["bound"]["rule"]["name"].as_str().unwrap();
+            state["proposal"]["source"] = format!("rule {name}() {{ run false }}").into();
+        }
+        if *proposal != corrupt_digest {
+            let mut unsigned: libzond::rules::Proposal =
+                serde_json::from_value(state["proposal"].clone()).unwrap();
+            unsigned.digest.clear();
+            state["proposal"]["digest"] =
+                libzond::config::revision(&serde_json::to_string(&unsigned).unwrap()).into();
+        }
+        db.execute(
+            "UPDATE rule_states SET record=?1 WHERE id=?2",
+            [state.to_string().as_str(), id],
+        )
+        .unwrap();
+    }
+    drop(db);
+    env.start_daemon();
+    let records = states(&env, "exec");
+    for proposal in [&approved, &pending, &corrupt_digest] {
+        let record = records
+            .iter()
+            .find(|s| s["proposal"]["id"] == proposal["id"])
+            .unwrap();
+        assert_eq!(record["status"], "invalidated");
+        let reason = record["reason"].as_str().unwrap();
+        assert!(
+            reason.contains(if *proposal == corrupt_digest {
+                "digest does not match"
+            } else {
+                "source and compiled definition disagree"
+            }),
+            "{reason}"
+        );
+        assert_eq!(
+            invoke(
+                &env,
+                proposal["bound"]["rule"]["name"].as_str().unwrap(),
+                &[]
+            )["type"],
+            "error"
+        );
+        assert_eq!(resolve(&env, proposal, true, None)["type"], "error");
+    }
+    assert_eq!(invoke(&env, "legacy", &[])["code"], 0);
+    let audit = env.request("admin", json!({"method":"actions","limit":100}));
+    assert_eq!(
+        audit["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["action"] == "rule_invalidated")
+            .count(),
+        3
+    );
 }
 
 #[test]

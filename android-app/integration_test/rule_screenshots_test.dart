@@ -153,7 +153,11 @@ void main() {
         await tester.enterText(find.byType(TextField), 'git clone');
         await capture('10-rule-search');
         await tester.tap(find.text('clone-futpib'));
-        await visible(find.text(source));
+        await visible(
+          find.text(
+            'Definition: ${proposal['review']['sections'][0]['fields'][0]['value']}',
+          ),
+        );
         await capture('11-rule-expanded');
         await visible(find.text('Revoke rule'));
         await tester.tap(find.text('Revoke rule'));

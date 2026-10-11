@@ -20,6 +20,44 @@ fn principal_revision(config: &Config, principal: &str) -> Result<String> {
     )?))
 }
 
+fn compile(source: &str) -> Result<libzond::rules::Rule> {
+    let mut rule = libzond::rules::parse(source)?;
+    let program = if rule.program.contains('/') {
+        let path = PathBuf::from(&rule.program);
+        ensure!(path.is_absolute(), "executable paths must be absolute");
+        path
+    } else {
+        ["/usr/bin", "/bin"]
+            .iter()
+            .map(|dir| PathBuf::from(dir).join(&rule.program))
+            .find(|p| p.is_file())
+            .context("executable not found in /usr/bin:/bin")?
+    };
+    let program = std::fs::canonicalize(program).context("resolve executable")?;
+    libzond::paths::trusted_path(&program)?;
+    ensure!(program.is_file(), "executable must be a file");
+    rule.program = program.to_str().context("non-UTF8 executable")?.into();
+    Ok(rule)
+}
+
+fn check_stored(proposal: &Proposal) -> Result<()> {
+    ensure!(
+        compile(&proposal.source)? == proposal.bound.rule,
+        "rule source and compiled definition disagree"
+    );
+    ensure!(
+        std::path::Path::new(&proposal.bound.home) == libzond::paths::home_dir(),
+        "rule HOME binding changed"
+    );
+    let mut unsigned = proposal.clone();
+    unsigned.digest.clear();
+    ensure!(
+        revision(&serde_json::to_string(&unsigned)?) == proposal.digest,
+        "rule proposal digest does not match its contents"
+    );
+    Ok(())
+}
+
 impl Rules {
     pub fn revision(&self, principal: Option<&str>) -> Result<String> {
         let states: Vec<_> = self
@@ -30,14 +68,25 @@ impl Rules {
         Ok(revision(&serde_json::to_string(&states)?))
     }
 
-    pub fn load(history: &History) -> Result<Self> {
-        Ok(Self(
-            history
-                .rule_states(None, true)?
-                .into_iter()
-                .map(|s| (s.proposal.id.clone(), s))
-                .collect(),
-        ))
+    pub fn load(history: &mut History) -> Result<Self> {
+        let mut live = BTreeMap::new();
+        let mut invalid = Vec::new();
+        for mut state in history.rule_states(None, true)? {
+            // Review changes have their own invalidation reason during refresh.
+            if review::is_current(&state.proposal.bound, state.proposal.review.as_ref())
+                && let Err(error) = check_stored(&state.proposal)
+            {
+                state.status = "invalidated".into();
+                state.reason = format!(
+                    "stored proposal failed consistency checks: {error:#}; submit a new proposal"
+                );
+                invalid.push(state);
+            } else {
+                live.insert(state.proposal.id.clone(), state);
+            }
+        }
+        history.save_rule_states(&invalid, "rule_invalidated")?;
+        Ok(Self(live))
     }
 
     pub fn invalidated(&self, config: &Config, current_revision: &str) -> Vec<RuleState> {
@@ -61,6 +110,10 @@ impl Rules {
                 .as_ref()
                 != Some(&proposal.principal_revision)
                 || config.operations.contains_key(&proposal.bound.rule.name)
+                || config
+                    .principals
+                    .get(&proposal.principal)
+                    .is_some_and(|p| p.cwd != proposal.bound.cwd)
             {
                 Some((
                     "invalidated",
@@ -148,7 +201,7 @@ impl Rules {
             "approval queue full"
         );
         ensure!(self.0.len() < 192, "rule capacity exhausted");
-        let mut rule = libzond::rules::parse(&source)?;
+        let rule = compile(&source)?;
         ensure!(
             !config.operations.contains_key(&rule.name),
             "rule name conflicts with configured operation"
@@ -161,21 +214,6 @@ impl Rules {
                     && s.proposal.bound.rule.name == rule.name),
             "rule already active or pending; withdraw it before proposing a replacement"
         );
-        let program = if rule.program.contains('/') {
-            let path = PathBuf::from(&rule.program);
-            ensure!(path.is_absolute(), "executable paths must be absolute");
-            path
-        } else {
-            ["/usr/bin", "/bin"]
-                .iter()
-                .map(|dir| PathBuf::from(dir).join(&rule.program))
-                .find(|p| p.is_file())
-                .context("executable not found in /usr/bin:/bin")?
-        };
-        let program = std::fs::canonicalize(program).context("resolve executable")?;
-        libzond::paths::trusted_path(&program)?;
-        ensure!(program.is_file(), "executable must be a file");
-        rule.program = program.to_str().context("non-UTF8 executable")?.into();
         let bound = BoundRule {
             rule,
             home: libzond::paths::home_dir()

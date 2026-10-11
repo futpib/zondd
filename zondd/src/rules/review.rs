@@ -34,10 +34,91 @@ fn word(word: &Word) -> String {
         .join(" + ")
 }
 
+fn source_word(word: &Word) -> String {
+    if let [Part::Literal(value)] = word.0.as_slice()
+        && !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_./@%+=-".contains(&b))
+    {
+        return value.clone();
+    }
+    let mut value = String::from("\"");
+    for part in &word.0 {
+        match part {
+            Part::Variable(name) => value.push_str(&format!("${{{name}}}")),
+            Part::Literal(text) => {
+                for c in text.chars() {
+                    if matches!(c, '\\' | '"' | '$') {
+                        value.push('\\');
+                    }
+                    value.push(c);
+                }
+            }
+        }
+    }
+    value.push('"');
+    value
+}
+
+fn normalized_source(bound: &BoundRule) -> String {
+    let rule = &bound.rule;
+    let parameters = rule
+        .parameters
+        .iter()
+        .map(|p| format!("{}: {}", p.name, p.kind))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut source = format!("rule {}({parameters}) {{\n", rule.name);
+    for requirement in &rule.requirements {
+        source.push_str(&format!(
+            "  require {} {}\n",
+            requirement.kind,
+            source_word(&requirement.path)
+        ));
+    }
+    let indent = if let Some(new) = &rule.create_new {
+        source.push_str(&format!(
+            "  create-new-dir {} as {} {{\n",
+            source_word(&new.path),
+            new.variable
+        ));
+        "    "
+    } else {
+        "  "
+    };
+    source.push_str(&format!(
+        "{indent}run {}{}",
+        if rule.sudo_password { "--sudo " } else { "" },
+        source_word(&Word(vec![Part::Literal(rule.program.clone())]))
+    ));
+    for arg in &rule.args {
+        source.push(' ');
+        source.push_str(&source_word(arg));
+    }
+    source.push('\n');
+    if rule.create_new.is_some() {
+        source.push_str("  }\n");
+    }
+    source.push('}');
+    source
+}
+
 pub(super) fn is_current(bound: &BoundRule, review: Option<&serde_json::Value>) -> bool {
     let Ok(mut current) = describe(bound) else {
         return false;
     };
+    if review == Some(&current) {
+        return true;
+    }
+    // Earlier reviews contain the same execution details without the normalized source.
+    if !review.is_some_and(|r| {
+        r["sections"]
+            .as_array()
+            .is_some_and(|sections| sections.iter().any(|s| s["title"] == "Normalized rule"))
+    }) {
+        current["sections"].as_array_mut().unwrap().remove(0);
+    }
     if review == Some(&current) {
         return true;
     }
@@ -59,6 +140,10 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
         .iter()
         .any(|r| r.kind == "user-service-active-or-enabled");
     let mut sections = vec![
+        section(
+            "Normalized rule",
+            vec![field("Definition", normalized_source(bound))],
+        ),
         section(
             "Authority",
             vec![
@@ -168,6 +253,50 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_rule_round_trips_literal_text_variables_and_effects() {
+        for source in [
+            "# caller says this is harmless\nrule clone(x: repo-name) {\n require is-dir \"$HOME/code\"\n create-new \"$HOME/code/$x\" as dest {\n run /usr/bin/git clone -- \"git@github.com:futpib/$x.git\" \"$dest\"\n }\n}",
+            r##"rule literals(x: repo-name) { run printf "" '$x' '${x}' '$(whoami)' "a\"b" "a\\b" "$x.txt" "a'x" "# comment" }"##,
+            "rule whitespace() { run printf \"a\tb\" }",
+            "rule privileged() { run --sudo /usr/bin/paru -Syu --noconfirm }",
+            "rule service(name: repo-name) {\n require user-service-active-or-enabled \"$name.service\"\n run /usr/bin/systemctl --user restart -- \"$name.service\"\n}",
+        ] {
+            let rule = libzond::rules::parse(source).unwrap();
+            let bound = BoundRule {
+                rule: rule.clone(),
+                home: "/home/test".into(),
+                cwd: "/tmp".into(),
+            };
+            let normalized = normalized_source(&bound);
+            assert_eq!(
+                libzond::rules::parse(&normalized).unwrap(),
+                rule,
+                "{normalized}"
+            );
+            assert!(!normalized.contains("caller says"));
+            assert_eq!(
+                describe(&bound).unwrap()["sections"][0]["fields"][0]["value"],
+                normalized
+            );
+        }
+    }
+
+    #[test]
+    fn prior_reviews_remain_valid_but_a_different_normalized_rule_does_not() {
+        let bound = BoundRule {
+            rule: libzond::rules::parse("rule old() { run /usr/bin/true }").unwrap(),
+            home: "/home/test".into(),
+            cwd: "/tmp".into(),
+        };
+        let mut current = describe(&bound).unwrap();
+        let mut old = current.clone();
+        old["sections"].as_array_mut().unwrap().remove(0);
+        assert!(is_current(&bound, Some(&old)));
+        current["sections"][0]["fields"][0]["value"] = "rule old() { run /usr/bin/false }".into();
+        assert!(!is_current(&bound, Some(&current)));
+    }
 
     #[test]
     fn sudo_authority_cannot_reuse_an_unprivileged_review() {

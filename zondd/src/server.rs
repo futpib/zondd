@@ -309,7 +309,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
     let (control, mut control_rx) = mpsc::channel(16);
     let (changed, _) = watch::channel(());
     let mut history = History::open(&config_path)?;
-    let mut rules = Rules::load(&history)?;
+    let mut rules = Rules::load(&mut history)?;
     rules.refresh(&config, &revision, &mut history)?;
     let state = Arc::new(State {
         active: Mutex::new(Active {
