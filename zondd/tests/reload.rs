@@ -20,6 +20,31 @@ fn capacity_policy(policy: &str) -> String {
     )
 }
 
+#[test]
+fn removing_a_directory_rule_rejects_a_pending_request() {
+    let env = TestEnv::new();
+    let directory = env.owned_workdir();
+    let path = directory.to_str().unwrap();
+    let policy = format!(
+        "{}\n[[principals.exec.rules]]\nprogram = \"/usr/bin/pwd\"\ncwd = {path:?}\ndecision = \"ask\"\n",
+        env.policy
+    );
+    fs::write(&env.config, &policy).unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["type"],
+        "reloaded"
+    );
+    let (mut caller, approval) = env.pending(json!({
+        "method":"run", "command":{"program":"/usr/bin/pwd"}, "cwd":path
+    }));
+    fs::write(&env.config, policy.replace(path, "/tmp/another-directory")).unwrap();
+    let reloaded = env.request("admin", json!({"method":"reload"}));
+    assert_eq!(reloaded["type"], "reloaded");
+    assert_eq!(reloaded["cancelled_approvals"], 1);
+    assert_eq!(caller.event()["reason"], "command denied by updated policy");
+    assert_eq!(env.resolve(&approval, true)["type"], "error");
+}
+
 fn hold_capacity(env: &TestEnv) -> (Session, PathBuf) {
     let gate = env.dir.path().join("gate");
     mkfifo(&gate, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();

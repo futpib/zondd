@@ -55,6 +55,9 @@ enum Action {
     RevokeKey(authorize::RevokeOptions),
     /// Execute an absolute program with argv, subject to policy. No implicit shell.
     Exec {
+        /// Run from this directory if an exact directory rule permits it.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
     },
@@ -140,6 +143,9 @@ enum Action {
 #[derive(Subcommand)]
 enum CheckAction {
     Exec {
+        /// Check a command in this directory.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
     },
@@ -225,11 +231,12 @@ async fn run(cli: Cli) -> Result<u8> {
         };
     }
     let request = match &cli.command {
-        Action::Exec { argv } => Request::Run {
+        Action::Exec { argv, cwd } => Request::Run {
             command: Command {
                 program: argv[0].clone(),
                 args: argv[1..].to_vec(),
             },
+            cwd: cwd.clone(),
         },
         Action::Invoke { operation, args } => Request::Invoke {
             operation: operation.clone(),
@@ -249,11 +256,12 @@ async fn run(cli: Cli) -> Result<u8> {
         Action::Permissions => Request::Permissions {},
         Action::Check { input } => Request::Check {
             input: match input {
-                CheckAction::Exec { argv } => CheckInput::Run {
+                CheckAction::Exec { argv, cwd } => CheckInput::Run {
                     command: Command {
                         program: argv[0].clone(),
                         args: argv[1..].to_vec(),
                     },
+                    cwd: cwd.clone(),
                 },
                 CheckAction::Invoke { operation, args } => CheckInput::Invoke {
                     operation: operation.clone(),

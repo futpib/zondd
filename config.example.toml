@@ -21,10 +21,18 @@ default = "ask"
 operations = ["service-status"]
 
 # First matching rule wins. args is an exact argv match; omission means any argv.
+# Without cwd, a rule applies only in the principal's configured directory.
 [[principals.automation.rules]]
 program = "/usr/bin/uptime"
 args = []
 decision = "allow"
+
+# An explicit cwd permits this command to request a different directory.
+[[principals.automation.rules]]
+program = "/usr/bin/pwd"
+args = []
+cwd = "/var/tmp"
+decision = "ask"
 
 # A hard denial never enters the approval queue.
 [[principals.automation.rules]]

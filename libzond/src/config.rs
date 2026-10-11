@@ -94,6 +94,8 @@ pub struct Principal {
 pub struct Rule {
     pub program: String,
     pub args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
     pub decision: Decision,
 }
 
@@ -141,6 +143,19 @@ pub fn validate_command(command: &Command) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_cwd(cwd: &Path) -> Result<()> {
+    ensure!(cwd.is_absolute(), "cwd must be absolute");
+    let bytes = cwd.as_os_str().as_encoded_bytes();
+    ensure!(
+        !bytes
+            .split(|byte| *byte == b'/')
+            .any(|part| part == b"." || part == b".."),
+        "cwd must not contain . or .."
+    );
+    ensure!(!bytes.contains(&0), "NUL in cwd");
+    Ok(())
+}
+
 impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let config: Self = toml::from_str(text)?;
@@ -185,6 +200,9 @@ impl Config {
                 ensure!(self.operations.contains_key(op), "unknown operation {op}");
             }
             for rule in &p.rules {
+                if let Some(cwd) = &rule.cwd {
+                    validate_cwd(cwd)?;
+                }
                 validate_command(&Command {
                     program: rule.program.clone(),
                     args: rule.args.clone().unwrap_or_default(),
@@ -266,13 +284,27 @@ impl Config {
 
 impl Principal {
     pub fn decision(&self, command: &Command) -> Decision {
+        self.decision_in(command, &self.cwd)
+    }
+
+    pub fn decision_in(&self, command: &Command, cwd: &Path) -> Decision {
         self.rules
             .iter()
             .find(|r| {
                 r.program == command.program
                     && r.args.as_ref().is_none_or(|args| args == &command.args)
+                    && r.cwd.as_deref().unwrap_or(&self.cwd) == cwd
             })
-            .map_or(self.default, |r| r.decision)
+            .map_or_else(
+                || {
+                    if cwd == self.cwd {
+                        self.default
+                    } else {
+                        Decision::Deny
+                    }
+                },
+                |r| r.decision,
+            )
     }
 }
 

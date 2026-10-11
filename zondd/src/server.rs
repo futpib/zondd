@@ -5,9 +5,10 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use libzond::{
-    AskpassReply, AskpassRequest, CallerPermissions, Command, CredentialChallenge, Envelope, Event,
-    MAX_REQUEST_BYTES, Pending, PolicyCheck, Request, RequestRecord, SecretString, VERSION,
-    config::{Config, Decision, Principal, validate_command},
+    AskpassReply, AskpassRequest, CallerPermissions, CheckInput, Command, CredentialChallenge,
+    Envelope, Event, MAX_REQUEST_BYTES, Pending, PolicyCheck, Request, RequestRecord, SecretString,
+    VERSION,
+    config::{Config, Decision, validate_command, validate_cwd},
     wire,
 };
 use serde_json::json;
@@ -587,20 +588,29 @@ fn evaluate(
     config: &Config,
     name: &str,
     input: &Request,
-) -> Result<(Command, Option<String>, Decision)> {
+) -> Result<(Command, Option<String>, Decision, PathBuf)> {
     let p = config
         .principals
         .get(name)
         .context("principal is no longer configured")?;
     match input {
-        Request::Run { command } => {
+        Request::Run { command, cwd } => {
             ensure!(p.allow_exec, "this principal only permits named operations");
             validate_command(command)?;
-            Ok((command.clone(), None, p.decision(command)))
+            if let Some(cwd) = cwd {
+                validate_cwd(cwd)?;
+            }
+            let cwd = cwd.as_ref().unwrap_or(&p.cwd);
+            Ok((
+                command.clone(),
+                None,
+                p.decision_in(command, cwd),
+                cwd.clone(),
+            ))
         }
         Request::Invoke { operation, args } => {
             let (command, decision) = config.operation(p, operation, args)?;
-            Ok((command, Some(operation.clone()), decision))
+            Ok((command, Some(operation.clone()), decision, p.cwd.clone()))
         }
         _ => anyhow::bail!("not an executable request"),
     }
@@ -616,7 +626,7 @@ fn reevaluate(config: &Config, entry: &mut Entry) {
         reject(entry, "expired", "approval expired".into());
         return;
     }
-    let (command, _, decision) =
+    let (command, _, decision, cwd) =
         match evaluate(config, &entry.record.principal, &entry.record.input) {
             Ok(value) => value,
             Err(error) => {
@@ -628,7 +638,6 @@ fn reevaluate(config: &Config, entry: &mut Entry) {
         reject(entry, "rejected", "command denied by updated policy".into());
         return;
     }
-    let cwd = config.principals[&entry.record.principal].cwd.clone();
     let sudo_password = match &entry.record.input {
         Request::Invoke { operation, .. } => config.operations[operation].sudo_password,
         _ => false,
@@ -993,11 +1002,15 @@ async fn dispatch(
                 policy_decision: None,
                 reason: String::new(),
                 command: None,
-                cwd: p.cwd.clone(),
+                cwd: match &input {
+                    CheckInput::Run { cwd: Some(cwd), .. } => cwd.clone(),
+                    _ => p.cwd.clone(),
+                },
             };
             match evaluate(&active.config, &name, &input.into()) {
-                Ok((command, _, decision)) => {
+                Ok((command, _, decision, cwd)) => {
                     check.command = Some(command);
+                    check.cwd = cwd;
                     check.policy_decision = Some(decision);
                     let (effective, reason) = match decision {
                         Decision::Allow => (Decision::Allow, "allowed by policy"),
@@ -1028,21 +1041,21 @@ async fn dispatch(
 fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
     let mut active = state.active.lock().unwrap();
     let config = active.config.clone();
-    let (command, operation, decision) = match evaluate(&config, &record.principal, &record.input) {
-        Ok(value) => value,
-        Err(error) => {
-            let reason = error.to_string();
-            let unauthorized = !config.principals.contains_key(&record.principal)
-                || matches!(&record.input, Request::Run { .. })
-                    && !config.principals[&record.principal].allow_exec;
-            return Ok(Some(if unauthorized {
-                reject(&reason)
-            } else {
-                Event::Error { message: reason }
-            }));
-        }
-    };
-    let cwd = config.principals[&record.principal].cwd.clone();
+    let (command, operation, decision, cwd) =
+        match evaluate(&config, &record.principal, &record.input) {
+            Ok(value) => value,
+            Err(error) => {
+                let reason = error.to_string();
+                let unauthorized = !config.principals.contains_key(&record.principal)
+                    || matches!(&record.input, Request::Run { .. })
+                        && !config.principals[&record.principal].allow_exec;
+                return Ok(Some(if unauthorized {
+                    reject(&reason)
+                } else {
+                    Event::Error { message: reason }
+                }));
+            }
+        };
     record.command = Some(command.clone());
     record.cwd = Some(cwd.clone());
     if decision == Decision::Deny {
@@ -1115,7 +1128,7 @@ enum Step {
     Wait(Instant),
     Execute {
         config: Arc<Config>,
-        principal: Principal,
+        cwd: PathBuf,
         command: Command,
         operation: Option<String>,
         sudo_password: bool,
@@ -1145,7 +1158,7 @@ fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
     if entry.decision == Decision::Allow || entry.approved {
         if active.running < active.config.limits.max_running {
             let config = active.config.clone();
-            let principal = config.principals[&entry.record.principal].clone();
+            let cwd = entry.request.cwd.clone();
             entry.record.status = "running".into();
             entry.record.authorization =
                 Some(if entry.approved { "approval" } else { "policy" }.into());
@@ -1163,7 +1176,7 @@ fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
             state.changed.send_replace(());
             return Ok(Step::Execute {
                 config,
-                principal,
+                cwd,
                 command: entry.request.command,
                 operation: entry.request.operation,
                 sudo_password: entry.request.sudo_password,
@@ -1198,7 +1211,7 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
                 Step::Done(event) => return Ok(event),
                 Step::Execute {
                     config,
-                    principal,
+                    cwd,
                     command,
                     operation,
                     sudo_password,
@@ -1221,7 +1234,7 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
                     let state = state.clone();
                     return execution::execute(
                         &command,
-                        &principal,
+                        &cwd,
                         askpass.as_ref().map(|g| g.path.as_path()),
                         move |stderr, bytes| {
                             let mut active = state.active.lock().unwrap();

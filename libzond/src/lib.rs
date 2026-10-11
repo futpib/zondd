@@ -21,6 +21,8 @@ pub struct Command {
 pub enum Request {
     Run {
         command: Command,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<std::path::PathBuf>,
     },
     Invoke {
         operation: String,
@@ -82,6 +84,8 @@ pub enum Request {
 pub enum CheckInput {
     Run {
         command: Command,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<std::path::PathBuf>,
     },
     Invoke {
         operation: String,
@@ -92,7 +96,7 @@ pub enum CheckInput {
 impl From<CheckInput> for Request {
     fn from(input: CheckInput) -> Self {
         match input {
-            CheckInput::Run { command } => Self::Run { command },
+            CheckInput::Run { command, cwd } => Self::Run { command, cwd },
             CheckInput::Invoke { operation, args } => Self::Invoke { operation, args },
         }
     }

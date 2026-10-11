@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use libzond::{Command, Event, config::Principal};
+use libzond::{Command, Event};
 use std::{
     io,
     os::unix::process::{CommandExt, ExitStatusExt},
@@ -37,11 +37,11 @@ impl Drop for ProcessGuard {
 
 pub async fn execute(
     command: &Command,
-    principal: &Principal,
+    cwd: &Path,
     askpass: Option<&Path>,
     mut output: impl FnMut(bool, &[u8]) -> Result<()>,
 ) -> Result<Event> {
-    let mut process = start(command, principal, askpass)?;
+    let mut process = start(command, cwd, askpass)?;
     let stdout = process
         .child
         .as_mut()
@@ -88,13 +88,13 @@ pub async fn execute(
     })
 }
 
-fn start(command: &Command, principal: &Principal, askpass: Option<&Path>) -> Result<ProcessGuard> {
+fn start(command: &Command, cwd: &Path, askpass: Option<&Path>) -> Result<ProcessGuard> {
     let mut cmd = process::Command::new(&command.program);
     cmd.args(&command.args)
-        .current_dir(&principal.cwd)
+        .current_dir(cwd)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("HOME", &principal.cwd)
+        .env("HOME", cwd)
         .env("LANG", "C.UTF-8")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

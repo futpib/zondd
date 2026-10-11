@@ -1,4 +1,4 @@
-use libzondtest::{TestEnv, command, serde_json::json};
+use libzondtest::{TestEnv, checked, command, decoded, serde_json::json};
 use std::fs;
 
 fn check(env: &TestEnv, principal: &str, input: serde_json::Value) -> serde_json::Value {
@@ -108,6 +108,92 @@ fn checks_follow_execution_rules_without_execution_or_approval() {
         env.request("admin", json!({"method":"history"}))["requests"],
         json!([])
     );
+}
+
+#[test]
+fn an_explicit_directory_rule_controls_check_review_and_execution() {
+    let env = TestEnv::new();
+    let directory = env.owned_workdir();
+    let path = directory.to_str().unwrap();
+    fs::write(
+        &env.config,
+        format!(
+            "{}\n[[principals.exec.rules]]\nprogram = \"/usr/bin/pwd\"\ncwd = {path:?}\ndecision = \"ask\"\n",
+            env.policy
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["type"],
+        "reloaded"
+    );
+    let input = json!({"method":"run","command":{"program":"/usr/bin/pwd"},"cwd":path});
+    let check_result = check(&env, "exec", input.clone());
+    assert_eq!(check_result["decision"], "ask");
+    assert_eq!(check_result["cwd"], path);
+    let cli = checked(
+        env.cli().args([
+            "--principal",
+            "exec",
+            "--json",
+            "check",
+            "exec",
+            "--cwd",
+            path,
+            "/usr/bin/pwd",
+        ]),
+        0,
+    );
+    let cli: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli["check"]["cwd"], path);
+    assert_eq!(cli["check"]["decision"], "ask");
+    assert_eq!(
+        check(
+            &env,
+            "exec",
+            json!({"method":"run","command":{"program":"/usr/bin/id","args":["-u"]},"cwd":path})
+        )["decision"],
+        "deny"
+    );
+    assert_eq!(
+        check(
+            &env,
+            "exec",
+            json!({"method":"run","command":{"program":"/usr/bin/pwd"},"cwd":"/tmp/unlisted"})
+        )["decision"],
+        "deny"
+    );
+    assert_eq!(
+        check(
+            &env,
+            "exec",
+            json!({"method":"run","command":{"program":"/usr/bin/pwd"},"cwd":"relative"})
+        )["decision"],
+        "deny"
+    );
+    let (mut caller, approval) = env.pending(input);
+    assert_eq!(env.queue()[0]["cwd"], path);
+    assert_eq!(env.resolve(&approval, true)["type"], "resolved");
+    let completed = caller.event();
+    assert_eq!(completed["type"], "completed");
+    assert_eq!(
+        decoded(&completed, "stdout"),
+        format!("{path}\n").as_bytes()
+    );
+    let allowed = fs::read_to_string(&env.config)
+        .unwrap()
+        .replace("decision = \"ask\"", "decision = \"allow\"");
+    fs::write(&env.config, allowed).unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["type"],
+        "reloaded"
+    );
+    let output = checked(
+        env.cli()
+            .args(["--principal", "exec", "exec", "--cwd", path, "/usr/bin/pwd"]),
+        0,
+    );
+    assert_eq!(output.stdout, format!("{path}\n").as_bytes());
 }
 
 #[test]

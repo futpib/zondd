@@ -27,6 +27,11 @@ decision = "allow"
 "#;
 
 #[test]
+fn shipped_example_policy_is_valid() {
+    Config::parse(include_str!("../../config.example.toml")).unwrap();
+}
+
+#[test]
 fn defaults_require_review_and_explicit_policies_keep_their_boundaries() {
     for text in ["".to_owned(), libzond::config::default_policy()] {
         let c = Config::parse(&text).unwrap();
@@ -75,6 +80,52 @@ fn exact_argv_and_explicit_shell_denial() {
         Decision::Deny
     );
     assert_eq!(p.decision(&cmd("/bin/sh", &[])), Decision::Deny);
+}
+
+#[test]
+fn directory_rules_require_an_exact_opt_in_for_nondefault_directories() {
+    let policy = format!(
+        "{POLICY}\n[[principals.test.rules]]\nprogram = \"/usr/bin/pwd\"\ncwd = \"/var/tmp/project\"\ndecision = \"allow\"\n"
+    );
+    let config = Config::parse(&policy).unwrap();
+    let principal = &config.principals["test"];
+    let command = Command {
+        program: "/usr/bin/pwd".into(),
+        args: vec![],
+    };
+    assert_eq!(
+        principal.decision_in(&command, "/tmp".as_ref()),
+        Decision::Ask
+    );
+    assert_eq!(
+        principal.decision_in(&command, "/var/tmp/project".as_ref()),
+        Decision::Allow
+    );
+    assert_eq!(
+        principal.decision_in(&command, "/var/tmp/other".as_ref()),
+        Decision::Deny
+    );
+    assert_eq!(
+        principal.decision_in(
+            &Command {
+                program: "/usr/bin/id".into(),
+                args: vec!["-u".into()],
+            },
+            "/var/tmp/project".as_ref()
+        ),
+        Decision::Deny
+    );
+    for cwd in [
+        "relative",
+        "/var/tmp/../etc",
+        "/var/tmp/./project",
+        "/tmp\0else",
+    ] {
+        assert!(
+            Config::parse(&policy.replace("/var/tmp/project", cwd)).is_err(),
+            "{cwd:?}"
+        );
+    }
 }
 
 #[test]

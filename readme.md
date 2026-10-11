@@ -308,6 +308,7 @@ cancel it afterward.
 
 ```sh
 zondctl --host alice@server --identity ~/.ssh/caller exec /usr/bin/long-command --flag
+zondctl --host alice@server --identity ~/.ssh/caller exec --cwd /var/tmp /usr/bin/pwd
 zondctl --host alice@server --identity ~/.ssh/caller follow REQUEST_ID
 zondctl --host alice@server --identity ~/.ssh/caller job REQUEST_ID
 zondctl --host alice@server --identity ~/.ssh/caller cancel REQUEST_ID
@@ -333,6 +334,7 @@ Use the same caller key or local principal that will submit the operation:
 ```sh
 zondctl --host alice@server --identity ~/.ssh/caller permissions
 zondctl --host alice@server --identity ~/.ssh/caller check exec /usr/bin/uptime
+zondctl --host alice@server --identity ~/.ssh/caller check exec --cwd /var/tmp /usr/bin/pwd
 zondctl --principal monitor check invoke service-status slopd.service
 zondctl --principal default --json check exec /usr/bin/id -u
 ```
@@ -365,10 +367,19 @@ or a principal `--socket`; the admin endpoint has no caller identity.
 ## Policy and approval
 
 Raw `exec` requires `allow_exec = true`. Rules match the literal absolute
-program path and, when `args` is present, the complete argv vector. Rules are
+program path and, when `args` is present, the complete argv vector. A rule
+without `cwd` matches only the principal's configured working directory.
+`exec --cwd /absolute/path` requests another directory; it is denied unless a
+rule for that command names the exact directory with `cwd = "/absolute/path"`.
+The principal's default decision applies only in its configured directory.
+`check exec --cwd` previews the same decision. Rules are
 ordered; the first match wins. Omitting `args` permits the rule to match every
 argument vector for that program. No shell quoting, glob, regex, path
-canonicalization, or command-prefix matching is performed.
+canonicalization, or command-prefix matching is performed. Directory matching
+controls where a command starts; it does not restrict which files the command
+can access. Requested directories must be absolute and cannot contain `.` or
+`..` components. Named operations continue to use the principal's configured
+directory.
 
 `allow` executes immediately; `deny` rejects immediately; `ask` blocks pending
 one-time review when approvals are enabled, otherwise it rejects. Set

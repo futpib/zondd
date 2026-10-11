@@ -936,7 +936,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                                   ).textTheme.labelMedium,
                                 ),
                                 subtitle: SelectableText(
-                                  '${rule['program']}\n${rule.containsKey('args') ? jsonEncode(rule['args']) : 'Any arguments'}',
+                                  '${rule['program']}\n${rule.containsKey('args') ? jsonEncode(rule['args']) : 'Any arguments'}\nWorking directory: ${rule['cwd'] ?? entry.value['cwd']}',
                                   style: mono,
                                 ),
                               ),

@@ -41,6 +41,7 @@ Map<String, dynamic> parsePolicyOverview(String content) {
       final rule = table(value);
       scalar<String>(rule, 'decision');
       scalar<String>(rule, 'program');
+      scalar<String>(rule, 'cwd');
       strings(rule['args']);
     }
   }
