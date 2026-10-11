@@ -240,6 +240,16 @@ rule review and revocation over SSH and Iroh. That test verifies caller-visible
 status, invalid parameter rejection, successful directory publication, and
 refusal to replace an existing destination.
 
+External adapter repositories can set `ZONDD_ANDROID_TEST` to an absolute Dart
+test path. The harness creates and cleans up a temporary entrypoint inside this
+app's `integration_test` directory so Flutter runs it on the selected device. Set
+`ZONDD_ANDROID_EXTRA_FIXTURE=/path/to/fixture.json` to add application-specific
+fields to the test's `ZONDD_FIXTURE` object. Built-in connection fields cannot
+be replaced. Optional `forbiddenLogValues` lists nonempty dummy credential
+strings to check against the daemon log and SQLite files after the test;
+`additionalLogFiles` lists absolute paths to application logs to check too.
+External repositories own their adapter setup, fixtures, and cleanup.
+
 For external signing, install OpenKeychain on a disposable emulator, add a test
 key there, and export its **OpenSSH public key** to a host file. Run the same
 command with `ZONDD_ANDROID_EXTERNAL_PUBLIC_KEY=/path/to/test-key.pub`. This

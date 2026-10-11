@@ -659,7 +659,7 @@ are delivered privately to the configured process session and are excluded from
 history; requests, withdrawals, interruptions, and outcomes remain auditable.
 
 See the [adapter protocol and configuration](adapters/readme.md) and the
-[IB Gateway integration](adapters/ibgateway/readme.md), which runs Gateway on an
+[IB Gateway integration](https://github.com/futpib/ibkr-tws-http/tree/master/adapters/ibgateway), which runs Gateway on an
 invisible display and collects credentials through Android without VNC. Future
 application or browser adapters use the same protocol. `zondctl pending`,
 `zondctl interaction ID`, and `zondctl review` also support these forms.

@@ -3,7 +3,7 @@
 A **credential adapter** is a configured program launched by zondd. It translates
 an application's login or other human-input flow into forms reviewed in Android
 or `zondctl review`. The broker and Android renderer are application-neutral.
-The [IB Gateway adapter](ibgateway/readme.md) is the first integration; other
+The [IB Gateway adapter](https://github.com/futpib/ibkr-tws-http/tree/master/adapters/ibgateway) is the first integration; other
 programs and browser automation can implement the same protocol.
 
 ```toml

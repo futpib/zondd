@@ -13,7 +13,10 @@ fn android_management_over_ssh_and_iroh() {
     let external_public_key = std::env::var("ZONDD_ANDROID_EXTERNAL_PUBLIC_KEY")
         .ok()
         .map(|path| fs::read_to_string(path).expect("read provider OpenSSH public key"));
-    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../android-app");
+    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../android-app")
+        .canonicalize()
+        .unwrap();
     let target = app.join("native/target");
     // Build this server from the app's lockfile so the emulator exercises its
     // pinned protocol, independently of any installed Iroh CLI.
@@ -94,34 +97,7 @@ fn android_management_over_ssh_and_iroh() {
         .nth(1)
         .unwrap()
         .to_owned();
-    let gateway = std::env::var("ZONDD_GATEWAY_HTTP_REPO").ok().map(|repo| {
-        let adapter = app.join("../adapters/ibgateway");
-        checked(&mut Command::new(adapter.join("build.sh")), 0);
-        let classes = adapter.join("build/patch");
-        fs::create_dir_all(&classes).unwrap();
-        checked(
-            Command::new("javac")
-                .args(["--release", "17", "-d"])
-                .arg(&classes)
-                .arg(adapter.join("test/AuthenticationPatch.java")),
-            0,
-        );
-        let manifest = adapter.join("build/patch.mf");
-        fs::write(&manifest, "Premain-Class: AuthenticationPatch\n").unwrap();
-        checked(
-            Command::new("jar")
-                .args(["--create", "--file"])
-                .arg(adapter.join("build/authentication-patch.jar"))
-                .arg("--manifest")
-                .arg(manifest)
-                .arg("-C")
-                .arg(classes)
-                .arg("."),
-            0,
-        );
-        json!({"repo":repo, "script":adapter.join("test/monkeypatch.py"), "directory":ssh.env.dir.path().join("gateway")})
-    });
-    let fixture = json!({
+    let mut fixture = json!({
         "host":"10.0.2.2", "port":ssh.port, "endpoint":endpoint,
         "authPort":auth_port, "authEndpoint":auth_endpoint,
         "user":ssh.env.user.name, "runtime":ssh.env.runtime, "config":ssh.env.config,
@@ -129,8 +105,20 @@ fn android_management_over_ssh_and_iroh() {
         "probe":ssh.env.probe,
         "key":fs::read_to_string(ssh.env.dir.path().join("management-key")).unwrap(),
         "callerKey":fs::read_to_string(ssh.env.dir.path().join("exec-key")).unwrap(),
-        "gateway":gateway,
     });
+    if let Ok(path) = std::env::var("ZONDD_ANDROID_EXTRA_FIXTURE") {
+        let extra: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&fs::read(path).expect("read external test fixture"))
+                .expect("external test fixture must be a JSON object");
+        let fixture = fixture.as_object_mut().unwrap();
+        for (name, value) in extra {
+            assert!(
+                !fixture.contains_key(&name),
+                "external fixture replaces built-in field {name}"
+            );
+            fixture.insert(name, value);
+        }
+    }
     let definitions = ssh.env.dir.path().join("android-defines.json");
     fs::write(
         &definitions,
@@ -142,12 +130,35 @@ fn android_management_over_ssh_and_iroh() {
     )
     .unwrap();
     fs::set_permissions(&definitions, fs::Permissions::from_mode(0o600)).unwrap();
+    // Flutter only recognizes device tests beneath this app's integration_test directory.
+    let mut external_test = None;
+    let selected_test = std::env::var("ZONDD_ANDROID_TEST").ok().map(|target| {
+        let source = app.join(&target).canonicalize().expect("find Android test");
+        if source.starts_with(app.join("integration_test")) {
+            return target;
+        }
+        let directory = tempfile::Builder::new()
+            .prefix(".external-")
+            .tempdir_in(app.join("integration_test"))
+            .unwrap();
+        let wrapper = directory.path().join("external_test.dart");
+        let source = serde_json::to_string(source.to_str().unwrap())
+            .unwrap()
+            .replace('$', "\\$");
+        fs::write(
+            &wrapper,
+            format!("import {source} as adapterTest;\nvoid main() => adapterTest.main();\n"),
+        )
+        .unwrap();
+        external_test = Some(directory);
+        wrapper.to_str().unwrap().to_owned()
+    });
     let log = fs::File::create(ssh.env.dir.path().join("android.log")).unwrap();
     let mut process = Process::spawn(
         Command::new(std::env::var("FLUTTER").unwrap_or_else(|_| "flutter".into()))
             .current_dir(app)
             .args(["test", "--reporter", "expanded"])
-            .args(if let Ok(target) = std::env::var("ZONDD_ANDROID_TEST") {
+            .args(if let Some(target) = selected_test {
                 vec![target]
             } else if external_public_key.is_some() {
                 vec!["integration_test/external_key_test.dart".into()]
@@ -175,7 +186,7 @@ fn android_management_over_ssh_and_iroh() {
         "Android integration failed"
     );
     assert!(ssh.env.queue().is_empty());
-    if gateway.is_some() {
+    if let Some(secrets) = fixture["forbiddenLogValues"].as_array() {
         let mut logs = vec![ssh.env.dir.path().join("daemon.log")];
         for file in fs::read_dir(ssh.env.config.parent().unwrap()).unwrap() {
             let file = file.unwrap();
@@ -187,17 +198,21 @@ fn android_management_over_ssh_and_iroh() {
                 logs.push(file.path());
             }
         }
-        for transport in ["ssh", "iroh"] {
-            logs.push(
-                ssh.env
-                    .dir
-                    .path()
-                    .join(format!("gateway/{transport}/http.log")),
+        if let Some(extra) = fixture["additionalLogFiles"].as_array() {
+            logs.extend(
+                extra
+                    .iter()
+                    .map(|path| std::path::PathBuf::from(path.as_str().unwrap())),
             );
         }
         for path in logs {
             let bytes = fs::read(&path).unwrap();
-            for secret in [b"test-user".as_slice(), b"test-gateway-password".as_slice()] {
+            for secret in secrets {
+                let secret = secret
+                    .as_str()
+                    .expect("forbidden log value must be text")
+                    .as_bytes();
+                assert!(!secret.is_empty(), "forbidden log value must not be empty");
                 assert!(
                     !bytes.windows(secret.len()).any(|value| value == secret),
                     "credential leaked to {}",
@@ -206,4 +221,5 @@ fn android_management_over_ssh_and_iroh() {
             }
         }
     }
+    drop(external_test);
 }
