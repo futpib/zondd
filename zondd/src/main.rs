@@ -6,7 +6,10 @@ mod server;
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use libzond::config::{Config, valid_name};
-use std::path::PathBuf;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[derive(Parser)]
 #[command(
@@ -41,6 +44,14 @@ enum Action {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(path) = std::env::args_os().next().map(PathBuf::from)
+        && let Some(token) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("askpass-"))
+    {
+        return askpass(&path, token).await;
+    }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -77,6 +88,37 @@ async fn main() -> Result<()> {
             std::process::exit(if result.is_ok() { 0 } else { 1 });
         }
     }
+}
+
+async fn askpass(path: &Path, token: &str) -> Result<()> {
+    use anyhow::Context;
+    use tokio::io::BufReader;
+    let prompt = std::env::args_os()
+        .nth(1)
+        .map(|prompt| prompt.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sudo password".into());
+    let socket = tokio::net::UnixStream::connect(
+        path.parent()
+            .context("askpass path has no parent")?
+            .join("askpass.sock"),
+    )
+    .await?;
+    let (read, mut write) = socket.into_split();
+    libzond::wire::write(
+        &mut write,
+        &libzond::AskpassRequest {
+            token: token.into(),
+            prompt,
+        },
+    )
+    .await?;
+    let response: libzond::AskpassReply = libzond::wire::read(&mut BufReader::new(read), 8192)
+        .await?
+        .context("no credential response")?;
+    let password = response.password.context("credential request denied")?;
+    std::io::stdout().write_all(password.0.as_bytes())?;
+    std::io::stdout().write_all(b"\n")?;
+    Ok(())
 }
 
 async fn bridge(runtime_dir: PathBuf, principal: String) -> Result<()> {

@@ -47,6 +47,10 @@ pub enum Request {
         approval_id: String,
         approve: bool,
     },
+    Credential {
+        challenge_id: String,
+        password: Option<SecretString>,
+    },
     Status,
     Reload {
         #[serde(default)]
@@ -141,12 +145,53 @@ pub struct Pending {
     pub detached: bool,
     pub command: Command,
     pub operation: Option<String>,
+    #[serde(default)]
+    pub sudo_password: bool,
     pub reason: String,
     pub expires_unix_ms: u64,
     #[serde(default)]
     pub request_id: String,
     #[serde(default)]
     pub cwd: std::path::PathBuf,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretString(pub String);
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+impl Drop for SecretString {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CredentialChallenge {
+    pub challenge_id: String,
+    pub request_id: String,
+    pub principal: String,
+    pub command: Command,
+    pub operation: String,
+    pub prompt: String,
+    pub expires_unix_ms: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AskpassRequest {
+    pub token: String,
+    pub prompt: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AskpassReply {
+    pub password: Option<SecretString>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,6 +265,11 @@ pub enum Event {
     },
     Queue {
         requests: Vec<Pending>,
+        #[serde(default)]
+        credentials: Vec<CredentialChallenge>,
+    },
+    CredentialAnswered {
+        challenge_id: String,
     },
     Resolved {
         approval_id: String,

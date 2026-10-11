@@ -4,7 +4,7 @@ mod control;
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
-use libzond::{CheckInput, Command, Event, Request};
+use libzond::{CheckInput, Command, Event, Request, SecretString};
 use libzondctl::{Client, SshOptions};
 use std::{
     io::{IsTerminal, Write},
@@ -91,6 +91,14 @@ enum Action {
         id: String,
     },
     Deny {
+        id: String,
+    },
+    /// Answer a running operation's sudo password challenge from a terminal.
+    Credential {
+        id: String,
+    },
+    /// Reject a running operation's sudo password challenge.
+    RejectCredential {
         id: String,
     },
     /// Review pending commands interactively on the local admin socket.
@@ -262,6 +270,24 @@ async fn run(cli: Cli) -> Result<u8> {
             approval_id: id.clone(),
             approve: false,
         },
+        Action::Credential { id } => {
+            ensure!(
+                cli.host.is_none() && cli.principal.is_none(),
+                "credential requires the local admin socket"
+            );
+            ensure!(
+                std::io::stdin().is_terminal(),
+                "credential requires an interactive terminal"
+            );
+            Request::Credential {
+                challenge_id: id.clone(),
+                password: Some(SecretString(rpassword::prompt_password("Sudo password: ")?)),
+            }
+        }
+        Action::RejectCredential { id } => Request::Credential {
+            challenge_id: id.clone(),
+            password: None,
+        },
         Action::Status => Request::Status,
         Action::Reload => Request::Reload { revision: None },
         Action::History { before, limit } => Request::History {
@@ -396,10 +422,14 @@ async fn run(cli: Cli) -> Result<u8> {
 async fn review(cli: &Cli) -> Result<u8> {
     loop {
         let mut client = cli.connect().await?;
-        let Event::Queue { requests } = client.request(Request::Pending).await? else {
+        let Event::Queue {
+            requests,
+            credentials,
+        } = client.request(Request::Pending).await?
+        else {
             bail!("expected approval queue");
         };
-        if requests.is_empty() {
+        if requests.is_empty() && credentials.is_empty() {
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
@@ -426,6 +456,33 @@ async fn review(cli: &Cli) -> Result<u8> {
                 .request(Request::Resolve {
                     approval_id: request.approval_id,
                     approve,
+                })
+                .await?;
+            println!("{}", serde_json::to_string(&event)?);
+        }
+        for challenge in credentials {
+            println!("{}", serde_json::to_string_pretty(&challenge)?);
+            print!("Provide sudo password [p], reject [d], skip [s], quit [q]: ");
+            std::io::stdout().flush()?;
+            let answer = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                Ok(line)
+            })
+            .await
+            .context("read credential answer")??;
+            let password = match answer.trim() {
+                "p" => Some(SecretString(rpassword::prompt_password("Sudo password: ")?)),
+                "d" => None,
+                "q" | "" => return Ok(0),
+                _ => continue,
+            };
+            let event = cli
+                .connect()
+                .await?
+                .request(Request::Credential {
+                    challenge_id: challenge.challenge_id,
+                    password,
                 })
                 .await?;
             println!("{}", serde_json::to_string(&event)?);

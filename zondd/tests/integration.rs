@@ -328,9 +328,16 @@ fn shipped_user_service_runs_and_executes_as_the_current_user() {
             &format!("RuntimeDirectory={name}"),
         );
     fs::write(&service.unit, contents).unwrap();
+    let policy = env.policy.replace(
+        "operations = [\"greet\"]",
+        "operations = [\"greet\", \"privileged\"]",
+    ) + &format!(
+        "\n[operations.privileged]\nprogram = {:?}\nfixed_args = [\"askpass\"]\ndecision = \"ask\"\nsudo_password = true\n",
+        env.probe.display()
+    );
     fs::write(
         &env.config,
-        format!("runtime_dir = {:?}\n{}", runtime, env.policy),
+        format!("runtime_dir = {:?}\n{policy}", runtime),
     )
     .unwrap();
     checked(
@@ -386,6 +393,40 @@ fn shipped_user_service_runs_and_executes_as_the_current_user() {
     let result = session.event();
     assert_eq!(result["code"], 0, "{result}");
     assert_eq!(decoded(&result, "stdout"), b"active\n");
+    let mut privileged = libzondtest::Session::new(
+        &runtime.join("ops.sock"),
+        json!({"method":"invoke","operation":"privileged","args":[]}),
+    );
+    let pending = privileged.event();
+    assert_eq!(pending["type"], "pending", "{pending}");
+    let approved = libzondtest::Session::new(
+        &runtime.join("admin.sock"),
+        json!({"method":"resolve","approval_id":pending["request"]["approval_id"],"approve":true}),
+    )
+    .event();
+    assert_eq!(approved["type"], "resolved");
+    for password in ["test-password-one", "test-password-two"] {
+        let mut id = None;
+        wait_for(|| {
+            id =
+                libzondtest::Session::new(&runtime.join("admin.sock"), json!({"method":"pending"}))
+                    .event()["credentials"]
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|entry| entry["challenge_id"].as_str())
+                    .map(str::to_owned);
+            id.is_some()
+        });
+        let answer = libzondtest::Session::new(
+            &runtime.join("admin.sock"),
+            json!({"method":"credential","challenge_id":id,"password":password}),
+        )
+        .event();
+        assert_eq!(answer["type"], "credential_answered", "{answer}");
+    }
+    let result = privileged.event();
+    assert_eq!(result["code"], 0, "{result}");
+    assert_eq!(decoded(&result, "stdout"), b"two prompts answered\n");
     let pid = || {
         checked(
             Command::new("systemctl").args([

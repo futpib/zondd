@@ -12,11 +12,13 @@ fs2 = "0.4.3"
 libc = "0.2.190"
 libzond = { version = "0.1.0", path = "../libzond" }
 libzondctl = { version = "0.1.0", path = "../libzondctl" }
+rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 similar = "3.2.0"
 tempfile = "3.27.0"
 tokio = { version = "1.53.2", features = ["full"] }
+zeroize = "1.9.1"
 
 [lints]
 workspace = true

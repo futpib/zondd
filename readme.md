@@ -373,7 +373,7 @@ canonicalization, or command-prefix matching is performed.
 `allow` executes immediately; `deny` rejects immediately; `ask` blocks pending
 one-time review when approvals are enabled, otherwise it rejects. Set
 `default = "ask"` to queue commands that lack an allow/deny rule. A hard denial
-cannot be overridden by approval. Approvals are disabled by default.
+cannot be overridden by approval. Approvals are enabled by default.
 
 Operation-only principals have `allow_exec = false` and a list of allowed
 operation names. Each operation fixes the executable and leading arguments;
@@ -381,12 +381,56 @@ the caller supplies exactly one value for each positional `arguments` entry,
 chosen from that entry's explicit `choices`. Operation decisions are separate
 from raw-exec rules. There is no template expansion or implicit shell.
 
+An operation that runs `sudo` without a TTY can opt in to sudo password
+challenges with `sudo_password = true`. This requires `decision = "ask"` and
+enabled approvals. Only this named operation runs without `no_new_privs`;
+raw `exec` and other operations retain it. Any setuid helper launched by that
+operation can gain privilege, so treat its executable and child processes as
+trusted. Reload systemd's unit and restart the bundled user service after
+upgrading so its former service-level `NoNewPrivileges` setting is removed:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user restart zondd
+```
+
+The operation must tell sudo to use askpass (`sudo -A`, or
+`--sudoflags=-A` for `paru`). For example, assign this operation to a principal
+whose key you trust to request system upgrades:
+
+```toml
+[principals.upgrade]
+cwd = "/home/your-user"
+operations = ["system-upgrade"]
+
+[operations.system-upgrade]
+program = "/usr/bin/paru"
+fixed_args = ["-Syu", "--noconfirm", "--skipreview", "--noupgrademenu", "--sudoflags=-A"]
+decision = "ask"
+sudo_password = true
+```
+
+The caller invokes `system-upgrade` and a local admin approves the exact
+request. When sudo needs a password, `zondctl pending` shows a separate
+credential challenge; `zondctl credential CHALLENGE_ID` reads the password
+without echo, and `zondctl reject-credential CHALLENGE_ID` declines it. `review`
+handles both kinds of request. The Android approvals screen also shows a masked
+password dialog. Each sudo prompt creates a new challenge, including prompts
+after a long backgrounded build. A challenge waits up to 24 hours; cancel the
+job to end it sooner. Passwords are sent only over the local admin/control
+connection and are excluded from history and daemon logs. Command output is
+still retained, so the operation must not print secrets. Package build scripts
+run with the user's access and can invoke sudo; review the software sources
+before authorizing an unattended AUR upgrade.
+
 On the receiving machine, as the same user who runs the commands (no sudo):
 
 ```sh
 zondctl pending
 zondctl approve <approval-id>
 zondctl deny <approval-id>
+zondctl credential <challenge-id>
+zondctl reject-credential <challenge-id>
 zondctl review
 zondctl status
 ```
@@ -511,7 +555,8 @@ whatever that program can do as the daemon user. A deny rule for `/bin/sh`
 does not match another shell path. Prefer named operations with trusted
 executables/scripts and explicit argument choices for narrow capabilities.
 
-Commands have `no_new_privs`, a 077 umask and disabled core dumps.
+Commands have `no_new_privs` unless their approved named operation explicitly
+sets `sudo_password = true`; all have a 077 umask and disabled core dumps.
 There are limits on frame size, connections, queue size, and running commands.
 Attached commands have a collected-output limit; disconnect kills their
 process group. Exceeding the execution deadline moves them to the background
@@ -541,7 +586,7 @@ terminal response; EOF or additional request bytes cancel an attached request
 or `follow` session, but do not cancel a backgrounded job. Responses echo
 the version and ID. An optional `pending` event precedes one terminal event:
 `completed`, `rejected`, `error`, `operations`, `permissions`, `checked`,
-`queue`, `resolved`, `status`, `submitted`, `job`, or `cancelled`.
+`queue`, `resolved`, `credential_answered`, `status`, `submitted`, `job`, or `cancelled`.
 `completed.stdout` and `.stderr` are base64 strings so arbitrary output bytes
 survive JSON transport; `code` or `signal` describes termination.
 
@@ -558,11 +603,14 @@ The `check` body wraps a `run` or `invoke` as `input`, for example:
 ```
 
 Neither introspection method accepts a principal selector. Local admin methods:
-`pending`, `resolve` (`approval_id`, boolean `approve`), `status`, and
+`pending`, `resolve` (`approval_id`, boolean `approve`), `credential`
+(`challenge_id`, nullable `password`), `status`, and
 `follow`/`job`/`cancel` for any managed job. Neither
 endpoint accepts the other endpoint's methods. Request types reject unknown
-fields. Requests are limited to 64 KiB including LF; responses to 4 MiB. The
-first request must arrive within ten seconds. Oversized/malformed requests or
+fields. Requests are limited to 64 KiB including LF; responses to 4 MiB.
+The `pending` queue has `requests` for approvals and `credentials` for active
+sudo prompts. A null credential password rejects that prompt. The first request
+must arrive within ten seconds. Oversized/malformed requests or
 unsupported protocol versions close the connection without execution. A queue
 or operation listing exceeding the response limit returns an error.
 

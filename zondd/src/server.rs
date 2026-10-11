@@ -5,8 +5,8 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use libzond::{
-    CallerPermissions, Command, Envelope, Event, MAX_REQUEST_BYTES, Pending, PolicyCheck, Request,
-    RequestRecord, VERSION,
+    AskpassReply, AskpassRequest, CallerPermissions, Command, CredentialChallenge, Envelope, Event,
+    MAX_REQUEST_BYTES, Pending, PolicyCheck, Request, RequestRecord, SecretString, VERSION,
     config::{Config, Decision, Principal, validate_command},
     wire,
 };
@@ -40,10 +40,162 @@ struct Active {
     revision: String,
     pending: BTreeMap<String, Entry>,
     jobs: BTreeMap<String, tokio::task::AbortHandle>,
+    askpass_jobs: BTreeMap<String, AskpassJob>,
+    credentials: BTreeMap<String, AwaitingCredential>,
     running: usize,
     connections: usize,
     history: History,
     stopping: bool,
+}
+struct AskpassJob {
+    request_id: String,
+    principal: String,
+    command: Command,
+    operation: String,
+}
+struct AwaitingCredential {
+    challenge: CredentialChallenge,
+    reply: oneshot::Sender<Option<SecretString>>,
+}
+struct AskpassGuard {
+    state: Arc<State>,
+    token: String,
+    request_id: String,
+    path: PathBuf,
+}
+impl Drop for AskpassGuard {
+    fn drop(&mut self) {
+        let mut active = self.state.active.lock().unwrap();
+        active.askpass_jobs.remove(&self.token);
+        active
+            .credentials
+            .retain(|_, c| c.challenge.request_id != self.request_id);
+        let _ = std::fs::remove_file(&self.path);
+        self.state.changed.send_replace(());
+    }
+}
+
+fn audit_request(request: &Request) -> serde_json::Value {
+    match request {
+        Request::Credential {
+            challenge_id,
+            password,
+        } => {
+            json!({"method":"credential","challenge_id":challenge_id,"provided":password.is_some()})
+        }
+        _ => serde_json::to_value(request).unwrap_or_else(|_| json!({"method":"invalid"})),
+    }
+}
+
+fn install_askpass(
+    state: &Arc<State>,
+    config: &Config,
+    request_id: &str,
+    principal: &str,
+    command: &Command,
+    operation: &str,
+) -> Result<AskpassGuard> {
+    ensure!(
+        // SAFETY: prctl only reads the calling thread's no-new-privileges bit.
+        unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) } == 0,
+        "sudo_password needs a zondd service without NoNewPrivileges"
+    );
+    let token = uuid::Uuid::new_v4().to_string();
+    let path = config.runtime_dir.join(format!("askpass-{token}"));
+    std::os::unix::fs::symlink(format!("/proc/{}/exe", std::process::id()), &path)?;
+    state.active.lock().unwrap().askpass_jobs.insert(
+        token.clone(),
+        AskpassJob {
+            request_id: request_id.into(),
+            principal: principal.into(),
+            command: command.clone(),
+            operation: operation.into(),
+        },
+    );
+    Ok(AskpassGuard {
+        state: state.clone(),
+        token,
+        request_id: request_id.into(),
+        path,
+    })
+}
+
+async fn accept_askpass(listener: UnixListener, state: Arc<State>) -> Result<()> {
+    let mut clients = JoinSet::new();
+    let permits = Arc::new(Semaphore::new(128));
+    loop {
+        tokio::select! {
+            connection = listener.accept() => {
+                let (socket, _) = connection?;
+                let uid = socket.peer_cred()?.uid();
+                if uid != libzond::paths::current_uid() && uid != 0 { continue; }
+                let Ok(permit) = permits.clone().try_acquire_owned() else { continue; };
+                let state = state.clone();
+                clients.spawn(async move {
+                    let _permit = permit;
+                    if let Err(error) = handle_askpass(socket, state).await {
+                        tracing::debug!(%error, "askpass request failed");
+                    }
+                });
+            }
+            _ = clients.join_next(), if !clients.is_empty() => {}
+        }
+    }
+}
+
+async fn handle_askpass(socket: UnixStream, state: Arc<State>) -> Result<()> {
+    let (read, mut write) = socket.into_split();
+    let mut read = BufReader::new(read);
+    let request: AskpassRequest =
+        tokio::time::timeout(Duration::from_secs(10), wire::read(&mut read, 8192))
+            .await??
+            .context("empty askpass request")?;
+    ensure!(request.prompt.len() <= 4096, "askpass prompt too long");
+    let (reply, receive) = oneshot::channel();
+    let challenge = {
+        let mut active = state.active.lock().unwrap();
+        let job = active
+            .askpass_jobs
+            .get(&request.token)
+            .context("unknown askpass job")?;
+        let challenge = CredentialChallenge {
+            challenge_id: uuid::Uuid::new_v4().to_string(),
+            request_id: job.request_id.clone(),
+            principal: job.principal.clone(),
+            command: job.command.clone(),
+            operation: job.operation.clone(),
+            prompt: request.prompt,
+            expires_unix_ms: now() + 86_400_000,
+        };
+        active.credentials.insert(
+            challenge.challenge_id.clone(),
+            AwaitingCredential {
+                challenge: challenge.clone(),
+                reply,
+            },
+        );
+        state.changed.send_replace(());
+        challenge
+    };
+    let mut extra = [0u8; 1];
+    let response: Result<Option<SecretString>> = tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(86_400), receive) => {
+            Ok(result.context("credential challenge expired")?.context("job stopped")?)
+        }
+        result = read.read(&mut extra) => {
+            result?;
+            anyhow::bail!("askpass disconnected")
+        }
+    };
+    state
+        .active
+        .lock()
+        .unwrap()
+        .credentials
+        .remove(&challenge.challenge_id);
+    state.changed.send_replace(());
+    let password = response?;
+    wire::write(&mut write, &AskpassReply { password }).await
 }
 enum Control {
     Reload {
@@ -127,7 +279,20 @@ type Endpoints = BTreeMap<String, watch::Sender<bool>>;
 
 pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Result<()> {
     let mut runtime = Runtime::create(&config.runtime_dir)?;
+    for entry in std::fs::read_dir(&config.runtime_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_symlink()
+            && entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix("askpass-"))
+                .is_some_and(|token| uuid::Uuid::parse_str(token).is_ok())
+        {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
     let admin_socket = runtime.listen(config.runtime_dir.join("admin.sock"))?;
+    let askpass_socket = runtime.listen(config.runtime_dir.join("askpass.sock"))?;
     let (control, mut control_rx) = mpsc::channel(16);
     let (changed, _) = watch::channel(());
     let state = Arc::new(State {
@@ -138,6 +303,8 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
             stopping: false,
             pending: BTreeMap::new(),
             jobs: BTreeMap::new(),
+            askpass_jobs: BTreeMap::new(),
+            credentials: BTreeMap::new(),
             running: 0,
             connections: 0,
         }),
@@ -147,6 +314,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
     let mut listeners = JoinSet::new();
     let (_admin_stop, admin_shutdown) = watch::channel(false);
     listeners.spawn(accept(admin_socket, None, state.clone(), admin_shutdown));
+    listeners.spawn(accept_askpass(askpass_socket, state.clone()));
     let mut endpoints = Endpoints::new();
     let config = state.active.lock().unwrap().config.clone();
     for name in config.principals.keys() {
@@ -461,9 +629,17 @@ fn reevaluate(config: &Config, entry: &mut Entry) {
         return;
     }
     let cwd = config.principals[&entry.record.principal].cwd.clone();
-    if command != entry.request.command || cwd != entry.request.cwd {
+    let sudo_password = match &entry.record.input {
+        Request::Invoke { operation, .. } => config.operations[operation].sudo_password,
+        _ => false,
+    };
+    if command != entry.request.command
+        || cwd != entry.request.cwd
+        || sudo_password != entry.request.sudo_password
+    {
         entry.request.command = command.clone();
         entry.request.cwd = cwd.clone();
+        entry.request.sudo_password = sudo_password;
         entry.request.approval_id = uuid::Uuid::new_v4().to_string();
         entry.record.approval_id = Some(entry.request.approval_id.clone());
         entry.request.reason =
@@ -779,7 +955,7 @@ async fn dispatch(
     active.history.audit(
         None,
         "caller_request",
-        json!({"principal":name,"request":request}),
+        json!({"principal":name,"request":audit_request(&request)}),
     )?;
     let Some(p) = active.config.principals.get(&name) else {
         return Ok(reject("principal is no longer configured"));
@@ -895,6 +1071,10 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
         detached: record.detached,
         command,
         operation,
+        sudo_password: match &record.input {
+            Request::Invoke { operation, .. } => config.operations[operation].sudo_password,
+            _ => false,
+        },
         reason: "command not permitted without one-time approval".into(),
         expires_unix_ms: now() + timeout.as_millis() as u64,
         request_id: record.request_id.clone(),
@@ -936,6 +1116,8 @@ enum Step {
         config: Arc<Config>,
         principal: Principal,
         command: Command,
+        operation: Option<String>,
+        sudo_password: bool,
         permit: CapacityGuard,
     },
     Done(Event),
@@ -982,6 +1164,8 @@ fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
                 config,
                 principal,
                 command: entry.request.command,
+                operation: entry.request.operation,
+                sudo_password: entry.request.sudo_password,
                 permit: CapacityGuard {
                     state: state.clone(),
                     execution: true,
@@ -1015,25 +1199,44 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
                     config,
                     principal,
                     command,
+                    operation,
+                    sudo_password,
                     permit,
                 } => {
                     let _permit = permit;
+                    let askpass = if sudo_password {
+                        Some(install_askpass(
+                            &state,
+                            &config,
+                            &record.request_id,
+                            &record.principal,
+                            &command,
+                            operation.as_deref().context("missing operation")?,
+                        )?)
+                    } else {
+                        None
+                    };
                     let id = record.request_id.clone();
                     let state = state.clone();
-                    return execution::execute(&command, &principal, move |stderr, bytes| {
-                        let mut active = state.active.lock().unwrap();
-                        let truncated = active.history.append_output(
-                            &id,
-                            stderr,
-                            bytes,
-                            config.limits.max_output_bytes,
-                        )?;
-                        let backgrounded = active.history.get(&id)?.backgrounded;
-                        drop(active);
-                        state.changed.send_replace(());
-                        ensure!(!truncated || backgrounded, "command output limit exceeded");
-                        Ok(())
-                    })
+                    return execution::execute(
+                        &command,
+                        &principal,
+                        askpass.as_ref().map(|g| g.path.as_path()),
+                        move |stderr, bytes| {
+                            let mut active = state.active.lock().unwrap();
+                            let truncated = active.history.append_output(
+                                &id,
+                                stderr,
+                                bytes,
+                                config.limits.max_output_bytes,
+                            )?;
+                            let backgrounded = active.history.get(&id)?.backgrounded;
+                            drop(active);
+                            state.changed.send_replace(());
+                            ensure!(!truncated || backgrounded, "command output limit exceeded");
+                            Ok(())
+                        },
+                    )
                     .await;
                 }
                 Step::Wait(deadline) => {
@@ -1101,11 +1304,12 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
 
 async fn admin(state: &State, request: Request) -> Result<Event> {
     // Audit management intent before performing its side effects. Policy contents are never duplicated here.
-    state.active.lock().unwrap().history.audit(
-        None,
-        "admin_request",
-        serde_json::to_value(&request)?,
-    )?;
+    state
+        .active
+        .lock()
+        .unwrap()
+        .history
+        .audit(None, "admin_request", audit_request(&request))?;
     let result = admin_request(state, request).await;
     if let Err(error) = &result {
         state.active.lock().unwrap().history.audit(
@@ -1133,7 +1337,45 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
                     })
                     .map(|e| e.request.clone())
                     .collect(),
+                credentials: active
+                    .credentials
+                    .values()
+                    .map(|c| c.challenge.clone())
+                    .collect(),
             })
+        }
+        Request::Credential {
+            challenge_id,
+            password,
+        } => {
+            if let Some(password) = &password {
+                ensure!(
+                    password.0.len() <= 4096 && !password.0.contains(['\n', '\r', '\0']),
+                    "invalid credential response"
+                );
+            }
+            let mut active = state.active.lock().unwrap();
+            let pending = active
+                .credentials
+                .remove(&challenge_id)
+                .context("credential challenge not pending")?;
+            ensure!(
+                pending.challenge.expires_unix_ms > now(),
+                "credential challenge expired"
+            );
+            let provided = password.is_some();
+            let request_id = pending.challenge.request_id.clone();
+            pending
+                .reply
+                .send(password)
+                .map_err(|_| anyhow::anyhow!("credential requester disconnected"))?;
+            active.history.audit(
+                Some(&request_id),
+                "credential_answered",
+                json!({"challenge_id":challenge_id,"provided":provided}),
+            )?;
+            state.changed.send_replace(());
+            Ok(Event::CredentialAnswered { challenge_id })
         }
         Request::Resolve {
             approval_id,

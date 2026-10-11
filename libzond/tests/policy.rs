@@ -107,6 +107,27 @@ fn invalid_trust_boundaries_and_unknown_fields_are_rejected() {
     assert!(serde_json::from_str::<Envelope<Request>>(spoof).is_err());
 }
 
+#[test]
+fn sudo_password_requires_an_approved_named_operation() {
+    let (prefix, operation) = POLICY.split_once("[operations.service]").unwrap();
+    let enabled = format!(
+        "{prefix}[operations.service]{}",
+        operation.replace(
+            "decision = \"allow\"",
+            "decision = \"ask\"\nsudo_password = true"
+        )
+    );
+    assert!(Config::parse(&enabled).is_ok());
+    assert!(
+        Config::parse(&POLICY.replace(
+            "[operations.service]",
+            "[operations.service]\nsudo_password = true"
+        ))
+        .is_err()
+    );
+    assert!(Config::parse(&format!("{enabled}\n[approvals]\nenabled = false\n")).is_err());
+}
+
 #[tokio::test]
 async fn framing_handles_split_utf8_and_multiple_frames() {
     let (mut tx, rx) = tokio::io::duplex(1);

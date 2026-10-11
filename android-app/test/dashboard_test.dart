@@ -62,7 +62,74 @@ class EditableControl implements ControlApi {
   }
 }
 
+class CredentialControl implements ControlApi {
+  Map<String, dynamic>? answer;
+  bool open = true;
+  @override
+  Future<void> close() async {}
+
+  @override
+  Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
+    if (body['method'] == 'pending') {
+      return {
+        'requests': [],
+        'credentials': open
+            ? [
+                {
+                  'challenge_id': 'challenge-1',
+                  'request_id': 'request-1',
+                  'principal': 'upgrade',
+                  'operation': 'system-upgrade',
+                  'command': {
+                    'program': '/usr/bin/paru',
+                    'args': ['-Syu'],
+                  },
+                  'prompt': 'Password for sudo:',
+                  'expires_unix_ms':
+                      DateTime.now().millisecondsSinceEpoch + 60000,
+                },
+              ]
+            : [],
+      };
+    }
+    if (body['method'] == 'credential') {
+      answer = body;
+      open = false;
+      return {'type': 'credential_answered'};
+    }
+    throw StateError('unexpected request');
+  }
+}
+
 void main() {
+  testWidgets(
+    'sudo challenge accepts a masked password on the approvals screen',
+    (tester) async {
+      final api = CredentialControl();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Dashboard(api: api, name: 'test'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Sudo password requested'), findsOneWidget);
+      await tester.tap(find.text('Enter password'));
+      await tester.pumpAndSettle();
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.obscureText, true);
+      await tester.enterText(find.byType(TextField), 'test-password');
+      await tester.tap(find.text('Send password'));
+      await tester.pumpAndSettle();
+      expect(api.answer, {
+        'method': 'credential',
+        'challenge_id': 'challenge-1',
+        'password': 'test-password',
+      });
+      expect(find.text('Sudo password requested'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   testWidgets('malformed policy shapes remain repairable', (tester) async {
     for (final content in [
       'approvals = false',

@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use libzond::{
-    Request,
+    Request, SecretString,
     config::{Config, revision},
 };
 use libzondctl::Client;
@@ -23,6 +23,10 @@ enum Control {
     Resolve {
         approval_id: String,
         approve: bool,
+    },
+    Credential {
+        challenge_id: String,
+        password: Option<SecretString>,
     },
     Status {},
     History {
@@ -69,7 +73,7 @@ enum ServiceAction {
 pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
     // Read before starting async work: unlike tokio stdin, this leaves no blocked worker
     // behind when an SSH client keeps stdin open after its complete request.
-    let mut line = Vec::new();
+    let mut line = zeroize::Zeroizing::new(Vec::new());
     let read = std::io::stdin()
         .lock()
         .take(1024 * 1024 + 1)
@@ -81,13 +85,18 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
             line.last() == Some(&b'\n'),
             "expected newline-terminated JSON"
         );
-        let mut envelope: serde_json::Map<String, Value> = serde_json::from_slice(&line)?;
+        #[derive(Deserialize)]
+        struct Envelope {
+            version: u32,
+            #[serde(flatten)]
+            request: Control,
+        }
+        let envelope: Envelope = serde_json::from_slice(&line)?;
         ensure!(
-            envelope.remove("version") == Some(json!(1)),
+            envelope.version == 1,
             "unsupported control protocol version"
         );
-        let request = serde_json::from_value(Value::Object(envelope))?;
-        dispatch(request, runtime, config).await
+        dispatch(envelope.request, runtime, config).await
     }
     .await;
     let (response, code) = match result {
@@ -110,6 +119,13 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
         } => Request::Resolve {
             approval_id,
             approve,
+        },
+        Control::Credential {
+            challenge_id,
+            password,
+        } => Request::Credential {
+            challenge_id,
+            password,
         },
         Control::Status {} => Request::Status,
         Control::History { before, limit } => Request::History { before, limit },

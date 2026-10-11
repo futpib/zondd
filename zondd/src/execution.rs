@@ -3,6 +3,7 @@ use libzond::{Command, Event, config::Principal};
 use std::{
     io,
     os::unix::process::{CommandExt, ExitStatusExt},
+    path::Path,
     process::Stdio,
 };
 use tokio::{
@@ -11,13 +12,25 @@ use tokio::{
     sync::mpsc,
 };
 
-struct ProcessGroup(u32);
-impl Drop for ProcessGroup {
+struct ProcessGuard {
+    child: Option<process::Child>,
+    group: u32,
+    reaped: bool,
+}
+impl Drop for ProcessGuard {
     fn drop(&mut self) {
         // SAFETY: kill uses only a numeric process group established for this child.
         // The group is terminated on success as well, so background children do not outlive requests.
         unsafe {
-            libc::kill(-(self.0 as i32), libc::SIGKILL);
+            libc::kill(-(self.group as i32), libc::SIGKILL);
+        }
+        if !self.reaped
+            && let Some(mut child) = self.child.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let _ = child.wait().await;
+            });
         }
     }
 }
@@ -25,11 +38,24 @@ impl Drop for ProcessGroup {
 pub async fn execute(
     command: &Command,
     principal: &Principal,
+    askpass: Option<&Path>,
     mut output: impl FnMut(bool, &[u8]) -> Result<()>,
 ) -> Result<Event> {
-    let (mut child, group) = start(command, principal)?;
-    let stdout = child.stdout.take().context("missing stdout")?;
-    let stderr = child.stderr.take().context("missing stderr")?;
+    let mut process = start(command, principal, askpass)?;
+    let stdout = process
+        .child
+        .as_mut()
+        .unwrap()
+        .stdout
+        .take()
+        .context("missing stdout")?;
+    let stderr = process
+        .child
+        .as_mut()
+        .unwrap()
+        .stderr
+        .take()
+        .context("missing stderr")?;
     let (tx, mut rx) = mpsc::channel(8);
     let mut readers = tokio::task::JoinSet::new();
     readers.spawn(pump(stdout, false, tx.clone()));
@@ -41,10 +67,11 @@ pub async fn execute(
             break;
         }
         tokio::select! {
-            result = child.wait(), if status.is_none() => {
+            result = process.child.as_mut().unwrap().wait(), if status.is_none() => {
                 status = Some(result?);
-                // SAFETY: group.0 is the child process group created above.
-                unsafe { libc::kill(-(group.0 as i32), libc::SIGKILL); }
+                process.reaped = true;
+                // SAFETY: process.group is the child process group created above.
+                unsafe { libc::kill(-(process.group as i32), libc::SIGKILL); }
             }
             chunk = rx.recv(), if !eof => match chunk {
                 Some((is_err, bytes)) => output(is_err, &bytes?)?,
@@ -61,7 +88,7 @@ pub async fn execute(
     })
 }
 
-fn start(command: &Command, principal: &Principal) -> Result<(process::Child, ProcessGroup)> {
+fn start(command: &Command, principal: &Principal, askpass: Option<&Path>) -> Result<ProcessGuard> {
     let mut cmd = process::Command::new(&command.program);
     cmd.args(&command.args)
         .current_dir(&principal.cwd)
@@ -73,6 +100,9 @@ fn start(command: &Command, principal: &Principal) -> Result<(process::Child, Pr
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(path) = askpass {
+        cmd.env("SUDO_ASKPASS", path);
+    }
     // User operations such as systemctl --user need the daemon's home and session bus.
     // These values come from the local daemon, never from a remote request.
     for name in [
@@ -88,11 +118,12 @@ fn start(command: &Command, principal: &Principal) -> Result<(process::Child, Pr
         }
     }
     cmd.as_std_mut().process_group(0);
+    let no_new_privs = askpass.is_none();
     // SAFETY: the post-fork closure calls only async-signal-safe limit syscalls,
     // does not allocate or acquire application locks.
     unsafe {
         cmd.pre_exec(move || {
-            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            if no_new_privs && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 return Err(io::Error::last_os_error());
             }
             libc::umask(0o077);
@@ -109,8 +140,12 @@ fn start(command: &Command, principal: &Principal) -> Result<(process::Child, Pr
     let child = cmd
         .spawn()
         .with_context(|| format!("execute {}", command.program))?;
-    let group = ProcessGroup(child.id().context("child has no PID")?);
-    Ok((child, group))
+    let group = child.id().context("child has no PID")?;
+    Ok(ProcessGuard {
+        child: Some(child),
+        group,
+        reaped: false,
+    })
 }
 
 async fn pump(

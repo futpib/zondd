@@ -121,8 +121,9 @@ impl Client {
     pub async fn send(&mut self, request: Request) -> Result<()> {
         ensure!(!self.used, "one request is supported per connection");
         let envelope = Envelope::new(1, request);
+        let frame = zeroize::Zeroizing::new(serde_json::to_vec(&envelope)?);
         ensure!(
-            serde_json::to_vec(&envelope)?.len() < libzond::MAX_REQUEST_BYTES,
+            frame.len() < libzond::MAX_REQUEST_BYTES,
             "request exceeds protocol limit"
         );
         self.used = true;

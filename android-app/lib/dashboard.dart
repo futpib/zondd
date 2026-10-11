@@ -49,6 +49,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   }
 
   List<dynamic> queue = [];
+  List<dynamic> credentials = [];
   String? error, message;
   bool polling = false, acting = false;
   int tab = 0;
@@ -96,6 +97,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           queue = result['requests'] as List;
+          credentials = result['credentials'] as List? ?? [];
           loaded = true;
           error = null;
         });
@@ -138,6 +140,39 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
           message = approve
               ? 'Approved once. The caller can now run this command.'
               : 'Rejected. The caller has been notified.';
+        });
+      }
+    });
+    await refresh();
+  }
+
+  Future<void> resolveCredential(
+    Map<String, dynamic> challenge,
+    bool provide,
+  ) async {
+    String? password;
+    if (provide) {
+      password = await showDialog<String>(
+        context: context,
+        builder: (context) =>
+            _SudoPasswordDialog(prompt: challenge['prompt'] as String),
+      );
+      if (password == null) return;
+    }
+    await action(() async {
+      await widget.api.request({
+        'method': 'credential',
+        'challenge_id': challenge['challenge_id'],
+        'password': password,
+      });
+      if (mounted) {
+        setState(() {
+          credentials.removeWhere(
+            (item) => item['challenge_id'] == challenge['challenge_id'],
+          );
+          message = provide
+              ? 'Password sent to the waiting sudo prompt.'
+              : 'Sudo prompt rejected.';
         });
       }
     });
@@ -393,7 +428,8 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 style: Theme.of(context).textTheme.headlineSmall,
               ),
             ),
-            if (queue.isNotEmpty) Chip(label: Text('${queue.length}')),
+            if (queue.isNotEmpty || credentials.isNotEmpty)
+              Chip(label: Text('${queue.length + credentials.length}')),
           ],
         ),
         const SizedBox(height: 8),
@@ -401,13 +437,19 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         const SizedBox(height: 24),
         if (!loaded && error == null && !disconnected)
           const Center(child: CircularProgressIndicator()),
-        if (loaded && queue.isEmpty && error == null && !disconnected)
+        if (loaded &&
+            queue.isEmpty &&
+            credentials.isEmpty &&
+            error == null &&
+            !disconnected)
           const EmptyState(
             Icons.task_alt,
             'All caught up',
             'No pending approvals. New requests appear here automatically.',
           ),
         for (final raw in queue) approvalCard(raw as Map<String, dynamic>),
+        for (final raw in credentials)
+          credentialCard(raw as Map<String, dynamic>),
       ],
     ),
   );
@@ -523,6 +565,59 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                         ? null
                         : () => resolve(request, true),
                     child: const Text('Approve once'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget credentialCard(Map<String, dynamic> challenge) {
+    final command = challenge['command'] as Map<String, dynamic>;
+    return Card(
+      key: ValueKey('credential-${challenge['challenge_id']}'),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Sudo password requested',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text('${challenge['principal']} · ${challenge['operation']}'),
+            const SizedBox(height: 8),
+            SelectableText(
+              [
+                jsonEncode(command['program']),
+                ...(command['args'] as List).map(jsonEncode),
+              ].join(' '),
+              style: mono,
+            ),
+            const SizedBox(height: 8),
+            Text(challenge['prompt'] as String),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: acting || disconnected
+                        ? null
+                        : () => resolveCredential(challenge, false),
+                    child: const Text('Reject'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: acting || disconnected
+                        ? null
+                        : () => resolveCredential(challenge, true),
+                    child: const Text('Enter password'),
                   ),
                 ),
               ],
@@ -977,4 +1072,55 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       ],
     );
   }
+}
+
+class _SudoPasswordDialog extends StatefulWidget {
+  const _SudoPasswordDialog({required this.prompt});
+  final String prompt;
+
+  @override
+  State<_SudoPasswordDialog> createState() => _SudoPasswordDialogState();
+}
+
+class _SudoPasswordDialogState extends State<_SudoPasswordDialog> {
+  final controller = TextEditingController();
+
+  @override
+  void dispose() {
+    controller.clear();
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
+    title: const Text('Sudo password'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(widget.prompt),
+        const SizedBox(height: 12),
+        TextField(
+          controller: controller,
+          obscureText: true,
+          enableSuggestions: false,
+          autocorrect: false,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Password'),
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, controller.text),
+        child: const Text('Send password'),
+      ),
+    ],
+  );
 }

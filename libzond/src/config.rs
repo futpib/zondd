@@ -109,6 +109,8 @@ pub struct Operation {
     pub arguments: Vec<Argument>,
     #[serde(default)]
     pub decision: Decision,
+    #[serde(default)]
+    pub sudo_password: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -191,6 +193,16 @@ impl Config {
         }
         for (name, op) in &self.operations {
             ensure!(valid_name(name), "invalid operation name {name}");
+            if op.sudo_password {
+                ensure!(
+                    op.decision == Decision::Ask,
+                    "sudo_password requires decision = ask for {name}"
+                );
+                ensure!(
+                    self.approvals.enabled,
+                    "sudo_password requires approvals for {name}"
+                );
+            }
             validate_command(&Command {
                 program: op.program.clone(),
                 args: op.fixed_args.clone(),

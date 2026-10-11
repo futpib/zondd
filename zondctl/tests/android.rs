@@ -99,6 +99,7 @@ fn android_management_over_ssh_and_iroh() {
         "authPort":auth_port, "authEndpoint":auth_endpoint,
         "user":ssh.env.user.name, "runtime":ssh.env.runtime, "config":ssh.env.config,
         "executable":ssh.env.ctl, "fingerprint":fingerprint,
+        "probe":ssh.env.probe,
         "key":fs::read_to_string(ssh.env.dir.path().join("management-key")).unwrap(),
         "callerKey":fs::read_to_string(ssh.env.dir.path().join("exec-key")).unwrap(),
     });
@@ -124,6 +125,7 @@ fn android_management_over_ssh_and_iroh() {
                 vec![
                     "integration_test/authentication_test.dart",
                     "integration_test/control_test.dart",
+                    "integration_test/credential_test.dart",
                     "integration_test/workflow_test.dart",
                 ]
             })
