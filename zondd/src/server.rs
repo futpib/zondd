@@ -841,6 +841,7 @@ fn cancel_job_with_reason(
     reason: &str,
 ) -> Result<Event> {
     let mut active = state.active.lock().unwrap();
+    ensure!(!active.stopping, "daemon stopping");
     let mut record = active.history.get(id)?;
     ensure!(
         record.detached && principal.is_none_or(|name| name == record.principal),
