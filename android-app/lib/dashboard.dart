@@ -511,6 +511,12 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
+            if (request['sudo_password'] == true) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Approval permits sudo password prompts and privileged child processes.',
+              ),
+            ],
             ExpansionTile(
               tilePadding: EdgeInsets.zero,
               dense: true,

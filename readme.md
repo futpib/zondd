@@ -392,22 +392,31 @@ the caller supplies exactly one value for each positional `arguments` entry,
 chosen from that entry's explicit `choices`. Operation decisions are separate
 from raw-exec rules. There is no template expansion or implicit shell.
 
-An operation that runs `sudo` without a TTY can opt in to sudo password
-challenges with `sudo_password = true`. This requires `decision = "ask"` and
-enabled approvals. Only this named operation runs without `no_new_privs`;
-raw `exec` and other operations retain it. Any setuid helper launched by that
-operation can gain privilege, so treat its executable and child processes as
-trusted. Reload systemd's unit and restart the bundled user service after
-upgrading so its former service-level `NoNewPrivileges` setting is removed:
+An approved raw `exec` can use `sudo` without a TTY. The one-time approval
+permits password challenges and runs the exact approved command without
+`no_new_privs`; raw commands allowed without review and ordinary operations
+retain `no_new_privs`. The approver sees this privilege capability before
+accepting. A named operation can opt in to the same behavior with
+`sudo_password = true`; this requires `decision = "ask"` and enabled approvals.
+Any setuid helper launched by an approved command can gain privilege, so
+review the executable and its child processes. Reload systemd's unit and
+restart the bundled user service after upgrading so its former service-level
+`NoNewPrivileges` setting is removed:
 
 ```sh
 systemctl --user daemon-reload
 systemctl --user restart zondd
 ```
 
-The operation must tell sudo to use askpass (`sudo -A`, or
-`--sudoflags=-A` for `paru`). For example, assign this operation to a principal
-whose key you trust to request system upgrades:
+Tell sudo to use askpass (`sudo -A`, or `--sudoflags=-A` for `paru`). With the
+default policy, submit an upgrade as a raw command and approve that request:
+
+```sh
+zondctl exec /usr/bin/paru -Syu --noconfirm --skipreview --noupgrademenu --sudoflags=-A
+```
+
+For a fixed allowlist entry, assign this operation to a principal whose key
+you trust to request system upgrades:
 
 ```toml
 [principals.upgrade]
@@ -421,10 +430,10 @@ decision = "ask"
 sudo_password = true
 ```
 
-The caller invokes `system-upgrade` and a local admin approves the exact
-request. When sudo needs a password, `zondctl pending` shows a separate
-credential challenge; `zondctl credential CHALLENGE_ID` reads the password
-without echo, and `zondctl reject-credential CHALLENGE_ID` declines it. `review`
+The caller invokes `system-upgrade` or submits raw `exec`, and a local admin
+approves the exact request. When sudo needs a password, `zondctl pending` shows
+a separate credential challenge. `zondctl credential CHALLENGE_ID` reads the
+password without echo, and `zondctl reject-credential CHALLENGE_ID` declines it. `review`
 handles both kinds of request. The Android approvals screen also shows a masked
 password dialog. Each sudo prompt creates a new challenge, including prompts
 after a long backgrounded build. A challenge waits up to 24 hours; cancel the
@@ -566,8 +575,9 @@ whatever that program can do as the daemon user. A deny rule for `/bin/sh`
 does not match another shell path. Prefer named operations with trusted
 executables/scripts and explicit argument choices for narrow capabilities.
 
-Commands have `no_new_privs` unless their approved named operation explicitly
-sets `sudo_password = true`; all have a 077 umask and disabled core dumps.
+Commands have `no_new_privs` unless they are approved raw commands or their
+approved named operation sets `sudo_password = true`; all have a 077 umask and
+disabled core dumps.
 There are limits on frame size, connections, queue size, and running commands.
 Attached commands have a collected-output limit; disconnect kills their
 process group. Exceeding the execution deadline moves them to the background

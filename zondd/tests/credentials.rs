@@ -32,6 +32,78 @@ fn privileged_policy(env: &TestEnv, enabled: bool) -> String {
 }
 
 #[test]
+fn approved_raw_exec_can_answer_sudo_without_privileging_allowed_commands() {
+    let env = TestEnv::new();
+    let policy = format!(
+        "{}\n[[principals.exec.rules]]\nprogram = {:?}\nargs = [\"no_new_privs\"]\ndecision = \"allow\"\n",
+        env.policy,
+        env.probe.display()
+    );
+    fs::write(&env.config, policy).unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["type"],
+        "reloaded"
+    );
+    let allowed = env.request(
+        "exec",
+        json!({"method":"run","command":{"program":env.probe,"args":["no_new_privs"]}}),
+    );
+    assert_eq!(allowed["type"], "completed", "{allowed}");
+    assert_eq!(decoded(&allowed, "stdout"), b"1\n");
+
+    let mut caller = env.session(
+        "exec",
+        json!({"method":"run","command":{"program":env.probe,"args":["askpass"]}}),
+    );
+    let pending = caller.event();
+    assert_eq!(pending["type"], "pending", "{pending}");
+    assert_eq!(pending["request"]["sudo_password"], true);
+    assert_eq!(pending["request"]["operation"], Value::Null);
+    assert_eq!(
+        env.resolve(pending["request"]["approval_id"].as_str().unwrap(), true)["type"],
+        "resolved"
+    );
+    for password in ["test-password-one", "test-password-two"] {
+        let requested = challenge(&env);
+        assert_eq!(requested["operation"], "raw exec");
+        assert_eq!(
+            env.request(
+                "admin",
+                json!({"method":"credential","challenge_id":requested["challenge_id"],"password":password})
+            )["type"],
+            "credential_answered"
+        );
+    }
+    let done = caller.event();
+    assert_eq!(done["type"], "completed", "{done}");
+    assert_eq!(decoded(&done, "stdout"), b"two prompts answered\n");
+}
+
+#[test]
+fn newly_allowed_raw_exec_drops_approval_privileges_on_reload() {
+    let env = TestEnv::new();
+    let mut caller = env.session(
+        "exec",
+        json!({"method":"run","command":{"program":env.probe,"args":["no_new_privs"]}}),
+    );
+    let pending = caller.event();
+    assert_eq!(pending["request"]["sudo_password"], true);
+    let policy = format!(
+        "{}\n[[principals.exec.rules]]\nprogram = {:?}\nargs = [\"no_new_privs\"]\ndecision = \"allow\"\n",
+        env.policy,
+        env.probe.display()
+    );
+    fs::write(&env.config, policy).unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["allowed_approvals"],
+        1
+    );
+    let done = caller.event();
+    assert_eq!(done["type"], "completed", "{done}");
+    assert_eq!(decoded(&done, "stdout"), b"1\n");
+}
+
+#[test]
 fn named_operation_prompts_twice_without_persisting_the_password() {
     let env = TestEnv::new();
     let policy = privileged_policy(&env, true);
@@ -40,9 +112,6 @@ fn named_operation_prompts_twice_without_persisting_the_password() {
         env.request("admin", json!({"method":"reload"}))["type"],
         "reloaded"
     );
-
-    let ordinary = env.approved_probe(&["no_new_privs"]);
-    assert_eq!(decoded(&ordinary, "stdout"), b"1\n");
 
     let mut caller = env.session(
         "ops",
@@ -233,6 +302,39 @@ fn a_later_sudo_prompt_keeps_the_same_backgrounded_job() {
     let mut final_job = Value::Null;
     wait_for(|| {
         final_job = env.request("ops", json!({"method":"job","request_id":request_id}));
+        final_job["request"]["status"] == "completed"
+    });
+    assert_eq!(final_job["request"]["backgrounded"], true);
+    assert_eq!(
+        decoded(&final_job["request"]["result"], "stdout"),
+        b"two prompts answered\n"
+    );
+}
+
+#[test]
+fn approved_raw_exec_keeps_later_sudo_prompts_after_backgrounding() {
+    let env = TestEnv::new();
+    let mut caller = env.session(
+        "exec",
+        json!({"method":"run","command":{"program":env.probe,"args":["askpass_slow"]}}),
+    );
+    let pending = caller.event();
+    let request_id = pending["request"]["request_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    env.resolve(pending["request"]["approval_id"].as_str().unwrap(), true);
+    let first = challenge(&env);
+    env.request("admin", json!({"method":"credential","challenge_id":first["challenge_id"],"password":"test-password-one"}));
+    assert_eq!(caller.event()["request_id"], request_id);
+    drop(caller);
+
+    let second = challenge(&env);
+    assert_eq!(second["operation"], "raw exec");
+    env.request("admin", json!({"method":"credential","challenge_id":second["challenge_id"],"password":"test-password-two"}));
+    let mut final_job = Value::Null;
+    wait_for(|| {
+        final_job = env.request("exec", json!({"method":"job","request_id":request_id}));
         final_job["request"]["status"] == "completed"
     });
     assert_eq!(final_job["request"]["backgrounded"], true);

@@ -444,6 +444,9 @@ async fn review(cli: &Cli) -> Result<u8> {
         for request in requests {
             // JSON escapes terminal control sequences and makes argv boundaries visible.
             println!("{}", serde_json::to_string_pretty(&request)?);
+            if request.sudo_password {
+                println!("Approval permits sudo password prompts and privileged child processes.");
+            }
             print!("Approve once [a], deny [d], skip [s], quit [q]: ");
             std::io::stdout().flush()?;
             let input = tokio::task::spawn_blocking(|| -> std::io::Result<String> {

@@ -94,7 +94,7 @@ fn install_askpass(
     request_id: &str,
     principal: &str,
     command: &Command,
-    operation: &str,
+    operation: Option<&str>,
 ) -> Result<AskpassGuard> {
     ensure!(
         // SAFETY: prctl only reads the calling thread's no-new-privileges bit.
@@ -110,7 +110,7 @@ fn install_askpass(
             request_id: request_id.into(),
             principal: principal.into(),
             command: command.clone(),
-            operation: operation.into(),
+            operation: operation.unwrap_or("raw exec").into(),
         },
     );
     Ok(AskpassGuard {
@@ -639,16 +639,16 @@ fn reevaluate(config: &Config, entry: &mut Entry) {
         return;
     }
     let sudo_password = match &entry.record.input {
+        Request::Run { .. } => decision == Decision::Ask,
         Request::Invoke { operation, .. } => config.operations[operation].sudo_password,
         _ => false,
     };
     if command != entry.request.command
         || cwd != entry.request.cwd
-        || sudo_password != entry.request.sudo_password
+        || sudo_password && !entry.request.sudo_password
     {
         entry.request.command = command.clone();
         entry.request.cwd = cwd.clone();
-        entry.request.sudo_password = sudo_password;
         entry.request.approval_id = uuid::Uuid::new_v4().to_string();
         entry.record.approval_id = Some(entry.request.approval_id.clone());
         entry.request.reason =
@@ -658,6 +658,7 @@ fn reevaluate(config: &Config, entry: &mut Entry) {
         entry.record.command = Some(command);
         entry.record.cwd = Some(cwd);
     }
+    entry.request.sudo_password = sudo_password;
     entry.decision = if entry.fresh_review {
         Decision::Ask
     } else {
@@ -1086,6 +1087,7 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
         command,
         operation,
         sudo_password: match &record.input {
+            Request::Run { .. } => decision == Decision::Ask,
             Request::Invoke { operation, .. } => config.operations[operation].sudo_password,
             _ => false,
         },
@@ -1225,7 +1227,7 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
                             &record.request_id,
                             &record.principal,
                             &command,
-                            operation.as_deref().context("missing operation")?,
+                            operation.as_deref(),
                         )?)
                     } else {
                         None
