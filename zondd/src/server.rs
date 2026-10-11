@@ -1,6 +1,7 @@
 use crate::{
     create_new, execution,
     history::{History, now},
+    requirements,
     rules::Rules,
     security::Runtime,
 };
@@ -1010,6 +1011,30 @@ async fn dispatch(
         spawn_job(&state, record);
         return wait_attached(state, request_id, id, write).await;
     }
+    let mut event = caller_query(&state, name, request)?;
+    if let Event::Checked { check } = &mut event
+        && let Some(rule) = &check.rule
+    {
+        let result = async {
+            requirements::check(&rule.requirements, &check.cwd).await?;
+            if let Some(path) = &rule.destination {
+                create_new::check(&[libzond::rules::ResolvedRequirement {
+                    kind: "absent".into(),
+                    path: path.clone(),
+                }])?;
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            check.decision = Decision::Deny;
+            check.reason = format!("{error:#}");
+        }
+    }
+    Ok(event)
+}
+
+fn caller_query(state: &State, name: String, request: Request) -> Result<Event> {
     let mut active = state.active.lock().unwrap();
     refresh_rules(&mut active)?;
     active.history.audit(
@@ -1105,21 +1130,6 @@ async fn dispatch(
                     };
                     check.decision = effective;
                     check.reason = reason.into();
-                    if let Some(rule) = &check.rule {
-                        let result = create_new::check(&rule.requirements).and_then(|()| {
-                            if let Some(path) = &rule.destination {
-                                create_new::check(&[libzond::rules::ResolvedRequirement {
-                                    kind: "absent".into(),
-                                    path: path.clone(),
-                                }])?;
-                            }
-                            Ok(())
-                        });
-                        if let Err(error) = result {
-                            check.decision = Decision::Deny;
-                            check.reason = format!("{error:#}");
-                        }
-                    }
                 }
                 Err(error) => check.reason = error.to_string(),
             }
@@ -1345,7 +1355,7 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
                         None
                     };
                     let staging = if let Some(rule) = &rule {
-                        create_new::check(&rule.requirements)?;
+                        requirements::check(&rule.requirements, &cwd).await?;
                         rule.destination
                             .as_deref()
                             .map(create_new::Staging::new)

@@ -20,6 +20,20 @@ pub fn valid_repo_name(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
+pub fn valid_service_unit(value: &str) -> bool {
+    let Some(name) = value.strip_suffix(".service") else {
+        return false;
+    };
+    !name.is_empty()
+        && value.len() <= 255
+        && name.as_bytes()[0].is_ascii_alphanumeric()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-@".contains(&b))
+        && name.bytes().filter(|b| *b == b'@').count() <= 1
+        && !name.ends_with('@')
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Part {
@@ -63,6 +77,7 @@ impl Word {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Requirement {
     pub kind: String,
+    // The wire name predates non-filesystem checks; service checks store a unit name here.
     pub path: Word,
 }
 
@@ -130,8 +145,16 @@ impl BoundRule {
             .requirements
             .iter()
             .map(|r| {
-                let path = PathBuf::from(r.path.expand(&bindings)?);
-                validate_cwd(&path)?;
+                let target = r.path.expand(&bindings)?;
+                let path = PathBuf::from(&target);
+                if r.kind == "user-service-active-or-enabled" {
+                    ensure!(
+                        valid_service_unit(&target),
+                        "expected a literal .service name (at most 255 ASCII letters, digits, dots, underscores, hyphens and one optional nonempty @instance; starts with a letter or digit)"
+                    );
+                } else {
+                    validate_cwd(&path)?;
+                }
                 Ok(ResolvedRequirement {
                     kind: r.kind.clone(),
                     path,
@@ -440,7 +463,10 @@ pub fn parse(source: &str) -> Result<Rule> {
         p.keyword("require")?;
         let kind = p.literal()?;
         ensure!(
-            matches!(kind.as_str(), "is-dir" | "absent"),
+            matches!(
+                kind.as_str(),
+                "is-dir" | "absent" | "user-service-active-or-enabled"
+            ),
             "unknown check '{kind}'"
         );
         requirements.push(Requirement {

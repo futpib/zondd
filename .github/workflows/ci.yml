@@ -48,7 +48,9 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
       - name: Test shipped user service
-        run: cargo test --locked -p zondd --test integration shipped_user_service -- --ignored
+        run: |
+          cargo test --locked -p zondd --test integration shipped_user_service -- --ignored
+          cargo test --locked -p zondd --test service_rules -- --ignored
       - name: Build and inspect Linux distribution
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')

@@ -54,6 +54,10 @@ pub(super) fn is_current(bound: &BoundRule, review: Option<&serde_json::Value>) 
 
 pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
     let rule = &bound.rule;
+    let checks_service = rule
+        .requirements
+        .iter()
+        .any(|r| r.kind == "user-service-active-or-enabled");
     let mut sections = vec![
         section(
             "Authority",
@@ -81,6 +85,12 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
             ],
         ),
     ];
+    if checks_service {
+        sections[0].fields.push(field(
+            "Service manager",
+            "The check uses the daemon user's systemd manager. Services started through that manager use their own unit settings; they do not inherit the command's no_new_privs restriction. Review which service names and command arguments this grant permits.",
+        ));
+    }
     if !rule.parameters.is_empty() {
         let mut fields = Vec::new();
         for parameter in &rule.parameters {
@@ -100,7 +110,11 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
     if !rule.requirements.is_empty() {
         let mut fields = vec![field(
             "Timing",
-            "Checked immediately before execution. These observations do not reserve paths or prevent subsequent filesystem changes.",
+            if checks_service {
+                "Checked during check invoke and immediately before execution, after waiting for capacity. Service and filesystem state can change after the check; it does not reserve state or make check-and-execute atomic. Query failures or a 5-second check timeout prevent execution."
+            } else {
+                "Checked immediately before execution. These observations do not reserve paths or prevent subsequent filesystem changes."
+            },
         )];
         for requirement in &rule.requirements {
             let description = match requirement.kind.as_str() {
@@ -109,6 +123,9 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
                 }
                 "absent" => {
                     "Must have no directory entry, including no dangling symlink; its parent must be a trusted directory reached without following symlinks."
+                }
+                "user-service-active-or-enabled" => {
+                    "Requires LoadState=loaded and either ActiveState=active or UnitFileState=enabled/enabled-runtime in the daemon user's systemd manager. Inactive or failed disabled services do not pass. Static, indirect, generated or transient alone do not count as enabled. Manually stopped enabled services still pass. Uses /usr/bin/systemctl with the daemon's session environment. The target must be one explicit .service name (at most 255 ASCII letters, digits, dots, underscores, hyphens and one optional nonempty @instance; starts with a letter or digit), without paths, patterns or options."
                 }
                 _ => bail!("missing review description for rule check"),
             };

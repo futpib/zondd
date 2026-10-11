@@ -15,9 +15,15 @@ void main() {
   final fixture =
       jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
           as Map<String, dynamic>;
-  for (final iroh in [false, true]) {
+  for (final scenario in [
+    (iroh: false, service: false),
+    (iroh: true, service: false),
+    (iroh: false, service: true),
+    (iroh: true, service: true),
+  ]) {
+    final iroh = scenario.iroh;
     testWidgets(
-      'review and revoke a caller rule over ${iroh ? 'Iroh' : 'SSH'}',
+      'review and revoke a ${scenario.service ? 'service' : 'directory'} rule over ${iroh ? 'Iroh' : 'SSH'}',
       (tester) async {
         final api = await SshControl.connect(
           Profile(
@@ -73,9 +79,11 @@ void main() {
           await tester.pump(const Duration(milliseconds: 300));
         }
 
-        final name = 'android-rule-${iroh ? 'iroh' : 'ssh'}';
-        final source =
-            'rule $name(x: repo-name) {\n  create-new-dir "${fixture['runtime']}/\$x" as dest {\n    run mkdir "\$dest"\n  }\n}';
+        final name =
+            'android-${scenario.service ? 'service' : 'rule'}-${iroh ? 'iroh' : 'ssh'}';
+        final source = scenario.service
+            ? 'rule $name(x: repo-name) {\n  require user-service-active-or-enabled "zond-test-\$x.service"\n  run systemctl --user restart -- "zond-test-\$x.service"\n}'
+            : 'rule $name(x: repo-name) {\n  create-new-dir "${fixture['runtime']}/\$x" as dest {\n    run mkdir "\$dest"\n  }\n}';
         String? proposalId;
         try {
           final proposed = await request({
@@ -143,14 +151,20 @@ void main() {
             }))['type'],
             'error',
           );
-          expect(
-            (await request({
-              'method': 'invoke',
-              'operation': name,
-              'args': [name],
-            }))['code'],
-            0,
-          );
+          final invoked = await request({
+            'method': 'invoke',
+            'operation': name,
+            'args': [name],
+          });
+          if (scenario.service) {
+            expect(invoked['type'], 'error');
+            expect(
+              invoked['message'],
+              contains('require user-service-active-or-enabled'),
+            );
+          } else {
+            expect(invoked['code'], 0);
+          }
           expect(
             (await request({
               'method': 'invoke',

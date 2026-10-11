@@ -1,4 +1,4 @@
-use libzond::rules::{BoundRule, parse, valid_repo_name};
+use libzond::rules::{BoundRule, parse, valid_repo_name, valid_service_unit};
 
 const SOURCE: &str = r#"rule clone-futpib(x: repo-name) {
   require is-dir "$HOME/code"
@@ -141,4 +141,86 @@ fn quotes_and_escapes_preserve_literal_arguments() {
         call.command.args,
         ["%s", "$x $(id) ; | *", "$x", "", "a b", "repo"]
     );
+}
+
+#[test]
+fn service_checks_expand_one_explicit_unit_and_keep_the_wire_shape() {
+    let bound = BoundRule {
+        rule: parse(
+            r#"rule restart-app(x: repo-name) {
+  require user-service-active-or-enabled "app-$x.service"
+  run /usr/bin/systemctl --user restart -- "app-$x.service"
+}"#,
+        )
+        .unwrap(),
+        home: "/home/test".into(),
+        cwd: "/tmp".into(),
+    };
+    let call = bound
+        .instantiate("grant", &["worker".into()], None)
+        .unwrap();
+    assert_eq!(
+        call.requirements[0].path.to_str().unwrap(),
+        "app-worker.service"
+    );
+    assert_eq!(
+        call.command.args,
+        ["--user", "restart", "--", "app-worker.service"]
+    );
+    let wire = serde_json::to_value(&call.requirements[0]).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({"kind":"user-service-active-or-enabled", "path":"app-worker.service"})
+    );
+    for target in [
+        "app",
+        "/tmp/app.service",
+        "app*.service",
+        "--user.service",
+        "app@.service",
+    ] {
+        let mut invalid = bound.clone();
+        invalid.rule.requirements[0].path =
+            libzond::rules::Word(vec![libzond::rules::Part::Literal(target.into())]);
+        assert!(
+            invalid
+                .instantiate("grant", &["worker".into()], None)
+                .is_err(),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn service_names_cannot_select_patterns_paths_options_or_templates() {
+    for valid in [
+        "app.service",
+        "app-1.2_worker.service",
+        "app@one.service",
+        &format!("{}.service", "a".repeat(247)),
+    ] {
+        assert!(valid_service_unit(valid), "{valid:?}");
+    }
+    for invalid in [
+        "",
+        ".service",
+        "app",
+        "app.timer",
+        "../app.service",
+        "app/foo.service",
+        "*.service",
+        "app?.service",
+        "app[12].service",
+        "app@.service",
+        "app@one@two.service",
+        "--all.service",
+        "a b.service",
+        "a\nb.service",
+        "a\0.service",
+        "λ.service",
+        r"app\x2dworker.service",
+        &format!("{}.service", "a".repeat(248)),
+    ] {
+        assert!(!valid_service_unit(invalid), "{invalid:?}");
+    }
 }

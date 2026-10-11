@@ -454,8 +454,9 @@ proposal; a changed digest cannot reuse an approval. These rules are invoked by
 name and do not add raw `exec` allowlist entries. Commands retain `no_new_privs`
 and cannot request the approval-mediated sudo capability.
 
-The language supports one `run`, optional `require is-dir` and `require absent`
-checks before it, and an optional `create-new-dir PATH as VARIABLE { ... }` block.
+The language supports one `run`, optional `require is-dir`, `require absent` and
+`require user-service-active-or-enabled` checks before it, and an optional
+`create-new-dir PATH as VARIABLE { ... }` block.
 `create-new` remains an alias for older rule source.
 Each check occupies its own line. Parameters are positional and declared as
 `name: repo-name`; up to 16 are allowed. `repo-name` requires a full match of
@@ -471,6 +472,39 @@ shell, word splitting, command substitution, globbing, pipelines, or redirection
 `$HOME` is the receiving daemon's home, frozen at proposal time. Bare executable
 names resolve through `/usr/bin:/bin` when proposed; review and execution use
 the resulting absolute path. A rule cannot substitute its executable.
+
+For a trusted user service, allow restarting it while active, or starting it
+while enabled:
+
+```text
+rule restart-my-app() {
+  require user-service-active-or-enabled "my-app.service"
+  run systemctl --user restart -- "my-app.service"
+}
+```
+
+The check queries the daemon user's systemd manager using `/usr/bin/systemctl`.
+It requires `LoadState=loaded` and either `ActiveState=active` or
+`UnitFileState=enabled`/`enabled-runtime`. A stopped or failed disabled service
+does not pass; request a separate one-time command approval to start it.
+Stopping an enabled service manually leaves it enabled, so it still passes.
+`static`, `indirect`, `generated` and `transient` do not count as enabled;
+`systemctl is-enabled`'s exit status is deliberately not used.
+
+The target is one explicit `.service` name, up to 255 ASCII characters, starting
+with a letter or digit and containing only letters, digits, dots, underscores,
+hyphens and optionally one `@` with a nonempty instance. Paths, glob patterns,
+options and bare templates are rejected. Substitution works here too, for example
+`"my-app-$x.service"` with `x: repo-name`. Review the permitted names and the full
+`run` command together; a state check does not select or restrict its arguments.
+Services launched through systemd use their own unit settings and do not inherit
+the command's `no_new_privs` restriction.
+
+`check invoke` previews service checks, and invocation checks again after obtaining
+execution capacity. A missing unit, unavailable manager, malformed response or
+query failure prevents execution. Service queries share a five-second deadline.
+Service state can change between checking and running the command; this is an
+observed precondition, not an atomic conditional systemd operation.
 
 `require` checks run again immediately before execution. They observe state at
 that moment; another process can change it afterward. Use `create-new-dir` for the
