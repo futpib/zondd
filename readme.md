@@ -9,9 +9,9 @@ permission, or allow the rule until revoked.
 ## Screenshots
 
 <table><tr>
-<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="200" alt="Connect over Iroh or SSH and search saved connections"></td>
-<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="200" alt="Review a reusable rule and choose how long to approve it"></td>
-<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="200" alt="Search caller rules with active grants collapsed by default"></td>
+<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="200" alt="Approve a system upgrade with the caller and working directory visible"></td>
+<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="200" alt="Review a reusable Git clone rule with repository-name parameter constraints"></td>
+<td><img src="fastlane/metadata/android/en-US/images/phoneScreenshots/3.png" width="200" alt="Answer the approved command's sudo password request"></td>
 </tr></table>
 
 ## How it works
