@@ -6,6 +6,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:yaml/yaml.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
 
@@ -112,6 +113,14 @@ void main() {
               );
             }
           }
+          await visible(find.text('Rule details (YAML)'));
+          await tester.tap(find.text('Rule details (YAML)'));
+          final yamlView = find.byKey(ValueKey('rule-yaml-$proposalId'));
+          await visible(yamlView);
+          expect(
+            loadYaml(tester.widget<SelectableText>(yamlView).data!),
+            equals(proposal),
+          );
           await visible(find.text('Approve rule'));
           await tester.tap(find.text('Approve rule'));
           await visible(

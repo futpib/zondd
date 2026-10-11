@@ -91,9 +91,11 @@ Plain SSH connections do not depend on Iroh versions.
 Rule explanations come from the daemon as a versioned plain-text review document,
 bound to the approval digest. Android renders its sections and fields generically,
 so new daemon types, checks and effects using that format do not require an app
-update. Unsupported or incomplete review formats disable approval; rejection and
-revocation remain available. Proposals from daemons predating review documents
-require a daemon update and a new proposal.
+update. Unknown, incomplete or missing review formats show the complete proposal
+JSON as YAML in the approval card, with approval and lifetime selection still
+available. Known formats also offer **Rule details (YAML)**. The fallback preserves
+all fields and scalar types, including nested definitions and escaped control
+characters. Rejection and revocation remain available in either view.
 
 QR scan buttons are available beside connection targets (including quick connect),
 private keys, passphrases, passwords, and relay URLs. Scan with the camera or choose

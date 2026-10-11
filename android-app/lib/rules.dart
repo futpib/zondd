@@ -1,11 +1,11 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'control.dart';
+import 'json_yaml.dart';
 import 'ui.dart';
 
-// Version 1 is plain text throughout. Never silently omit unrecognized fields
-// when deciding whether the entire approval document can be rendered.
-bool supportedRuleReview(Object? value) {
+// Use the rich layout only when it can display every review field. Other
+// formats remain reviewable as the complete proposal rendered in YAML.
+bool _isTextReview(Object? value) {
   bool fields(Object? object, Set<String> names) =>
       object is Map &&
       object.length == names.length &&
@@ -80,8 +80,7 @@ class _RuleProposalCardState extends State<RuleProposalCard> {
               DropdownMenuItem(value: 86400, child: Text('24 hours')),
               DropdownMenuItem(value: 0, child: Text('Until revoked')),
             ],
-            onChanged:
-                widget.enabled && supportedRuleReview(widget.proposal['review'])
+            onChanged: widget.enabled
                 ? (value) => setState(() => lifetime = value!)
                 : null,
           ),
@@ -99,9 +98,7 @@ class _RuleProposalCardState extends State<RuleProposalCard> {
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton(
-                  onPressed:
-                      widget.enabled &&
-                          supportedRuleReview(widget.proposal['review'])
+                  onPressed: widget.enabled
                       ? () => widget.resolve(
                           true,
                           lifetime == 0 ? null : lifetime,
@@ -125,7 +122,12 @@ class RuleDefinition extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final raw = proposal['review'];
-    final review = supportedRuleReview(raw) ? raw as Map : null;
+    final review = _isTextReview(raw) ? raw as Map : null;
+    final yaml = SelectableText(
+      jsonAsYaml(proposal),
+      key: ValueKey('rule-yaml-${proposal['id']}'),
+      style: mono,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -134,15 +136,17 @@ class RuleDefinition extends StatelessWidget {
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 12),
-        SelectableText(proposal['source'] as String, style: mono),
+        if (proposal['source'] is String)
+          SelectableText(proposal['source'] as String, style: mono),
         const SizedBox(height: 12),
-        if (review == null)
-          ErrorBox(
-            raw == null
-                ? 'This proposal has no review document. Update the daemon and submit a new proposal before approving.'
-                : 'This app cannot display the complete rule review. Approval is disabled; update the app or use a compatible reviewer.',
-          )
-        else
+        if (review == null) ...[
+          Text(
+            'Complete rule data (YAML)',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 8),
+          yaml,
+        ] else
           for (final section in review['sections'] as List) ...[
             const SizedBox(height: 12),
             Text(
@@ -155,16 +159,12 @@ class RuleDefinition extends StatelessWidget {
                 child: SelectableText('${field['label']}: ${field['value']}'),
               ),
           ],
-        ExpansionTile(
-          tilePadding: EdgeInsets.zero,
-          title: const Text('Rule details'),
-          children: [
-            SelectableText(
-              const JsonEncoder.withIndent('  ').convert(proposal),
-              style: mono,
-            ),
-          ],
-        ),
+        if (review != null)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Rule details (YAML)'),
+            children: [yaml],
+          ),
       ],
     );
   }

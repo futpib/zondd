@@ -432,13 +432,18 @@ the rule language or maintaining a list of type/check/effect names. New language
 constructs using this format need no Android update. The CLI also sends proposal
 source to the receiver for parsing, without requiring a matching local parser.
 
-New rendering semantics require a new review format version. Android disables
-approval for missing, malformed or unsupported review documents, including
-unknown fields, while allowing rejection and revocation. Updating an older
-daemon/client pair to this format requires updating both once. Saved proposals
-and grants whose review is missing or differs from the current receiver's
-description are invalidated and require a new proposal and approval; unchanged
-reviews survive restarts. Historical definitions remain visible.
+New rendering semantics can use a new review format version. When Android does
+not recognize a review's format or fields, or the review document is missing,
+it displays the complete proposal JSON as YAML directly in the approval card.
+Approval, lifetime selection, rejection and revocation remain available. Known
+formats also offer the complete YAML under **Rule details (YAML)**. This fallback
+preserves every field and scalar type, including nested future definitions;
+quoted strings make control characters visible. Approval still submits the
+exact proposal ID and digest supplied by the receiver.
+
+Saved proposals and grants whose review is missing or differs from the current
+receiver's description are invalidated and require a new proposal and approval;
+unchanged reviews survive restarts. Historical definitions remain visible.
 
 The Android **Caller rules** screen also lists definitions and supports
 revocation. Approval grants repeated invocations to the proposing **principal**,

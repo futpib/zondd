@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:yaml/yaml.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
 import 'package:zondd_control/rules.dart';
@@ -87,10 +88,7 @@ void main() {
       api.proposal['review'] = {...reviewDocument(), 'version': 2};
       await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
       await tester.pumpAndSettle();
-      expect(
-        find.textContaining('cannot display the complete rule review'),
-        findsOneWidget,
-      );
+      expect(find.text('Complete rule data (YAML)'), findsOneWidget);
       await tester.ensureVisible(find.text('Revoke rule'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Revoke rule'));
@@ -151,6 +149,11 @@ void main() {
 
   final unsupported = <String, Object?>{
     'missing': null,
+    'scalar document': 'opaque review text',
+    'array document': [
+      1,
+      {'nested': true},
+    ],
     'new version': {...reviewDocument(), 'version': 2},
     'wrong version type': {...reviewDocument(), 'version': '1'},
     'unknown document field': {
@@ -208,50 +211,73 @@ void main() {
     },
   };
   for (final entry in unsupported.entries) {
-    testWidgets('${entry.key} review blocks approval but allows rejection', (
-      tester,
-    ) async {
-      final api = RuleControl();
-      api.proposal['review'] = entry.value;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Dashboard(api: api, name: 'test'),
-        ),
+    for (final approve in [true, false]) {
+      testWidgets(
+        '${entry.key} review supports YAML review and decision $approve',
+        (tester) async {
+          final api = RuleControl();
+          if (entry.key == 'missing') {
+            api.proposal.remove('review');
+          } else {
+            api.proposal['review'] = entry.value;
+          }
+          api.proposal['future_definition'] = {
+            'nested': [
+              {
+                'check': 'unrecognized',
+                'enabled': false,
+                'limit': 3,
+                'optional': null,
+              },
+            ],
+          };
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Dashboard(api: api, name: 'test'),
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          expect(
+            tester
+                .widget<FilledButton>(
+                  find.widgetWithText(FilledButton, 'Approve rule'),
+                )
+                .onPressed,
+            isNotNull,
+          );
+          expect(
+            tester
+                .widget<DropdownButtonFormField<int>>(
+                  find.byType(DropdownButtonFormField<int>),
+                )
+                .onChanged,
+            isNotNull,
+          );
+          expect(find.text('Complete rule data (YAML)'), findsOneWidget);
+          final yaml = tester
+              .widget<SelectableText>(
+                find.byKey(const ValueKey('rule-yaml-proposal-1')),
+              )
+              .data!;
+          expect(loadYaml(yaml), equals(api.proposal));
+          expect(find.textContaining('Approval is disabled'), findsNothing);
+          final decision = find.text(approve ? 'Approve rule' : 'Reject rule');
+          await tester.ensureVisible(decision);
+          await tester.pumpAndSettle();
+          await tester.tap(decision);
+          await tester.pumpAndSettle();
+          expect(api.resolution, {
+            'method': 'resolve_rule',
+            'proposal_id': 'proposal-1',
+            'digest': 'exact-reviewed-digest',
+            'approve': approve,
+            'expires_in_secs': approve ? 3600 : null,
+          });
+          await tester.pumpWidget(const SizedBox.shrink());
+        },
       );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(
-        tester
-            .widget<FilledButton>(
-              find.widgetWithText(FilledButton, 'Approve rule'),
-            )
-            .onPressed,
-        isNull,
-      );
-      expect(
-        tester
-            .widget<DropdownButtonFormField<int>>(
-              find.byType(DropdownButtonFormField<int>),
-            )
-            .onChanged,
-        isNull,
-      );
-      expect(
-        find.textContaining(
-          entry.value == null
-              ? 'has no review document'
-              : 'cannot display the complete rule review',
-        ),
-        findsOneWidget,
-      );
-      await tester.ensureVisible(find.text('Reject rule'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Reject rule'));
-      await tester.pumpAndSettle();
-      expect(api.resolution?['approve'], isFalse);
-      expect(api.resolution?['digest'], 'exact-reviewed-digest');
-      await tester.pumpWidget(const SizedBox.shrink());
-    });
+    }
   }
 
   testWidgets('plain review text is rendered without interpreting markup', (
