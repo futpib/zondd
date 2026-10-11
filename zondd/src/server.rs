@@ -684,10 +684,13 @@ fn reevaluate(config: &Config, rules: &Rules, entry: &mut Entry) {
     }
     let sudo_password = match &entry.record.input {
         Request::Run { .. } => decision == Decision::Ask,
-        Request::Invoke { operation, .. } => config
-            .operations
-            .get(operation)
-            .is_some_and(|op| op.sudo_password),
+        Request::Invoke { operation, .. } => {
+            config
+                .operations
+                .get(operation)
+                .is_some_and(|op| op.sudo_password)
+                || rule.as_ref().is_some_and(|r| r.bound.rule.sudo_password)
+        }
         _ => false,
     };
     if command != entry.request.command
@@ -1199,10 +1202,13 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
         operation,
         sudo_password: match &record.input {
             Request::Run { .. } => decision == Decision::Ask,
-            Request::Invoke { operation, .. } => config
-                .operations
-                .get(operation)
-                .is_some_and(|op| op.sudo_password),
+            Request::Invoke { operation, .. } => {
+                config
+                    .operations
+                    .get(operation)
+                    .is_some_and(|op| op.sudo_password)
+                    || rule.as_ref().is_some_and(|r| r.bound.rule.sudo_password)
+            }
             _ => false,
         },
         reason: "command not permitted without one-time approval".into(),

@@ -95,6 +95,12 @@ pub struct Rule {
     pub create_new: Option<CreateNew>,
     pub program: String,
     pub args: Vec<Word>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sudo_password: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -499,6 +505,8 @@ pub fn parse(source: &str) -> Result<Rule> {
     };
     p.keyword("run")?;
     let program = p.literal()?;
+    let sudo_password = program == "--sudo";
+    let program = if sudo_password { p.literal()? } else { program };
     ensure!(
         !program.is_empty() && !program.starts_with('-'),
         "invalid executable"
@@ -546,5 +554,6 @@ pub fn parse(source: &str) -> Result<Rule> {
         create_new,
         program,
         args,
+        sudo_password,
     })
 }

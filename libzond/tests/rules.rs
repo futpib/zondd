@@ -8,6 +8,33 @@ const SOURCE: &str = r#"rule clone-futpib(x: repo-name) {
 }"#;
 
 #[test]
+fn sudo_is_an_explicit_run_capability_and_preserves_ordinary_rule_digests() {
+    let ordinary = parse("rule test() { run paru --sudo }").unwrap();
+    assert!(!ordinary.sudo_password);
+    let serialized = serde_json::to_value(&ordinary).unwrap();
+    assert!(serialized.get("sudo_password").is_none());
+    assert_eq!(
+        serde_json::from_value::<libzond::rules::Rule>(serialized).unwrap(),
+        ordinary
+    );
+    let privileged = parse("rule test() { run --sudo paru -Syu }").unwrap();
+    assert!(privileged.sudo_password);
+    assert_eq!(privileged.program, "paru");
+    assert_eq!(
+        serde_json::to_value(&privileged).unwrap()["sudo_password"],
+        true
+    );
+    for source in [
+        "rule test() { run --sudo }",
+        "rule test() { run --sudo --sudo paru }",
+        "rule test(x: repo-name) { run $x paru }",
+        "rule test(x: repo-name) { run --sudo $x }",
+    ] {
+        assert!(parse(source).is_err(), "{source}");
+    }
+}
+
+#[test]
 fn directory_effect_keeps_the_old_spelling_as_an_alias() {
     assert_eq!(
         parse(SOURCE).unwrap(),

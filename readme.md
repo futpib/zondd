@@ -452,7 +452,11 @@ grants. The caller cannot approve, revoke, change the principal, or broaden an
 approved definition. Replacing a rule requires revoking it and reviewing a new
 proposal; a changed digest cannot reuse an approval. These rules are invoked by
 name and do not add raw `exec` allowlist entries. Commands retain `no_new_privs`
-and cannot request the approval-mediated sudo capability.
+unless the proposed definition explicitly uses `run --sudo PROGRAM ...`.
+That flag enables sudo password challenges and permits privilege escalation by
+child processes, subject to sudoers. The receiver describes this authority in
+the review and includes it in the approval digest. It does not run the program
+as root or store passwords. Existing grants keep their original privileges.
 
 The language supports one `run`, optional `require is-dir`, `require absent` and
 `require user-service-active-or-enabled` checks before it, and an optional
@@ -587,6 +591,23 @@ default policy, submit an upgrade as a raw command and approve that request:
 ```sh
 zondctl exec /usr/bin/paru -Syu --noconfirm --skipreview --noupgrademenu --sudoflags=-A
 ```
+
+To approve repeated repository and AUR upgrades, save this as `system-upgrade.zond`:
+
+```sh
+rule system-upgrade() {
+  run --sudo /usr/bin/paru -Syu --devel --noconfirm --skipreview --noupgrademenu --sudoflags=-A
+}
+```
+
+Submit it with `zondctl propose-rule --file system-upgrade.zond`, then choose
+**Until revoked** when approving the rule in Android. The caller can subsequently
+use `zondctl invoke system-upgrade` without another command approval. Sudo may
+still ask for a password. The executable and all arguments are fixed; the
+caller cannot add flags or package names. The grant also authorizes future AUR
+build scripts and package hooks run by these upgrades, so review that ongoing
+authority before accepting. A daemon supporting `run --sudo` is required;
+older daemons reject the proposal.
 
 For a fixed allowlist entry, assign this operation to a principal whose key
 you trust to request system upgrades:

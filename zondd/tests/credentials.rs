@@ -32,6 +32,112 @@ fn privileged_policy(env: &TestEnv, enabled: bool) -> String {
 }
 
 #[test]
+fn persistent_sudo_rules_require_explicit_review_and_keep_credentials_scoped() {
+    let env = TestEnv::new();
+    fs::write(
+        &env.config,
+        env.policy
+            .replace("timeout_secs = 4", "timeout_secs = 120")
+            .replace("command_timeout_secs = 2", "command_timeout_secs = 120"),
+    )
+    .unwrap();
+    env.request("admin", json!({"method":"reload"}));
+    for (name, flag, output) in [("ordinary", "", b"1\n"), ("privileged", "--sudo ", b"0\n")] {
+        let source = format!(
+            "rule {name}() {{ run {flag}{} no_new_privs }}",
+            env.probe.display()
+        );
+        let event = env.request("exec", json!({"method":"propose_rule", "source":source}));
+        assert_eq!(event["type"], "rule_proposed", "{event}");
+        let proposal = &event["proposal"];
+        assert_eq!(
+            env.request(
+                "exec",
+                json!({"method":"invoke", "operation":name, "args":[]})
+            )["type"],
+            "error"
+        );
+        let review = proposal["review"].to_string();
+        assert_eq!(
+            review.contains("no_new_privs is disabled"),
+            name == "privileged"
+        );
+        assert_eq!(
+            proposal["bound"]["rule"]["sudo_password"] == true,
+            name == "privileged"
+        );
+        assert_eq!(env.request("admin", json!({"method":"resolve_rule", "proposal_id":proposal["id"], "digest":proposal["digest"], "approve":true}))["rule"]["status"], "active");
+        env.stop_daemon();
+        env.start_daemon();
+        for _ in 0..2 {
+            let result = env.request(
+                "exec",
+                json!({"method":"invoke", "operation":name, "args":[]}),
+            );
+            assert_eq!(result["type"], "completed", "{result}");
+            assert_eq!(decoded(&result, "stdout"), output);
+        }
+        assert_eq!(
+            env.request(
+                "exec",
+                json!({"method":"invoke", "operation":name, "args":["extra"]})
+            )["type"],
+            "error"
+        );
+        assert_eq!(
+            env.request(
+                "ops",
+                json!({"method":"invoke", "operation":name, "args":[]})
+            )["type"],
+            "error"
+        );
+        assert_eq!(
+            env.request(
+                "admin",
+                json!({"method":"revoke_rule", "grant_id":proposal["id"]})
+            )["type"],
+            "rule_revoked"
+        );
+        assert_eq!(
+            env.request(
+                "exec",
+                json!({"method":"invoke", "operation":name, "args":[]})
+            )["type"],
+            "error"
+        );
+    }
+
+    let source = format!(
+        "rule passwords() {{ run --sudo {} askpass }}",
+        env.probe.display()
+    );
+    let proposal =
+        env.request("exec", json!({"method":"propose_rule", "source":source}))["proposal"].clone();
+    assert_eq!(env.request("admin", json!({"method":"resolve_rule", "proposal_id":proposal["id"], "digest":proposal["digest"], "approve":true}))["rule"]["status"], "active");
+    for _ in 0..2 {
+        let mut caller = env.session(
+            "exec",
+            json!({"method":"invoke", "operation":"passwords", "args":[]}),
+        );
+        for password in ["test-password-one", "test-password-two"] {
+            let requested = challenge(&env);
+            assert_eq!(requested["operation"], "passwords");
+            assert!(
+                env.request("admin", json!({"method":"pending"}))["requests"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(env.request("exec", json!({"method":"credential", "challenge_id":requested["challenge_id"], "password":"wrong-endpoint-secret"}))["type"], "rejected");
+            assert_eq!(env.request("admin", json!({"method":"credential", "challenge_id":requested["challenge_id"], "password":password}))["type"], "credential_answered");
+        }
+        let done = caller.event();
+        assert_eq!(done["type"], "completed", "{done}");
+        assert_eq!(decoded(&done, "stdout"), b"two prompts answered\n");
+    }
+}
+
+#[test]
 fn approved_raw_exec_can_answer_sudo_without_privileging_allowed_commands() {
     let env = TestEnv::new();
     let policy = format!(

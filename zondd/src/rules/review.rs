@@ -68,7 +68,11 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
                 ),
                 field(
                     "Privileges",
-                    "Commands run as the daemon's Unix user without gaining new privileges. This does not isolate access to that user's files or program configuration.",
+                    if rule.sudo_password {
+                        "Commands run as the daemon's Unix user with permission to gain privileges through sudo or other setuid helpers (no_new_privs is disabled). This grant permits repeated privileged invocations without another command approval. Sudo still enforces sudoers and can request passwords through zond; passwords are not stored. Review the executable, its configuration and its child processes, including package build scripts."
+                    } else {
+                        "Commands run as the daemon's Unix user without gaining new privileges. This does not isolate access to that user's files or program configuration."
+                    },
                 ),
             ],
         ),
@@ -164,6 +168,22 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sudo_authority_cannot_reuse_an_unprivileged_review() {
+        let mut bound = BoundRule {
+            rule: libzond::rules::parse("rule upgrade() { run paru -Syu }").unwrap(),
+            home: "/home/test".into(),
+            cwd: "/tmp".into(),
+        };
+        let ordinary = describe(&bound).unwrap();
+        bound.rule.sudo_password = true;
+        let privileged = describe(&bound).unwrap();
+        assert!(!is_current(&bound, Some(&ordinary)));
+        assert!(is_current(&bound, Some(&privileged)));
+        bound.rule.sudo_password = false;
+        assert!(!is_current(&bound, Some(&privileged)));
+    }
 
     #[test]
     fn legacy_directory_label_preserves_grants_but_changed_semantics_do_not() {
