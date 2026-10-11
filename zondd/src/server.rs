@@ -1,6 +1,7 @@
 use crate::{
-    execution,
+    create_new, execution,
     history::{History, now},
+    rules::Rules,
     security::Runtime,
 };
 use anyhow::{Context, Result, ensure};
@@ -35,6 +36,7 @@ struct Entry {
     approved: bool,
     fresh_review: bool,
     had_pending: bool,
+    rule: Option<libzond::rules::Invocation>,
 }
 struct Active {
     config: Arc<Config>,
@@ -46,6 +48,7 @@ struct Active {
     running: usize,
     connections: usize,
     history: History,
+    rules: Rules,
     stopping: bool,
 }
 struct AskpassJob {
@@ -296,11 +299,15 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
     let askpass_socket = runtime.listen(config.runtime_dir.join("askpass.sock"))?;
     let (control, mut control_rx) = mpsc::channel(16);
     let (changed, _) = watch::channel(());
+    let mut history = History::open(&config_path)?;
+    let mut rules = Rules::load(&history)?;
+    rules.refresh(&config, &revision, &mut history)?;
     let state = Arc::new(State {
         active: Mutex::new(Active {
             config: Arc::new(config),
             revision,
-            history: History::open(&config_path)?,
+            history,
+            rules,
             stopping: false,
             pending: BTreeMap::new(),
             jobs: BTreeMap::new(),
@@ -448,10 +455,15 @@ fn reload(
     let mut refreshed_approvals = 0;
     {
         let mut active = state.active.lock().unwrap();
+        let changed_rules = active.rules.invalidated(&config, &revision);
+        let mut rules = active.rules.clone();
+        for rule in &changed_rules {
+            rules.0.remove(&rule.proposal.id);
+        }
         let mut pending = active.pending.clone();
         for entry in pending.values_mut().filter(|e| !e.record.is_terminal()) {
             let old_id = entry.request.approval_id.clone();
-            reevaluate(&config, entry);
+            reevaluate(&config, &rules, entry);
             if entry.record.is_terminal() {
                 cancelled_approvals += 1;
             } else if entry.request.approval_id != old_id {
@@ -463,12 +475,16 @@ fn reload(
             }
         }
         let records: Vec<_> = pending.values().map(|e| e.record.clone()).collect();
-        if let Err(error) = active.history.reevaluated(&records, &revision) {
+        if let Err(error) = active
+            .history
+            .reevaluated(&records, &revision, &changed_rules)
+        {
             for (_, path, _) in &added {
                 let _ = runtime.remove(path);
             }
             return Err(error).context("could not log policy change; active policy unchanged");
         }
+        active.rules = rules;
         active.config = config.clone();
         active.revision = revision.clone();
         active.pending = pending;
@@ -584,11 +600,15 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
     wire::write(&mut write, &Envelope::new(id, event)).await
 }
 
-fn evaluate(
-    config: &Config,
-    name: &str,
-    input: &Request,
-) -> Result<(Command, Option<String>, Decision, PathBuf)> {
+struct Evaluation {
+    command: Command,
+    operation: Option<String>,
+    decision: Decision,
+    cwd: PathBuf,
+    rule: Option<libzond::rules::Invocation>,
+}
+
+fn evaluate(config: &Config, rules: &Rules, name: &str, input: &Request) -> Result<Evaluation> {
     let p = config
         .principals
         .get(name)
@@ -601,22 +621,40 @@ fn evaluate(
                 validate_cwd(cwd)?;
             }
             let cwd = cwd.as_ref().unwrap_or(&p.cwd);
-            Ok((
-                command.clone(),
-                None,
-                p.decision_in(command, cwd),
-                cwd.clone(),
-            ))
+            Ok(Evaluation {
+                command: command.clone(),
+                operation: None,
+                decision: p.decision_in(command, cwd),
+                cwd: cwd.clone(),
+                rule: None,
+            })
         }
         Request::Invoke { operation, args } => {
-            let (command, decision) = config.operation(p, operation, args)?;
-            Ok((command, Some(operation.clone()), decision, p.cwd.clone()))
+            if config.operations.contains_key(operation) {
+                let (command, decision) = config.operation(p, operation, args)?;
+                Ok(Evaluation {
+                    command,
+                    operation: Some(operation.clone()),
+                    decision,
+                    cwd: p.cwd.clone(),
+                    rule: None,
+                })
+            } else {
+                let rule = rules.invoke(name, operation, args)?;
+                Ok(Evaluation {
+                    command: rule.command.clone(),
+                    operation: Some(operation.clone()),
+                    decision: Decision::Allow,
+                    cwd: rule.bound.cwd.clone(),
+                    rule: Some(rule),
+                })
+            }
         }
         _ => anyhow::bail!("not an executable request"),
     }
 }
 
-fn reevaluate(config: &Config, entry: &mut Entry) {
+fn reevaluate(config: &Config, rules: &Rules, entry: &mut Entry) {
     let reject = |entry: &mut Entry, status: &str, reason: String| {
         entry.record.status = status.into();
         entry.record.reason = reason;
@@ -626,25 +664,34 @@ fn reevaluate(config: &Config, entry: &mut Entry) {
         reject(entry, "expired", "approval expired".into());
         return;
     }
-    let (command, _, decision, cwd) =
-        match evaluate(config, &entry.record.principal, &entry.record.input) {
-            Ok(value) => value,
-            Err(error) => {
-                reject(entry, "rejected", format!("policy changed: {error}"));
-                return;
-            }
-        };
+    let Evaluation {
+        command,
+        decision,
+        cwd,
+        rule,
+        ..
+    } = match evaluate(config, rules, &entry.record.principal, &entry.record.input) {
+        Ok(value) => value,
+        Err(error) => {
+            reject(entry, "rejected", format!("policy changed: {error}"));
+            return;
+        }
+    };
     if decision == Decision::Deny {
         reject(entry, "rejected", "command denied by updated policy".into());
         return;
     }
     let sudo_password = match &entry.record.input {
         Request::Run { .. } => decision == Decision::Ask,
-        Request::Invoke { operation, .. } => config.operations[operation].sudo_password,
+        Request::Invoke { operation, .. } => config
+            .operations
+            .get(operation)
+            .is_some_and(|op| op.sudo_password),
         _ => false,
     };
     if command != entry.request.command
         || cwd != entry.request.cwd
+        || rule != entry.rule
         || sudo_password && !entry.request.sudo_password
     {
         entry.request.command = command.clone();
@@ -658,6 +705,7 @@ fn reevaluate(config: &Config, entry: &mut Entry) {
         entry.record.command = Some(command);
         entry.record.cwd = Some(cwd);
     }
+    entry.rule = rule;
     entry.request.sudo_password = sudo_password;
     entry.decision = if entry.fresh_review {
         Decision::Ask
@@ -962,7 +1010,8 @@ async fn dispatch(
         spawn_job(&state, record);
         return wait_attached(state, request_id, id, write).await;
     }
-    let active = state.active.lock().unwrap();
+    let mut active = state.active.lock().unwrap();
+    refresh_rules(&mut active)?;
     active.history.audit(
         None,
         "caller_request",
@@ -972,11 +1021,32 @@ async fn dispatch(
         return Ok(reject("principal is no longer configured"));
     };
     match request {
+        Request::ProposeRule { source } => {
+            let config = active.config.clone();
+            let revision = active.revision.clone();
+            let count = active
+                .pending
+                .values()
+                .filter(|e| e.had_pending && !e.record.is_terminal())
+                .count();
+            let Active { rules, history, .. } = &mut *active;
+            let proposal = rules.propose(&config, &revision, &name, source, history, count)?;
+            state.changed.send_replace(());
+            Ok(Event::RuleProposed {
+                proposal: Box::new(proposal),
+            })
+        }
+        Request::Rules => Ok(Event::Rules {
+            rules: active.history.rule_states(Some(&name), false)?,
+            revision: active.rules.revision(Some(&name))?,
+        }),
         Request::ListOperations => Ok(Event::Operations {
             operations: active.config.operations_for(p),
         }),
         Request::Permissions {} => Ok(Event::Permissions {
             permissions: Box::new(CallerPermissions {
+                rules_revision: active.rules.revision(Some(&name))?,
+                rules: active.history.rule_states(Some(&name), false)?,
                 principal: name,
                 revision: active.revision.clone(),
                 policy: p.clone(),
@@ -999,17 +1069,26 @@ async fn dispatch(
             let mut check = PolicyCheck {
                 principal: name.clone(),
                 revision: active.revision.clone(),
+                rules_revision: active.rules.revision(Some(&name))?,
                 decision: Decision::Deny,
                 policy_decision: None,
                 reason: String::new(),
                 command: None,
+                rule: None,
                 cwd: match &input {
                     CheckInput::Run { cwd: Some(cwd), .. } => cwd.clone(),
                     _ => p.cwd.clone(),
                 },
             };
-            match evaluate(&active.config, &name, &input.into()) {
-                Ok((command, _, decision, cwd)) => {
+            match evaluate(&active.config, &active.rules, &name, &input.into()) {
+                Ok(Evaluation {
+                    command,
+                    decision,
+                    cwd,
+                    rule,
+                    ..
+                }) => {
+                    check.rule = rule;
                     check.command = Some(command);
                     check.cwd = cwd;
                     check.policy_decision = Some(decision);
@@ -1026,6 +1105,21 @@ async fn dispatch(
                     };
                     check.decision = effective;
                     check.reason = reason.into();
+                    if let Some(rule) = &check.rule {
+                        let result = create_new::check(&rule.requirements).and_then(|()| {
+                            if let Some(path) = &rule.destination {
+                                create_new::check(&[libzond::rules::ResolvedRequirement {
+                                    kind: "absent".into(),
+                                    path: path.clone(),
+                                }])?;
+                            }
+                            Ok(())
+                        });
+                        if let Err(error) = result {
+                            check.decision = Decision::Deny;
+                            check.reason = format!("{error:#}");
+                        }
+                    }
                 }
                 Err(error) => check.reason = error.to_string(),
             }
@@ -1041,22 +1135,28 @@ async fn dispatch(
 
 fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
     let mut active = state.active.lock().unwrap();
+    refresh_rules(&mut active)?;
     let config = active.config.clone();
-    let (command, operation, decision, cwd) =
-        match evaluate(&config, &record.principal, &record.input) {
-            Ok(value) => value,
-            Err(error) => {
-                let reason = error.to_string();
-                let unauthorized = !config.principals.contains_key(&record.principal)
-                    || matches!(&record.input, Request::Run { .. })
-                        && !config.principals[&record.principal].allow_exec;
-                return Ok(Some(if unauthorized {
-                    reject(&reason)
-                } else {
-                    Event::Error { message: reason }
-                }));
-            }
-        };
+    let Evaluation {
+        command,
+        operation,
+        decision,
+        cwd,
+        rule,
+    } = match evaluate(&config, &active.rules, &record.principal, &record.input) {
+        Ok(value) => value,
+        Err(error) => {
+            let reason = error.to_string();
+            let unauthorized = !config.principals.contains_key(&record.principal)
+                || matches!(&record.input, Request::Run { .. })
+                    && !config.principals[&record.principal].allow_exec;
+            return Ok(Some(if unauthorized {
+                reject(&reason)
+            } else {
+                Event::Error { message: reason }
+            }));
+        }
+    };
     record.command = Some(command.clone());
     record.cwd = Some(cwd.clone());
     if decision == Decision::Deny {
@@ -1074,6 +1174,7 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
                 .values()
                 .filter(|e| e.had_pending && !e.record.is_terminal())
                 .count()
+                + active.rules.proposals().len()
                 < config.approvals.max_pending,
             "approval queue full"
         );
@@ -1088,7 +1189,10 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
         operation,
         sudo_password: match &record.input {
             Request::Run { .. } => decision == Decision::Ask,
-            Request::Invoke { operation, .. } => config.operations[operation].sudo_password,
+            Request::Invoke { operation, .. } => config
+                .operations
+                .get(operation)
+                .is_some_and(|op| op.sudo_password),
             _ => false,
         },
         reason: "command not permitted without one-time approval".into(),
@@ -1108,7 +1212,7 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
         "allowed"
     }
     .into();
-    let detail = json!({"decision":decision,"revision":active.revision,"approval_id":request.approval_id,"command":request.command,"cwd":request.cwd});
+    let detail = json!({"decision":decision,"revision":active.revision,"approval_id":request.approval_id,"command":request.command,"cwd":request.cwd,"rule":rule});
     active.history.record(record, "policy_evaluated", detail)?;
     active.pending.insert(
         record.request_id.clone(),
@@ -1120,6 +1224,7 @@ fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
             approved: false,
             fresh_review: false,
             had_pending: decision == Decision::Ask,
+            rule,
         },
     );
     state.changed.send_replace(());
@@ -1134,6 +1239,7 @@ enum Step {
         command: Command,
         operation: Option<String>,
         sudo_password: bool,
+        rule: Option<Box<libzond::rules::Invocation>>,
         permit: CapacityGuard,
     },
     Done(Event),
@@ -1141,10 +1247,14 @@ enum Step {
 
 fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
     let mut active = state.active.lock().unwrap();
+    refresh_rules(&mut active)?;
     let mut entry = active
         .pending
         .remove(id)
         .context("request no longer active")?;
+    if entry.rule.is_some() {
+        reevaluate(&active.config, &active.rules, &mut entry);
+    }
     if entry.record.is_terminal() {
         return Ok(Step::Done(reject(&entry.record.reason)));
     }
@@ -1170,7 +1280,7 @@ fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
                 "allowed by policy"
             }
             .into();
-            let detail = json!({"revision":active.revision,"authorization":entry.record.reason,"command":entry.request.command,"cwd":entry.request.cwd,"detached":entry.record.detached,"command_timeout_secs":config.limits.command_timeout_secs,"max_output_bytes":config.limits.max_output_bytes});
+            let detail = json!({"revision":active.revision,"authorization":entry.record.reason,"command":entry.request.command,"cwd":entry.request.cwd,"rule":entry.rule,"detached":entry.record.detached,"command_timeout_secs":config.limits.command_timeout_secs,"max_output_bytes":config.limits.max_output_bytes});
             active
                 .history
                 .record(&mut entry.record, "execution_started", detail)?;
@@ -1182,6 +1292,7 @@ fn advance(state: &Arc<State>, id: &str) -> Result<Step> {
                 command: entry.request.command,
                 operation: entry.request.operation,
                 sudo_password: entry.request.sudo_password,
+                rule: entry.rule.map(Box::new),
                 permit: CapacityGuard {
                     state: state.clone(),
                     execution: true,
@@ -1204,19 +1315,20 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
         id: record.request_id.clone(),
     };
     let mut changed = state.changed.subscribe();
-    let result: Result<Event> = async {
+    let result: Result<(Event, Option<create_new::Staging>)> = async {
         if let Some(event) = prepare(&state, &mut record)? {
-            return Ok(event);
+            return Ok((event, None));
         }
         loop {
             match advance(&state, &record.request_id)? {
-                Step::Done(event) => return Ok(event),
+                Step::Done(event) => return Ok((event, None)),
                 Step::Execute {
                     config,
                     cwd,
                     command,
                     operation,
                     sudo_password,
+                    rule,
                     permit,
                 } => {
                     let _permit = permit;
@@ -1232,9 +1344,30 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
                     } else {
                         None
                     };
+                    let staging = if let Some(rule) = &rule {
+                        create_new::check(&rule.requirements)?;
+                        rule.destination
+                            .as_deref()
+                            .map(create_new::Staging::new)
+                            .transpose()?
+                    } else {
+                        None
+                    };
+                    let command = match (&rule, &staging) {
+                        (Some(rule), Some(staging)) => {
+                            rule.bound
+                                .instantiate(
+                                    &rule.grant_id,
+                                    &rule.args,
+                                    Some(staging.path().to_str().context("non-UTF8 staging path")?),
+                                )?
+                                .command
+                        }
+                        _ => command,
+                    };
                     let id = record.request_id.clone();
                     let state = state.clone();
-                    return execution::execute(
+                    let event = execution::execute(
                         &command,
                         &cwd,
                         askpass.as_ref().map(|g| g.path.as_path()),
@@ -1253,7 +1386,8 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
                             Ok(())
                         },
                     )
-                    .await;
+                    .await?;
+                    return Ok((event, staging));
                 }
                 Step::Wait(deadline) => {
                     let _ = tokio::time::timeout_at(deadline, changed.changed()).await;
@@ -1262,8 +1396,13 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
         }
     }
     .await;
-    let mut event = result.unwrap_or_else(|error| Event::Error {
-        message: format!("{error:#}"),
+    let (mut event, staging) = result.unwrap_or_else(|error| {
+        (
+            Event::Error {
+                message: format!("{error:#}"),
+            },
+            None,
+        )
     });
     let mut active = state.active.lock().unwrap();
     // A refreshed request or admission may have replaced the initial command/context.
@@ -1272,6 +1411,26 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
         state.changed.send_replace(());
         return Ok(event);
     }
+    // Publication and terminal history share the cancellation lock. A successful
+    // cancellation cannot leave a published result with a cancelled job status.
+    if matches!(
+        event,
+        Event::Completed {
+            code: Some(0),
+            signal: None,
+            ..
+        }
+    ) && let Some(staging) = &staging
+    {
+        if active.stopping {
+            event = reject("daemon stopping before directory publication");
+        } else if let Err(error) = staging.publish() {
+            event = Event::Error {
+                message: format!("{error:#}"),
+            };
+        }
+    }
+    drop(staging);
     if stored.command.is_some() {
         record = stored;
     }
@@ -1337,11 +1496,47 @@ async fn admin(state: &State, request: Request) -> Result<Event> {
     result
 }
 
+fn refresh_rules(active: &mut Active) -> Result<()> {
+    active
+        .rules
+        .refresh(&active.config, &active.revision, &mut active.history)
+}
+
 async fn admin_request(state: &State, request: Request) -> Result<Event> {
+    refresh_rules(&mut state.active.lock().unwrap())?;
     match request {
+        Request::Rules => {
+            let active = state.active.lock().unwrap();
+            Ok(Event::Rules {
+                rules: active.history.rule_states(None, false)?,
+                revision: active.rules.revision(None)?,
+            })
+        }
+        Request::ResolveRule {
+            proposal_id,
+            digest,
+            approve,
+            expires_in_secs,
+        } => {
+            let mut active = state.active.lock().unwrap();
+            let Active { rules, history, .. } = &mut *active;
+            let rule = rules.resolve(&proposal_id, &digest, approve, expires_in_secs, history)?;
+            state.changed.send_replace(());
+            Ok(Event::RuleResolved {
+                rule: Box::new(rule),
+            })
+        }
+        Request::RevokeRule { grant_id } => {
+            let mut active = state.active.lock().unwrap();
+            let Active { rules, history, .. } = &mut *active;
+            rules.revoke(&grant_id, history)?;
+            state.changed.send_replace(());
+            Ok(Event::RuleRevoked { grant_id })
+        }
         Request::Pending => {
             let active = state.active.lock().unwrap();
             Ok(Event::Queue {
+                proposals: active.rules.proposals(),
                 requests: active
                     .pending
                     .values()
@@ -1449,7 +1644,7 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
         Request::Status => {
             let active = state.active.lock().unwrap();
             Ok(Event::Status {
-                pending: active.pending.len(),
+                pending: active.pending.len() + active.rules.proposals().len(),
                 running: active.running,
                 revision: active.revision.clone(),
             })

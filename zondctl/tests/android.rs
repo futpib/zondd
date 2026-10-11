@@ -119,14 +119,17 @@ fn android_management_over_ssh_and_iroh() {
         Command::new(std::env::var("FLUTTER").unwrap_or_else(|_| "flutter".into()))
             .current_dir(app)
             .args(["test", "--reporter", "expanded"])
-            .args(if external_public_key.is_some() {
-                vec!["integration_test/external_key_test.dart"]
+            .args(if let Ok(target) = std::env::var("ZONDD_ANDROID_TEST") {
+                vec![target]
+            } else if external_public_key.is_some() {
+                vec!["integration_test/external_key_test.dart".into()]
             } else {
                 vec![
-                    "integration_test/authentication_test.dart",
-                    "integration_test/control_test.dart",
-                    "integration_test/credential_test.dart",
-                    "integration_test/workflow_test.dart",
+                    "integration_test/authentication_test.dart".into(),
+                    "integration_test/control_test.dart".into(),
+                    "integration_test/credential_test.dart".into(),
+                    "integration_test/rules_test.dart".into(),
+                    "integration_test/workflow_test.dart".into(),
                 ]
             })
             .arg("-d")

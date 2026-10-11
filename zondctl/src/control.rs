@@ -20,6 +20,16 @@ use std::{
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 enum Control {
     Pending {},
+    Rules {},
+    ResolveRule {
+        proposal_id: String,
+        digest: String,
+        approve: bool,
+        expires_in_secs: Option<u64>,
+    },
+    RevokeRule {
+        grant_id: String,
+    },
     Resolve {
         approval_id: String,
         approve: bool,
@@ -113,6 +123,19 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
 async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Value> {
     let request = match request {
         Control::Pending {} => Request::Pending,
+        Control::Rules {} => Request::Rules,
+        Control::ResolveRule {
+            proposal_id,
+            digest,
+            approve,
+            expires_in_secs,
+        } => Request::ResolveRule {
+            proposal_id,
+            digest,
+            approve,
+            expires_in_secs,
+        },
+        Control::RevokeRule { grant_id } => Request::RevokeRule { grant_id },
         Control::Resolve {
             approval_id,
             approve,

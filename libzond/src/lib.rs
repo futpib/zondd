@@ -1,5 +1,6 @@
 pub mod config;
 pub mod paths;
+pub mod rules;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,19 @@ pub enum Request {
     Invoke {
         operation: String,
         args: Vec<String>,
+    },
+    ProposeRule {
+        source: String,
+    },
+    Rules,
+    ResolveRule {
+        proposal_id: String,
+        digest: String,
+        approve: bool,
+        expires_in_secs: Option<u64>,
+    },
+    RevokeRule {
+        grant_id: String,
     },
     Follow {
         request_id: String,
@@ -106,21 +120,29 @@ impl From<CheckInput> for Request {
 pub struct CallerPermissions {
     pub principal: String,
     pub revision: String,
+    #[serde(default)]
+    pub rules_revision: String,
     pub policy: config::Principal,
     pub approvals: config::Approvals,
     pub limits: config::Limits,
     pub operations: std::collections::BTreeMap<String, config::Operation>,
+    #[serde(default)]
+    pub rules: Vec<rules::RuleState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PolicyCheck {
     pub principal: String,
     pub revision: String,
+    #[serde(default)]
+    pub rules_revision: String,
     pub decision: config::Decision,
     pub policy_decision: Option<config::Decision>,
     pub reason: String,
     pub command: Option<Command>,
     pub cwd: std::path::PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<rules::Invocation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -271,6 +293,21 @@ pub enum Event {
         requests: Vec<Pending>,
         #[serde(default)]
         credentials: Vec<CredentialChallenge>,
+        #[serde(default)]
+        proposals: Vec<rules::Proposal>,
+    },
+    RuleProposed {
+        proposal: Box<rules::Proposal>,
+    },
+    Rules {
+        rules: Vec<rules::RuleState>,
+        revision: String,
+    },
+    RuleResolved {
+        rule: Box<rules::RuleState>,
+    },
+    RuleRevoked {
+        grant_id: String,
     },
     CredentialAnswered {
         challenge_id: String,

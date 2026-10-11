@@ -42,6 +42,7 @@ impl History {
         let db = Connection::open(path)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+            CREATE TABLE IF NOT EXISTS rule_states(id TEXT PRIMARY KEY, principal TEXT NOT NULL, status TEXT NOT NULL, updated INTEGER NOT NULL, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS requests(sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, record TEXT NOT NULL, result TEXT);
             CREATE TABLE IF NOT EXISTS actions(sequence INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, request_id TEXT, action TEXT NOT NULL, detail TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS actions_request ON actions(request_id, sequence);
@@ -62,6 +63,33 @@ impl History {
         }
         history.audit(None, "daemon_started", json!({"config":config}))?;
         Ok(history)
+    }
+
+    pub fn rule_states(
+        &self,
+        principal: Option<&str>,
+        live_only: bool,
+    ) -> Result<Vec<libzond::rules::RuleState>> {
+        let mut q = self.0.prepare("SELECT record FROM rule_states WHERE (?1 IS NULL OR principal=?1) AND (?2=0 OR status IN ('pending','active')) ORDER BY (status IN ('pending','active')) DESC, updated DESC LIMIT 256")?;
+        let rows = q.query_map(params![principal, live_only], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    pub fn save_rule_states(
+        &mut self,
+        rules: &[libzond::rules::RuleState],
+        action: &str,
+    ) -> Result<()> {
+        let tx = self.0.transaction()?;
+        for rule in rules {
+            tx.execute("INSERT INTO rule_states(id,principal,status,updated,record) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated=excluded.updated,record=excluded.record", params![rule.proposal.id, rule.proposal.principal, rule.status, now() as i64, serde_json::to_string(rule)?])?;
+            tx.execute(
+                "INSERT INTO actions(time,action,detail) VALUES (?1,?2,?3)",
+                params![now() as i64, action, serde_json::to_string(rule)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn record(
@@ -94,8 +122,28 @@ impl History {
         Ok(())
     }
 
-    pub fn reevaluated(&mut self, records: &[RequestRecord], revision: &str) -> Result<()> {
+    pub fn reevaluated(
+        &mut self,
+        records: &[RequestRecord],
+        revision: &str,
+        rules: &[libzond::rules::RuleState],
+    ) -> Result<()> {
         let tx = self.0.transaction()?;
+        for rule in rules {
+            tx.execute(
+                "UPDATE rule_states SET status=?2,updated=?3,record=?4 WHERE id=?1",
+                params![
+                    rule.proposal.id,
+                    rule.status,
+                    now() as i64,
+                    serde_json::to_string(rule)?
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO actions(time,action,detail) VALUES (?1,'rule_invalidated',?2)",
+                params![now() as i64, serde_json::to_string(rule)?],
+            )?;
+        }
         for record in records {
             tx.execute(
                 "UPDATE requests SET record=?2 WHERE id=?1",

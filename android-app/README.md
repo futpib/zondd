@@ -82,6 +82,11 @@ Plain SSH connections do not depend on Iroh versions.
    verify the new fingerprint out of band and use **Forget host key** first.
 5. Tap **Approve once** or **Reject** on an exact command request. The caller
    remains connected while waiting and receives command output or rejection.
+   **Reusable rule proposal** cards show the complete typed rule, resolved
+   executable, working directory, and parameter constraints. **Approve rule**
+   grants repeated invocations for the selected lifetime; it defaults to one
+   hour. Use **Caller rules** to inspect definitions and revoke grants. See
+   [caller rule syntax and semantics](../readme.md#propose-reusable-typed-rules).
 
 QR scan buttons are available beside connection targets (including quick connect),
 private keys, passphrases, passwords, and relay URLs. Scan with the camera or choose
@@ -202,6 +207,11 @@ cargo build --workspace --bins
 FLUTTER=/path/to/flutter ZONDD_ANDROID_DEVICE=emulator-5554 \
   cargo test -p zondctl --test android -- --ignored --nocapture
 ```
+
+Set `ZONDD_ANDROID_TEST=integration_test/rules_test.dart` to run only reusable
+rule review and revocation over SSH and Iroh. That test verifies caller-visible
+status, invalid parameter rejection, successful directory publication, and
+refusal to replace an existing destination.
 
 For external signing, install OpenKeychain on a disposable emulator, add a test
 key there, and export its **OpenSSH public key** to a host file. Run the same

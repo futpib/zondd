@@ -1,7 +1,7 @@
 # zondd
 
 SSH-authenticated operations with exact command allowlists, named operations,
-and an optional local approval queue. Linux, Rust, GPL-3.0-or-later.
+caller-proposed typed rules, and a local approval queue. Linux, Rust, GPL-3.0-or-later.
 
 [<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" height="80" alt="Get the Android controller on Obtainium">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/futpib/zondd)
 
@@ -364,6 +364,119 @@ and runtime failures are not tested. With no policy file, the built-in `default`
 principal reports `ask` for valid commands. Local use requires `--principal`
 or a principal `--socket`; the admin endpoint has no caller identity.
 
+## Propose reusable typed rules
+
+A caller can propose a small declarative rule for administrator review. Save this
+as `clone-futpib.zond` on the caller:
+
+```text
+rule clone-futpib(x: repo-name) {
+  require is-dir "$HOME/code"
+  create-new "$HOME/code/$x" as dest {
+    run git clone -- "https://github.com/futpib/$x.git" "$dest"
+  }
+}
+```
+
+Submit, observe, check, and invoke through the same authenticated connection:
+
+```sh
+zondctl --host alice@server --identity ~/.ssh/caller propose-rule --file clone-futpib.zond
+zondctl --host alice@server --identity ~/.ssh/caller rules
+zondctl --host alice@server --identity ~/.ssh/caller check invoke clone-futpib zondd
+zondctl --host alice@server --identity ~/.ssh/caller invoke clone-futpib zondd
+```
+
+Inline proposals also work as one quoted argument; preserve `$variables` from
+expansion by the caller's shell:
+
+```sh
+zondctl --principal default propose-rule 'rule echo-repo(x: repo-name) { run printf "%s" "$x" }'
+```
+
+`propose-rule` returns the immutable proposal ID, digest, original source, and
+resolved definition, then disconnects. Nothing executes or becomes allowed until
+the administrator approves. `rules` and `permissions` expose the authenticated
+principal's definitions, parameter types, checks, destination templates, status,
+reason, and expiry. They include every live rule plus recent terminal proposals,
+up to 256 records, with live rules first. Other principals' proposals and rules
+are hidden. `check invoke` shows the resolved argv and destination and checks
+current filesystem preconditions without creating anything. Invalid parameters
+produce an explanation before any executable starts.
+The rules response has its own revision; `permissions` and `check` return
+`rules_revision` alongside the existing config revision, so callers can detect
+grant changes even when TOML is unchanged.
+
+On the receiving host, `zondctl review` and the Android approval screen display
+rule proposals separately from one-time command requests. Review includes the
+full source, actual executable, receiver's HOME, working directory, principal,
+and parameter constraints. Choose an expiring grant or approval until revoked.
+For scripting, use the digest from the reviewed proposal:
+
+```sh
+zondctl pending
+zondctl approve-rule PROPOSAL_ID --digest DIGEST --for-secs 3600
+# Alternatively choose --permanent instead of --for-secs.
+zondctl deny-rule PROPOSAL_ID --digest DIGEST
+zondctl rules
+zondctl revoke-rule PROPOSAL_ID
+```
+
+The Android **Caller rules** screen also lists definitions and supports
+revocation. Approval grants repeated invocations to the proposing **principal**,
+including all SSH keys assigned to it. Use different principals for separate
+grants. The caller cannot approve, revoke, change the principal, or broaden an
+approved definition. Replacing a rule requires revoking it and reviewing a new
+proposal; a changed digest cannot reuse an approval. These rules are invoked by
+name and do not add raw `exec` allowlist entries. Commands retain `no_new_privs`
+and cannot request the approval-mediated sudo capability.
+
+The language supports one `run`, optional `require is-dir` and `require absent`
+checks before it, and an optional `create-new PATH as VARIABLE { ... }` block.
+Each check occupies its own line. Parameters are positional and declared as
+`name: repo-name`; up to 16 are allowed. `repo-name` requires a full match of
+`[A-Za-z0-9][A-Za-z0-9._-]{0,99}`: bounded ASCII, no slash, leading hyphen,
+whitespace, control characters, or Unicode. It validates syntax, not remote
+repository existence. Every invocation is checked on the receiver, including
+requests made directly through the protocol.
+
+Double quotes group arguments and allow `$name` or `${name}` substitution;
+single quotes preserve literal text. Backslash can quote a backslash, quote,
+dollar sign or space. Expansion happens exactly once into argv entries, with no
+shell, word splitting, command substitution, globbing, pipelines, or redirection.
+`$HOME` is the receiving daemon's home, frozen at proposal time. Bare executable
+names resolve through `/usr/bin:/bin` when proposed; review and execution use
+the resulting absolute path. A rule cannot substitute its executable.
+
+`require` checks run again immediately before execution. They observe state at
+that moment; another process can change it afterward. Use `create-new` for the
+stronger directory-publication guarantee. It requires an absent destination
+(including no dangling symlink), creates private staging on the same filesystem,
+and binds the output variable to a staging path. On exit status zero, the command
+must have produced a directory. Zondd publishes it using atomic
+`RENAME_NOREPLACE`; any destination created meanwhile causes failure without
+replacement. There is no unsafe fallback on filesystems lacking this operation.
+Failures and cancellations clean up staging without publishing partial output.
+Parent directories must already exist, be trusted, and contain no symlinks.
+
+As with ordinary commands, this is not filesystem isolation: the approved
+executable runs as the daemon's Unix user, can access that user's other files,
+and follows its own program configuration. For example, Git can honor URL
+rewrites in its configuration. `create-new` protects the publication performed
+by zondd; it does not sandbox arbitrary writes performed by an approved program.
+Review the full command and use a separate Unix account for isolation.
+
+Grants and proposal outcomes live in the daemon's private history database;
+hand-edited TOML is unchanged. Live proposals and approved grants survive daemon
+restarts. Proposals expire using the approval timeout, and grants may expire
+after 1 second to 365 days or persist until revoked. Changes to the config
+invalidate pending proposals. Changes to the granting principal or a collision
+with a configured operation invalidate its grants; unrelated config changes
+preserve them. Revocation and expiry prevent new admissions, leaving already
+admitted jobs running. All transitions and the grant used by each invocation
+are recorded in the audit history. There are at most 64 pending proposals and
+128 active grants, and each compiled proposal is limited to 12 KiB.
+
 ## Policy and approval
 
 Raw `exec` requires `allow_exec = true`. Rules match the literal absolute
@@ -390,7 +503,9 @@ Operation-only principals have `allow_exec = false` and a list of allowed
 operation names. Each operation fixes the executable and leading arguments;
 the caller supplies exactly one value for each positional `arguments` entry,
 chosen from that entry's explicit `choices`. Operation decisions are separate
-from raw-exec rules. There is no template expansion or implicit shell.
+from raw-exec rules. These configured operations do not expand templates;
+caller-proposed rules use the separate language above. Neither uses an implicit
+shell.
 
 An approved raw `exec` can use `sudo` without a TTY. The one-time approval
 permits password challenges and runs the exact approved command without

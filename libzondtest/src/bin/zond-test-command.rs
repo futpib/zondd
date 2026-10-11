@@ -37,6 +37,20 @@ fn main() {
             std::io::stderr().write_all(b"err").unwrap();
             std::process::exit(7);
         }
+        "create_new_gate" => {
+            let output = std::path::Path::new(&args[2]);
+            std::fs::create_dir(output).unwrap();
+            std::fs::write(output.join("payload"), "new output").unwrap();
+            std::fs::write(&args[3], &args[2]).unwrap();
+            std::io::Read::read_to_end(
+                &mut std::fs::File::open(&args[4]).unwrap(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            if args[5] == "fail" {
+                std::process::exit(7);
+            }
+        }
         "sleep" => {
             std::fs::write(&args[2], std::process::id().to_string()).unwrap();
             std::thread::sleep(Duration::from_secs(30));

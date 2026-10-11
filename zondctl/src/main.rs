@@ -81,6 +81,39 @@ enum Action {
     Cancel {
         id: String,
     },
+    /// Submit a reusable rule for admin approval; quote inline source to preserve $variables.
+    ProposeRule {
+        #[arg(required_unless_present = "file", conflicts_with = "file")]
+        source: Option<String>,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Observe your rule definitions and pending, active, denied, expired or revoked state.
+    Rules,
+    /// Approve the exact reviewed rule for a chosen lifetime (admin only).
+    ApproveRule {
+        id: String,
+        #[arg(long)]
+        digest: String,
+        #[arg(
+            long,
+            required_unless_present = "permanent",
+            conflicts_with = "permanent"
+        )]
+        for_secs: Option<u64>,
+        #[arg(long)]
+        permanent: bool,
+    },
+    /// Reject the exact reviewed rule proposal (admin only).
+    DenyRule {
+        id: String,
+        #[arg(long)]
+        digest: String,
+    },
+    /// Revoke future invocations of an approved rule (admin only).
+    RevokeRule {
+        id: String,
+    },
     Operations,
     /// Inspect this caller's rules, named operations, approvals, and limits.
     Permissions,
@@ -251,6 +284,41 @@ async fn run(cli: Cli) -> Result<u8> {
         },
         Action::Cancel { id } => Request::Cancel {
             request_id: id.clone(),
+        },
+        Action::ProposeRule { source, file } => {
+            let source = if let Some(path) = file {
+                use std::io::Read;
+                let mut text = String::new();
+                std::fs::File::open(path)?
+                    .take(libzond::rules::MAX_SOURCE_BYTES as u64 + 1)
+                    .read_to_string(&mut text)?;
+                text
+            } else {
+                source.clone().context("missing rule source")?
+            };
+            libzond::rules::parse(&source)?;
+            Request::ProposeRule { source }
+        }
+        Action::Rules => Request::Rules,
+        Action::ApproveRule {
+            id,
+            digest,
+            for_secs,
+            ..
+        } => Request::ResolveRule {
+            proposal_id: id.clone(),
+            digest: digest.clone(),
+            approve: true,
+            expires_in_secs: *for_secs,
+        },
+        Action::DenyRule { id, digest } => Request::ResolveRule {
+            proposal_id: id.clone(),
+            digest: digest.clone(),
+            approve: false,
+            expires_in_secs: None,
+        },
+        Action::RevokeRule { id } => Request::RevokeRule {
+            grant_id: id.clone(),
         },
         Action::Operations => Request::ListOperations,
         Action::Permissions => Request::Permissions {},
@@ -433,13 +501,50 @@ async fn review(cli: &Cli) -> Result<u8> {
         let Event::Queue {
             requests,
             credentials,
+            proposals,
         } = client.request(Request::Pending).await?
         else {
             bail!("expected approval queue");
         };
-        if requests.is_empty() && credentials.is_empty() {
+        if requests.is_empty() && credentials.is_empty() && proposals.is_empty() {
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
+        }
+        for proposal in proposals {
+            println!("{}", serde_json::to_string_pretty(&proposal)?);
+            println!(
+                "Approving this rule authorizes repeated invocations by {} as this Unix user, without another prompt. Commands retain no_new_privs.",
+                proposal.principal
+            );
+            print!(
+                "Approve for 1 hour [a], approve until revoked [p], deny [d], skip [s], quit [q]: "
+            );
+            std::io::stdout().flush()?;
+            let answer = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                Ok(line)
+            })
+            .await
+            .context("read rule approval answer")??;
+            let (approve, expires_in_secs) = match answer.trim() {
+                "a" => (true, Some(3600)),
+                "p" => (true, None),
+                "d" => (false, None),
+                "q" | "" => return Ok(0),
+                _ => continue,
+            };
+            let event = cli
+                .connect()
+                .await?
+                .request(Request::ResolveRule {
+                    proposal_id: proposal.id,
+                    digest: proposal.digest,
+                    approve,
+                    expires_in_secs,
+                })
+                .await?;
+            println!("{}", serde_json::to_string(&event)?);
         }
         for request in requests {
             // JSON escapes terminal control sequences and makes argv boundaries visible.

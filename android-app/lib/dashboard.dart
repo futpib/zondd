@@ -6,6 +6,7 @@ import 'package:toml/toml.dart';
 import 'control.dart';
 import 'ui.dart';
 import 'history.dart';
+import 'rules.dart';
 
 class Dashboard extends StatefulWidget {
   const Dashboard({
@@ -50,6 +51,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
 
   List<dynamic> queue = [];
   List<dynamic> credentials = [];
+  List<dynamic> proposals = [];
   String? error, message;
   bool polling = false, acting = false;
   int tab = 0;
@@ -98,6 +100,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         setState(() {
           queue = result['requests'] as List;
           credentials = result['credentials'] as List? ?? [];
+          proposals = result['proposals'] as List? ?? [];
           loaded = true;
           error = null;
         });
@@ -140,6 +143,31 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
           message = approve
               ? 'Approved once. The caller can now run this command.'
               : 'Rejected. The caller has been notified.';
+        });
+      }
+    });
+    await refresh();
+  }
+
+  Future<void> resolveRule(
+    Map<String, dynamic> proposal,
+    bool approve,
+    int? seconds,
+  ) async {
+    await action(() async {
+      await widget.api.request({
+        'method': 'resolve_rule',
+        'proposal_id': proposal['id'],
+        'digest': proposal['digest'],
+        'approve': approve,
+        'expires_in_secs': seconds,
+      });
+      if (mounted) {
+        setState(() {
+          proposals.removeWhere((item) => item['id'] == proposal['id']);
+          message = approve
+              ? 'Rule approved. Matching invocations can run without another prompt.'
+              : 'Rule proposal rejected.';
         });
       }
     });
@@ -428,24 +456,52 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 style: Theme.of(context).textTheme.headlineSmall,
               ),
             ),
-            if (queue.isNotEmpty || credentials.isNotEmpty)
-              Chip(label: Text('${queue.length + credentials.length}')),
+            if (queue.isNotEmpty ||
+                credentials.isNotEmpty ||
+                proposals.isNotEmpty)
+              Chip(
+                label: Text(
+                  '${queue.length + credentials.length + proposals.length}',
+                ),
+              ),
           ],
         ),
         const SizedBox(height: 8),
         const Text('Review requests that need your permission.'),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: disconnected
+                ? null
+                : () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => RulesPage(api: widget.api),
+                    ),
+                  ),
+            icon: const Icon(Icons.rule),
+            label: const Text('Caller rules'),
+          ),
+        ),
         const SizedBox(height: 24),
         if (!loaded && error == null && !disconnected)
           const Center(child: CircularProgressIndicator()),
         if (loaded &&
             queue.isEmpty &&
             credentials.isEmpty &&
+            proposals.isEmpty &&
             error == null &&
             !disconnected)
           const EmptyState(
             Icons.task_alt,
             'All caught up',
             'No pending approvals. New requests appear here automatically.',
+          ),
+        for (final raw in proposals)
+          RuleProposalCard(
+            key: ValueKey('rule-${raw['id']}'),
+            proposal: raw as Map<String, dynamic>,
+            enabled: !acting && !disconnected,
+            resolve: (approve, seconds) => resolveRule(raw, approve, seconds),
           ),
         for (final raw in queue) approvalCard(raw as Map<String, dynamic>),
         for (final raw in credentials)
