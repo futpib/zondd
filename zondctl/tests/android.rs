@@ -94,6 +94,33 @@ fn android_management_over_ssh_and_iroh() {
         .nth(1)
         .unwrap()
         .to_owned();
+    let gateway = std::env::var("ZONDD_GATEWAY_HTTP_REPO").ok().map(|repo| {
+        let adapter = app.join("../adapters/ibgateway");
+        checked(&mut Command::new(adapter.join("build.sh")), 0);
+        let classes = adapter.join("build/patch");
+        fs::create_dir_all(&classes).unwrap();
+        checked(
+            Command::new("javac")
+                .args(["--release", "17", "-d"])
+                .arg(&classes)
+                .arg(adapter.join("test/AuthenticationPatch.java")),
+            0,
+        );
+        let manifest = adapter.join("build/patch.mf");
+        fs::write(&manifest, "Premain-Class: AuthenticationPatch\n").unwrap();
+        checked(
+            Command::new("jar")
+                .args(["--create", "--file"])
+                .arg(adapter.join("build/authentication-patch.jar"))
+                .arg("--manifest")
+                .arg(manifest)
+                .arg("-C")
+                .arg(classes)
+                .arg("."),
+            0,
+        );
+        json!({"repo":repo, "script":adapter.join("test/monkeypatch.py"), "directory":ssh.env.dir.path().join("gateway")})
+    });
     let fixture = json!({
         "host":"10.0.2.2", "port":ssh.port, "endpoint":endpoint,
         "authPort":auth_port, "authEndpoint":auth_endpoint,
@@ -102,6 +129,7 @@ fn android_management_over_ssh_and_iroh() {
         "probe":ssh.env.probe,
         "key":fs::read_to_string(ssh.env.dir.path().join("management-key")).unwrap(),
         "callerKey":fs::read_to_string(ssh.env.dir.path().join("exec-key")).unwrap(),
+        "gateway":gateway,
     });
     let definitions = ssh.env.dir.path().join("android-defines.json");
     fs::write(
@@ -128,6 +156,7 @@ fn android_management_over_ssh_and_iroh() {
                     "integration_test/authentication_test.dart".into(),
                     "integration_test/control_test.dart".into(),
                     "integration_test/credential_test.dart".into(),
+                    "integration_test/interaction_test.dart".into(),
                     "integration_test/rules_test.dart".into(),
                     "integration_test/search_test.dart".into(),
                     "integration_test/workflow_test.dart".into(),
@@ -146,4 +175,35 @@ fn android_management_over_ssh_and_iroh() {
         "Android integration failed"
     );
     assert!(ssh.env.queue().is_empty());
+    if gateway.is_some() {
+        let mut logs = vec![ssh.env.dir.path().join("daemon.log")];
+        for file in fs::read_dir(ssh.env.config.parent().unwrap()).unwrap() {
+            let file = file.unwrap();
+            if file
+                .file_name()
+                .to_string_lossy()
+                .starts_with("config.history.sqlite3")
+            {
+                logs.push(file.path());
+            }
+        }
+        for transport in ["ssh", "iroh"] {
+            logs.push(
+                ssh.env
+                    .dir
+                    .path()
+                    .join(format!("gateway/{transport}/http.log")),
+            );
+        }
+        for path in logs {
+            let bytes = fs::read(&path).unwrap();
+            for secret in [b"test-user".as_slice(), b"test-gateway-password".as_slice()] {
+                assert!(
+                    !bytes.windows(secret.len()).any(|value| value == secret),
+                    "credential leaked to {}",
+                    path.display()
+                );
+            }
+        }
+    }
 }

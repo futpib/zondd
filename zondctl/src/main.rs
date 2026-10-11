@@ -141,6 +141,16 @@ enum Action {
     RejectCredential {
         id: String,
     },
+    /// Answer an application's input form privately, or decline it with --reject.
+    Interaction {
+        id: String,
+        #[arg(long)]
+        reject: bool,
+    },
+    /// Ask an unavailable application to retry authentication.
+    RetryAdapter {
+        name: String,
+    },
     /// Review pending commands interactively on the local admin socket.
     Review,
     Status,
@@ -374,6 +384,37 @@ async fn run(cli: Cli) -> Result<u8> {
             challenge_id: id.clone(),
             password: None,
         },
+        Action::Interaction { id, reject } => {
+            ensure!(
+                cli.host.is_none() && cli.principal.is_none(),
+                "interaction requires the local admin socket"
+            );
+            let values = if *reject {
+                None
+            } else {
+                ensure!(
+                    std::io::stdin().is_terminal(),
+                    "interaction requires an interactive terminal"
+                );
+                let Event::Queue { interactions, .. } =
+                    cli.connect().await?.request(Request::Pending).await?
+                else {
+                    bail!("expected interaction queue")
+                };
+                let challenge = interactions
+                    .into_iter()
+                    .find(|c| c.challenge_id == *id)
+                    .context("interaction not pending")?;
+                Some(read_interaction(&challenge)?)
+            };
+            Request::AnswerInteraction {
+                challenge_id: id.clone(),
+                values,
+            }
+        }
+        Action::RetryAdapter { name } => Request::RetryAdapter {
+            adapter: name.clone(),
+        },
         Action::Status => Request::Status,
         Action::Reload => Request::Reload { revision: None },
         Action::History {
@@ -519,11 +560,17 @@ async fn review(cli: &Cli) -> Result<u8> {
             requests,
             credentials,
             proposals,
+            interactions,
+            ..
         } = client.request(Request::Pending).await?
         else {
             bail!("expected approval queue");
         };
-        if requests.is_empty() && credentials.is_empty() && proposals.is_empty() {
+        if requests.is_empty()
+            && credentials.is_empty()
+            && proposals.is_empty()
+            && interactions.is_empty()
+        {
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
@@ -616,5 +663,52 @@ async fn review(cli: &Cli) -> Result<u8> {
                 .await?;
             println!("{}", serde_json::to_string(&event)?);
         }
+        for challenge in interactions {
+            println!("{}", serde_json::to_string_pretty(&challenge.recipient)?);
+            print!("Answer application form [a], reject [d], skip [s], quit [q]: ");
+            std::io::stdout().flush()?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            let values = match line.trim() {
+                "a" => Some(read_interaction(&challenge)?),
+                "d" => None,
+                "q" | "" => return Ok(0),
+                _ => continue,
+            };
+            let event = cli
+                .connect()
+                .await?
+                .request(Request::AnswerInteraction {
+                    challenge_id: challenge.challenge_id,
+                    values,
+                })
+                .await?;
+            println!("{}", serde_json::to_string(&event)?);
+        }
     }
+}
+
+fn read_interaction(
+    challenge: &libzond::interaction::Challenge,
+) -> Result<std::collections::BTreeMap<String, SecretString>> {
+    println!(
+        "Configured recipient: {}",
+        serde_json::to_string_pretty(&challenge.recipient)?
+    );
+    println!(
+        "Application-supplied form: {}",
+        serde_json::to_string_pretty(
+            &serde_json::json!({"prompt":challenge.prompt,"fields":challenge.fields,"context":challenge.context})
+        )?
+    );
+    let mut values = std::collections::BTreeMap::new();
+    for field in &challenge.fields {
+        let prompt = format!("{} (input hidden): ", field.label.escape_default());
+        values.insert(
+            field.id.clone(),
+            SecretString(rpassword::prompt_password(prompt)?),
+        );
+    }
+    challenge.validate_answer(&values)?;
+    Ok(values)
 }

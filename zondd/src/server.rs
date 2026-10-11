@@ -1,3 +1,5 @@
+mod adapters;
+
 use crate::{
     create_new, execution,
     history::{History, now},
@@ -46,6 +48,8 @@ struct Active {
     jobs: BTreeMap<String, tokio::task::AbortHandle>,
     askpass_jobs: BTreeMap<String, AskpassJob>,
     credentials: BTreeMap<String, AwaitingCredential>,
+    interactions: BTreeMap<String, adapters::Waiting>,
+    adapters: BTreeMap<String, adapters::Session>,
     running: usize,
     connections: usize,
     history: History,
@@ -82,6 +86,12 @@ impl Drop for AskpassGuard {
 
 fn audit_request(request: &Request) -> serde_json::Value {
     match request {
+        Request::AnswerInteraction {
+            challenge_id,
+            values,
+        } => {
+            json!({"method":"answer_interaction","challenge_id":challenge_id,"provided":values.is_some()})
+        }
         Request::Credential {
             challenge_id,
             password,
@@ -322,6 +332,8 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
             jobs: BTreeMap::new(),
             askpass_jobs: BTreeMap::new(),
             credentials: BTreeMap::new(),
+            interactions: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             running: 0,
             connections: 0,
         }),
@@ -332,6 +344,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
     let (_admin_stop, admin_shutdown) = watch::channel(false);
     listeners.spawn(accept(admin_socket, None, state.clone(), admin_shutdown));
     listeners.spawn(accept_askpass(askpass_socket, state.clone()));
+    listeners.spawn(adapters::supervise(state.clone()));
     let mut endpoints = Endpoints::new();
     let config = state.active.lock().unwrap().config.clone();
     for name in config.principals.keys() {
@@ -1565,6 +1578,11 @@ fn refresh_rules(active: &mut Active) -> Result<()> {
 async fn admin_request(state: &State, request: Request) -> Result<Event> {
     refresh_rules(&mut state.active.lock().unwrap())?;
     match request {
+        Request::AnswerInteraction {
+            challenge_id,
+            values,
+        } => adapters::answer(state, challenge_id, values),
+        Request::RetryAdapter { adapter } => adapters::retry(state, adapter),
         Request::Rules => {
             let active = state.active.lock().unwrap();
             Ok(Event::Rules {
@@ -1596,6 +1614,17 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
         Request::Pending => {
             let active = state.active.lock().unwrap();
             Ok(Event::Queue {
+                interactions: active
+                    .interactions
+                    .values()
+                    .map(|w| w.challenge.clone())
+                    .collect(),
+                adapters: active
+                    .adapters
+                    .iter()
+                    .filter(|(name, _)| active.config.credential_adapters.contains_key(*name))
+                    .map(|(_, s)| s.status.clone())
+                    .collect(),
                 proposals: active.rules.proposals(),
                 requests: active
                     .pending

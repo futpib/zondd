@@ -1,4 +1,5 @@
 pub mod config;
+pub mod interaction;
 pub mod paths;
 pub mod rules;
 pub mod wire;
@@ -69,6 +70,13 @@ pub enum Request {
     Credential {
         challenge_id: String,
         password: Option<SecretString>,
+    },
+    AnswerInteraction {
+        challenge_id: String,
+        values: Option<std::collections::BTreeMap<String, SecretString>>,
+    },
+    RetryAdapter {
+        adapter: String,
     },
     Status,
     Reload {
@@ -302,6 +310,10 @@ pub enum Event {
         credentials: Vec<CredentialChallenge>,
         #[serde(default)]
         proposals: Vec<rules::Proposal>,
+        #[serde(default)]
+        interactions: Vec<interaction::Challenge>,
+        #[serde(default)]
+        adapters: Vec<interaction::AdapterStatus>,
     },
     RuleProposed {
         proposal: Box<rules::Proposal>,
@@ -318,6 +330,9 @@ pub enum Event {
     },
     CredentialAnswered {
         challenge_id: String,
+    },
+    AdapterRetried {
+        adapter: String,
     },
     Resolved {
         approval_id: String,

@@ -38,6 +38,13 @@ enum Control {
         challenge_id: String,
         password: Option<SecretString>,
     },
+    AnswerInteraction {
+        challenge_id: String,
+        values: Option<std::collections::BTreeMap<String, SecretString>>,
+    },
+    RetryAdapter {
+        adapter: String,
+    },
     Status {},
     History {
         before: Option<u64>,
@@ -103,7 +110,8 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
             #[serde(flatten)]
             request: Control,
         }
-        let envelope: Envelope = serde_json::from_slice(&line)?;
+        let envelope: Envelope = serde_json::from_slice(&line)
+            .map_err(|_| anyhow::anyhow!("invalid control request"))?;
         ensure!(
             envelope.version == 1,
             "unsupported control protocol version"
@@ -124,6 +132,14 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
 
 async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Value> {
     let request = match request {
+        Control::RetryAdapter { adapter } => Request::RetryAdapter { adapter },
+        Control::AnswerInteraction {
+            challenge_id,
+            values,
+        } => Request::AnswerInteraction {
+            challenge_id,
+            values,
+        },
         Control::Pending {} => Request::Pending,
         Control::Rules {} => Request::Rules,
         Control::ResolveRule {

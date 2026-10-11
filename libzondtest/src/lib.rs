@@ -336,6 +336,9 @@ impl TestEnv {
     pub fn stop_daemon(&self) {
         self.processes.borrow_mut()[0].stop();
     }
+    pub fn signal_daemon(&self, signal: Signal) {
+        self.processes.borrow()[0].signal(signal);
+    }
     pub fn session(&self, principal: &str, body: Value) -> Session {
         Session::new(&self.runtime.join(format!("{principal}.sock")), body)
     }

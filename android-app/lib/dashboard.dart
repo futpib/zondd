@@ -8,6 +8,7 @@ import 'ui.dart';
 import 'history.dart';
 import 'rules.dart';
 import 'json_yaml.dart';
+import 'interactions.dart';
 
 class Dashboard extends StatefulWidget {
   const Dashboard({
@@ -67,6 +68,8 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
 
   List<dynamic> queue = [];
   List<dynamic> credentials = [];
+  List<dynamic> interactions = [];
+  List<dynamic> adapters = [];
   List<dynamic> proposals = [];
   String? error, message;
   bool polling = false, acting = false;
@@ -120,6 +123,8 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         setState(() {
           queue = result['requests'] as List;
           credentials = result['credentials'] as List? ?? [];
+          interactions = result['interactions'] as List? ?? [];
+          adapters = result['adapters'] as List? ?? [];
           proposals = result['proposals'] as List? ?? [];
           loaded = true;
           error = null;
@@ -229,6 +234,52 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         });
       }
     });
+    await refresh();
+  }
+
+  Future<void> resolveInteraction(
+    Map<String, dynamic> challenge,
+    bool provide,
+  ) async {
+    Map<String, String>? values;
+    bool current() =>
+        mounted &&
+        !disconnected &&
+        interactions.any(
+          (item) => item['challenge_id'] == challenge['challenge_id'],
+        );
+    if (provide) {
+      values = await showDialog<Map<String, String>>(
+        context: context,
+        builder: (_) => InteractionDialog(
+          challenge: challenge,
+          server: widget.name,
+          isCurrent: current,
+        ),
+      );
+      if (values == null || !current()) return;
+    }
+    try {
+      await action(() async {
+        await widget.api.request({
+          'method': 'answer_interaction',
+          'challenge_id': challenge['challenge_id'],
+          'values': values,
+        });
+        if (mounted) {
+          setState(() {
+            interactions.removeWhere(
+              (item) => item['challenge_id'] == challenge['challenge_id'],
+            );
+            message = provide
+                ? 'Response sent to the configured application.'
+                : 'Application request rejected.';
+          });
+        }
+      });
+    } finally {
+      values?.clear();
+    }
     await refresh();
   }
 
@@ -477,10 +528,11 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
             ),
             if (queue.isNotEmpty ||
                 credentials.isNotEmpty ||
+                interactions.isNotEmpty ||
                 proposals.isNotEmpty)
               Chip(
                 label: Text(
-                  '${queue.length + credentials.length + proposals.length}',
+                  '${queue.length + credentials.length + proposals.length + interactions.length}',
                 ),
               ),
           ],
@@ -507,6 +559,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         if (loaded &&
             queue.isEmpty &&
             credentials.isEmpty &&
+            interactions.isEmpty &&
             proposals.isEmpty &&
             error == null &&
             !disconnected)
@@ -525,6 +578,35 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         for (final raw in queue) approvalCard(raw as Map<String, dynamic>),
         for (final raw in credentials)
           credentialCard(raw as Map<String, dynamic>),
+        for (final raw in interactions)
+          InteractionCard(
+            key: ValueKey('interaction-${raw['challenge_id']}'),
+            challenge: raw as Map<String, dynamic>,
+            server: widget.name,
+            enabled: !acting && !disconnected,
+            resolve: (provide) => resolveInteraction(raw, provide),
+          ),
+        for (final raw in adapters)
+          ListTile(
+            title: Text(raw['recipient']['label'] as String),
+            subtitle: Text('Application status: ${raw['state']}'),
+            trailing: ['unavailable', 'failed'].contains(raw['state'])
+                ? TextButton(
+                    onPressed: acting || disconnected
+                        ? null
+                        : () async {
+                            await action(() async {
+                              await widget.api.request({
+                                'method': 'retry_adapter',
+                                'adapter': raw['recipient']['adapter'],
+                              });
+                            });
+                            await refresh();
+                          },
+                    child: const Text('Retry'),
+                  )
+                : null,
+          ),
       ],
     ),
   );

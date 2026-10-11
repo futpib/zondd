@@ -28,6 +28,8 @@ pub struct Config {
     pub principals: BTreeMap<String, Principal>,
     #[serde(default)]
     pub operations: BTreeMap<String, Operation>,
+    #[serde(default)]
+    pub credential_adapters: BTreeMap<String, crate::interaction::AdapterConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -164,6 +166,14 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.credential_adapters.len() <= 16,
+            "at most 16 credential adapters"
+        );
+        for (name, adapter) in &self.credential_adapters {
+            ensure!(valid_name(name), "invalid credential adapter name");
+            adapter.validate()?;
+        }
         ensure!(
             self.runtime_dir.is_absolute(),
             "runtime_dir must be absolute"

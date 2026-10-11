@@ -24,7 +24,10 @@ pub async fn read<T: DeserializeOwned>(
         frame.extend_from_slice(&available[..take]);
         reader.consume(take);
         if end.is_some() {
-            return Ok(Some(serde_json::from_slice(&frame)?));
+            return Ok(Some(
+                serde_json::from_slice(&frame)
+                    .map_err(|_| anyhow::anyhow!("invalid protocol frame"))?,
+            ));
         }
     }
 }

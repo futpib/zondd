@@ -8,6 +8,42 @@ use std::{
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     match args[1].as_str() {
+        "adapter" => {
+            let listener = std::os::unix::net::UnixListener::bind(&args[2]).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut incoming = stream.try_clone().unwrap();
+            let send = std::thread::spawn(move || {
+                std::io::copy(&mut std::io::stdin(), &mut stream).unwrap();
+            });
+            std::io::copy(&mut incoming, &mut std::io::stdout()).unwrap();
+            let _ = send;
+        }
+        "interaction" => {
+            use serde_json::{Value, json};
+            let mut input = BufReader::new(std::io::stdin());
+            let mut read = || -> Value {
+                let mut line = String::new();
+                input.read_line(&mut line).unwrap();
+                serde_json::from_str(&line).unwrap()
+            };
+            assert_eq!(read()["type"], "ready");
+            println!(
+                "{}",
+                json!({"method":"challenge", "prompt":"Sign in to the test application", "fields":[{"id":"username","label":"Username","kind":"text"},{"id":"password","label":"Password","kind":"secret"}], "context":{"site":"https://example.test"}})
+            );
+            let opened = read();
+            let answer = read();
+            assert_eq!(answer["values"]["username"], "test-user");
+            assert!(answer["values"]["password"] == "test-application-password");
+            println!(
+                "{}",
+                json!({"method":"result","challenge_id":opened["challenge_id"],"outcome":"succeeded"})
+            );
+            assert_eq!(read()["type"], "recorded");
+            println!("{}", json!({"method":"status","state":"ready"}));
+            assert_eq!(read()["type"], "recorded");
+            std::thread::sleep(Duration::from_secs(120));
+        }
         "approval" => {
             let mut socket = UnixStream::connect(&args[2]).unwrap();
             socket

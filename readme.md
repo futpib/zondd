@@ -649,6 +649,21 @@ uses 126 and protocol/infrastructure failures use 125. `--json` prints all
 protocol events instead. Request bodies and decisions are logged to stderr;
 avoid passing secrets in argv if those logs are retained.
 
+## Application credentials
+
+Zondd can launch configured credential adapters for applications that need human
+input. Android renders their text, password, verification-code, choice, and
+confirmation fields, with complete YAML review for unfamiliar formats. Trusted
+server/recipient context is separate from the application's own prompt. Values
+are delivered privately to the configured process session and are excluded from
+history; requests, withdrawals, interruptions, and outcomes remain auditable.
+
+See the [adapter protocol and configuration](adapters/readme.md) and the
+[IB Gateway integration](adapters/ibgateway/readme.md), which runs Gateway on an
+invisible display and collects credentials through Android without VNC. Future
+application or browser adapters use the same protocol. `zondctl pending`,
+`zondctl interaction ID`, and `zondctl review` also support these forms.
+
 ## Request history and action log
 
 The daemon records every execution request, including policy rejections, manual

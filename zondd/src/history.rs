@@ -61,6 +61,24 @@ impl History {
             let reason = record.reason.clone();
             history.record(&mut record, "interrupted", json!({"reason":reason}))?;
         }
+        // Human input is transient; a restart must leave a terminal audit trail.
+        for (start, finish, detail) in [
+            ("interaction_requested", "interaction_ended", "status"),
+            ("interaction_ended", "interaction_result", "outcome"),
+        ] {
+            let interrupted: Vec<String> = {
+                let mut q = history.0.prepare("SELECT json_extract(a.detail, '$.challenge_id') FROM actions a WHERE a.action=?1 AND (?1!='interaction_ended' OR json_extract(a.detail, '$.status')='answered') AND NOT EXISTS (SELECT 1 FROM actions b WHERE b.action=?2 AND json_extract(b.detail, '$.challenge_id')=json_extract(a.detail, '$.challenge_id'))")?;
+                q.query_map(params![start, finish], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for id in interrupted {
+                history.audit(
+                    None,
+                    finish,
+                    json!({"challenge_id":id, detail:"interrupted"}),
+                )?;
+            }
+        }
         history.audit(None, "daemon_started", json!({"config":config}))?;
         Ok(history)
     }
