@@ -55,10 +55,18 @@ fn main() {
             std::fs::write(&args[2], std::process::id().to_string()).unwrap();
             std::thread::sleep(Duration::from_secs(30));
         }
-        "stream" => {
+        "stream" | "stream_gate" => {
             println!("early");
             std::io::stdout().flush().unwrap();
-            std::thread::sleep(Duration::from_secs(3));
+            if args[1] == "stream_gate" {
+                std::io::Read::read_to_end(
+                    &mut std::fs::File::open(&args[2]).unwrap(),
+                    &mut Vec::new(),
+                )
+                .unwrap();
+            } else {
+                std::thread::sleep(Duration::from_secs(3));
+            }
             eprintln!("late");
         }
         "large" => {

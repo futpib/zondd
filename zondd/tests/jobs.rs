@@ -31,7 +31,17 @@ fn job(env: &TestEnv, id: &str) -> serde_json::Value {
 #[test]
 fn long_running_request_backgrounds_without_restarting_and_streams_output() {
     let env = TestEnv::new();
-    let id = run_until_backgrounded(&env, env.probe.to_str().unwrap(), &["stream"]);
+    let gate = env.dir.path().join("stream-gate");
+    libzondtest::nix::unistd::mkfifo(
+        &gate,
+        libzondtest::nix::sys::stat::Mode::S_IRUSR | libzondtest::nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap();
+    let id = run_until_backgrounded(
+        &env,
+        env.probe.to_str().unwrap(),
+        &["stream_gate", gate.to_str().unwrap()],
+    );
     assert_eq!(
         env.request("ops", json!({"method":"job","request_id":id}))["type"],
         "error"
@@ -47,6 +57,17 @@ fn long_running_request_backgrounds_without_restarting_and_streams_output() {
         "exec",
         json!({"method":"follow","request_id":id,"after":cursor}),
     );
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut release = None;
+    wait_for(|| {
+        release = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libzondtest::nix::libc::O_NONBLOCK)
+            .open(&gate)
+            .ok();
+        release.is_some()
+    });
+    drop(release);
     let second = follow.event();
     assert_eq!(second["type"], "output", "{second}");
     assert_eq!(decoded(&second, "data"), b"late\n");

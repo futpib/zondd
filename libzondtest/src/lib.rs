@@ -322,7 +322,7 @@ impl TestEnv {
     }
     pub fn start_daemon(&self) {
         self.start(self.daemon_command().arg("serve"), "daemon");
-        wait_for(|| self.runtime.join("ops.sock").exists());
+        wait_for(|| UnixStream::connect(self.runtime.join("ops.sock")).is_ok());
     }
     pub fn daemon_command(&self) -> Command {
         let mut cmd = Command::new(&self.daemon);
