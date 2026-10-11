@@ -193,8 +193,19 @@ void main() {
           await tester.tap(find.byTooltip('Reconnect'));
           await waitFor(tester, find.text('SSH password'));
           await tester.tap(find.text('Cancel'));
-          await waitFor(tester, find.text('Authentication cancelled'));
+          await waitFor(
+            tester,
+            find.textContaining('Authentication cancelled'),
+          );
           expect(find.byType(Dashboard), findsOneWidget);
+          // Cancelling pauses automatic retries until reconnect is requested.
+          final connection =
+              tester.widget<Dashboard>(find.byType(Dashboard)).api
+                  as ControlConnection;
+          await tester.pump(const Duration(seconds: 3));
+          expect(connection.disconnected, isTrue);
+          expect(connection.reconnecting, isFalse);
+          expect(find.byType(AlertDialog), findsNothing);
           await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
           await waitFor(tester, find.text('SSH password'));
           await answer(['android test password']);
