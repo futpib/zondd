@@ -178,6 +178,8 @@ class RulesPage extends StatefulWidget {
 }
 
 class _RulesPageState extends State<RulesPage> {
+  final search = TextEditingController();
+  final expandedRules = <String>{};
   List<dynamic>? rules;
   String? error;
   bool busy = false;
@@ -185,6 +187,12 @@ class _RulesPageState extends State<RulesPage> {
   void initState() {
     super.initState();
     refresh();
+  }
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
   }
 
   Future<void> refresh() async {
@@ -223,58 +231,119 @@ class _RulesPageState extends State<RulesPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Caller rules'),
-      actions: [
-        IconButton(
-          onPressed: busy ? null : refresh,
-          icon: const Icon(Icons.refresh),
-          tooltip: 'Refresh rules',
-        ),
-      ],
-    ),
-    body: ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        if (error != null) ErrorBox(error!),
-        if (busy) const LinearProgressIndicator(),
-        if (rules?.isEmpty == true) const Text('No rule proposals or grants.'),
-        for (final raw in rules ?? []) ruleCard(raw as Map<String, dynamic>),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final query = search.text.trim().toLowerCase();
+    final all = rules ?? [];
+    final matching = all
+        .where(
+          (state) =>
+              query.isEmpty || jsonAsYaml(state).toLowerCase().contains(query),
+        )
+        .toList();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Caller rules'),
+        actions: [
+          IconButton(
+            onPressed: busy ? null : refresh,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh rules',
+          ),
+        ],
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+            child: TextField(
+              controller: search,
+              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) => FocusScope.of(context).unfocus(),
+              textInputAction: TextInputAction.search,
+              decoration: InputDecoration(
+                labelText: 'Search rules',
+                hintText: 'Name, caller, status, or rule text',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: search.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear search',
+                        icon: const Icon(Icons.clear),
+                        onPressed: () => setState(search.clear),
+                      ),
+              ),
+            ),
+          ),
+          if (error != null) ErrorBox(error!),
+          if (busy) const LinearProgressIndicator(),
+          if (rules != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Text(
+                query.isEmpty
+                    ? '${all.length} ${all.length == 1 ? 'rule' : 'rules'}'
+                    : '${matching.length} of ${all.length} rules',
+              ),
+            ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              children: [
+                if (rules?.isEmpty == true)
+                  const Text('No rule proposals or grants.')
+                else if (rules != null && matching.isEmpty)
+                  const Text('No rules match your search.'),
+                for (final raw in matching)
+                  ruleCard(raw as Map<String, dynamic>),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget ruleCard(Map<String, dynamic> state) {
     final proposal = state['proposal'] as Map<String, dynamic>;
+    final id = proposal['id'] as String;
+    final review = proposal['review'];
+    final title = review is Map ? review['title'] : null;
     final expiry = state['grant_expires_unix_ms'] as int?;
     return Card(
-      key: ValueKey('rule-state-${proposal['id']}'),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      key: ValueKey('rule-state-$id'),
+      child: ExpansionTile(
+        key: ValueKey('rule-expand-$id'),
+        initiallyExpanded: expandedRules.contains(id),
+        onExpansionChanged: (expanded) =>
+            expanded ? expandedRules.add(id) : expandedRules.remove(id),
+        title: Text(title is String && title.trim().isNotEmpty ? title : id),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Status: ${state['status']}',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            Text(state['reason'] as String),
+            Text('Caller: ${proposal['principal']}'),
+            Text('Status: ${state['status']}'),
             if (state['status'] == 'active')
               Text(
                 expiry == null
                     ? 'Valid until revoked'
                     : 'Expires ${DateTime.fromMillisecondsSinceEpoch(expiry).toLocal()}',
               ),
-            const SizedBox(height: 12),
-            RuleDefinition(proposal: proposal),
-            if (state['status'] == 'active')
-              OutlinedButton(
-                onPressed: busy ? null : () => revoke(proposal),
-                child: const Text('Revoke rule'),
-              ),
           ],
         ),
+        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+        childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        children: [
+          Text(state['reason'] as String),
+          const SizedBox(height: 12),
+          RuleDefinition(proposal: proposal),
+          if (state['status'] == 'active')
+            OutlinedButton(
+              onPressed: busy ? null : () => revoke(proposal),
+              child: const Text('Revoke rule'),
+            ),
+        ],
       ),
     );
   }

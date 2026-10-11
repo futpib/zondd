@@ -150,6 +150,11 @@ void main() {
         await tester.tap(find.text('Caller rules'));
         await visible(find.text('Status: active'));
         await capture('06-active-rule');
+        await tester.enterText(find.byType(TextField), 'git clone');
+        await capture('10-rule-search');
+        await tester.tap(find.text('clone-futpib'));
+        await visible(find.text(source));
+        await capture('11-rule-expanded');
         await visible(find.text('Revoke rule'));
         await tester.tap(find.text('Revoke rule'));
         await tester.pump();

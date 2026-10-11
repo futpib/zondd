@@ -175,6 +175,17 @@ void main() {
           );
           await visible(find.text('Caller rules'));
           await tester.tap(find.text('Caller rules'));
+          final ruleCard = find.byKey(ValueKey('rule-state-$proposalId'));
+          await visible(find.byType(TextField));
+          await tester.enterText(find.byType(TextField), 'NO-MATCH-$name');
+          await visible(find.text('No rules match your search.'));
+          await tester.enterText(find.byType(TextField), name.toUpperCase());
+          await tester.testTextInput.receiveAction(TextInputAction.search);
+          await visible(ruleCard);
+          expect(find.text(source), findsNothing);
+          expect(find.text('Revoke rule'), findsNothing);
+          await tester.tap(find.text(name));
+          await visible(find.text(source));
           await visible(find.text('Revoke rule'));
           await tester.tap(find.text('Revoke rule'));
           await tester.pump();

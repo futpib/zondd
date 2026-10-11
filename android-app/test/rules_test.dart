@@ -38,7 +38,9 @@ Map<String, dynamic> reviewDocument() => {
 
 class RuleControl implements ControlApi {
   Map<String, dynamic>? resolution;
-  bool revoked = false;
+  final revokedIds = <String>{};
+  final extraRules = <Map<String, dynamic>>[];
+  bool get revoked => revokedIds.contains(proposal['id']);
   final Map<String, dynamic> proposal = {
     'id': 'proposal-1',
     'principal': 'caller',
@@ -63,17 +65,27 @@ class RuleControl implements ControlApi {
     }
     if (body['method'] == 'rules') {
       return {
-        'rules': [
-          {
-            'proposal': proposal,
-            'status': revoked ? 'revoked' : 'active',
-            'reason': 'Rule state',
-          },
-        ],
+        'rules':
+            [
+                  ...extraRules,
+                  {
+                    'proposal': proposal,
+                    'status': revoked ? 'revoked' : 'active',
+                    'reason': 'Rule state',
+                  },
+                ]
+                .map(
+                  (state) => {
+                    ...state,
+                    if (revokedIds.contains(state['proposal']['id']))
+                      'status': 'revoked',
+                  },
+                )
+                .toList(),
       };
     }
     if (body['method'] == 'revoke_rule') {
-      revoked = true;
+      revokedIds.add(body['grant_id'] as String);
       return {'type': 'rule_revoked'};
     }
     throw StateError('unexpected method');
@@ -81,12 +93,135 @@ class RuleControl implements ControlApi {
 }
 
 void main() {
+  Map<String, dynamic> otherRule() => {
+    'proposal': {
+      'id': 'proposal-2',
+      'principal': 'builder',
+      'source': 'run git clone example',
+      'review': {
+        'version': 1,
+        'title': 'clone',
+        'sections': [
+          {
+            'title': 'Command',
+            'fields': [
+              {'label': 'Program', 'value': 'git'},
+            ],
+          },
+        ],
+      },
+    },
+    'status': 'expired',
+    'reason': 'Grant lifetime elapsed',
+  };
+
+  testWidgets(
+    'rules start collapsed with visible caller, status and lifetime',
+    (tester) async {
+      final api = RuleControl()..extraRules.add(otherRule());
+      await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
+      await tester.pumpAndSettle();
+      expect(find.text('2 rules'), findsOneWidget);
+      expect(find.text('deploy'), findsOneWidget);
+      expect(find.text('Caller: caller'), findsOneWidget);
+      expect(find.text('Status: active'), findsOneWidget);
+      expect(find.text('Valid until revoked'), findsOneWidget);
+      expect(find.text('Status: expired'), findsOneWidget);
+      expect(find.byType(RuleDefinition), findsNothing);
+      expect(find.text('Revoke rule'), findsNothing);
+      await tester.tap(find.text('deploy'));
+      await tester.pumpAndSettle();
+      expect(find.text(api.proposal['source']), findsOneWidget);
+      expect(find.text('New daemon vocabulary'), findsOneWidget);
+      await tester.tap(find.text('deploy'));
+      await tester.pumpAndSettle();
+      expect(find.byType(RuleDefinition), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'search finds hidden and future data, with clear and empty states',
+    (tester) async {
+      final api = RuleControl()..extraRules.add(otherRule());
+      api.proposal['future_check'] = {'condition': 'Special constraint'};
+      await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
+      await tester.pumpAndSettle();
+      for (final query in [
+        '  DEPLOY  ',
+        'caller',
+        'future daemon',
+        'release branch',
+        'special constraint',
+        'proposal-1',
+        'exact-reviewed-digest',
+      ]) {
+        await tester.enterText(find.byType(TextField), query);
+        await tester.pumpAndSettle();
+        expect(find.text('1 of 2 rules'), findsOneWidget, reason: query);
+        expect(find.text('deploy'), findsOneWidget, reason: query);
+        expect(find.text('clone'), findsNothing, reason: query);
+        expect(find.byType(RuleDefinition), findsNothing);
+      }
+      for (final query in ['builder', 'expired', 'lifetime elapsed']) {
+        await tester.enterText(find.byType(TextField), query);
+        await tester.pumpAndSettle();
+        expect(find.text('clone'), findsOneWidget, reason: query);
+        expect(find.text('deploy'), findsNothing, reason: query);
+      }
+      await tester.enterText(find.byType(TextField), 'no-such-rule');
+      await tester.pumpAndSettle();
+      expect(find.text('0 of 2 rules'), findsOneWidget);
+      expect(find.text('No rules match your search.'), findsOneWidget);
+      await tester.tap(find.byTooltip('Clear search'));
+      await tester.pumpAndSettle();
+      expect(find.text('2 rules'), findsOneWidget);
+      expect(find.text('deploy'), findsOneWidget);
+      expect(find.text('clone'), findsOneWidget);
+      expect(find.byTooltip('Clear search'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'expansion follows the rule across filtering, refresh and revoke',
+    (tester) async {
+      final api = RuleControl()..extraRules.add(otherRule());
+      await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('deploy'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'clone');
+      await tester.pumpAndSettle();
+      expect(find.byType(RuleDefinition), findsNothing);
+      await tester.enterText(find.byType(TextField), 'deploy');
+      await tester.pumpAndSettle();
+      expect(find.text(api.proposal['source']), findsOneWidget);
+      await tester.tap(find.byTooltip('Refresh rules'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 of 2 rules'), findsOneWidget);
+      expect(find.text(api.proposal['source']), findsOneWidget);
+      await tester.ensureVisible(find.text('Revoke rule'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Revoke rule'));
+      await tester.pumpAndSettle();
+      expect(api.revokedIds, {'proposal-1'});
+      expect(find.text('Status: revoked'), findsOneWidget);
+      expect(find.text('Revoke rule'), findsNothing);
+      await tester.tap(find.byTooltip('Clear search'));
+      await tester.pumpAndSettle();
+      expect(find.text('Status: expired'), findsOneWidget);
+      expect(find.byType(RuleDefinition), findsOneWidget);
+    },
+  );
+
   testWidgets(
     'unsupported review does not prevent revoking an existing grant',
     (tester) async {
       final api = RuleControl();
       api.proposal['review'] = {...reviewDocument(), 'version': 2};
       await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
+      await tester.pumpAndSettle();
+      expect(find.text('Complete rule data (YAML)'), findsNothing);
+      await tester.tap(find.text('deploy'));
       await tester.pumpAndSettle();
       expect(find.text('Complete rule data (YAML)'), findsOneWidget);
       await tester.ensureVisible(find.text('Revoke rule'));
