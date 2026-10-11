@@ -82,12 +82,13 @@ Plain SSH connections do not depend on Iroh versions.
    verify the new fingerprint out of band and use **Forget host key** first.
 5. Tap **Approve once** or **Reject** on an exact command request. The caller
    remains connected while waiting and receives command output or rejection.
-   **Reusable rule proposal** cards show the complete typed rule, resolved
-   executable, working directory, and parameter constraints. **Approve rule**
+   **Reusable rule proposal** cards show the exact rule source received by the
+   daemon as selectable, monospaced text, followed by the resolved executable,
+   working directory, and parameter constraints. **Approve rule**
    grants repeated invocations for the selected lifetime; it defaults to one
    hour. **Caller rules** shows collapsed summaries with caller, status, and
    lifetime. Search names, callers, status, or any rule content, then expand a
-   matching entry to inspect its definition or revoke its grant. See
+   matching entry to read its source and definition or revoke its grant. See
    [caller rule syntax and semantics](../readme.md#propose-reusable-typed-rules).
 
 Rule explanations come from the daemon as a versioned plain-text review document,

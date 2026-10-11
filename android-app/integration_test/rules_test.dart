@@ -93,6 +93,7 @@ void main() {
           expect(proposed['type'], 'rule_proposed');
           final proposal = proposed['proposal'] as Map;
           expect(proposal['review']['version'], 1);
+          expect(proposal['source'], source);
           proposalId = proposal['id'] as String;
           expect(
             (await request({'method': 'rules'}))['rules'],
@@ -110,7 +111,14 @@ void main() {
             ),
           );
           await visible(find.text('Reusable rule proposal'));
-          expect(find.text(source), findsNothing);
+          expect(
+            tester
+                .widget<SelectableText>(
+                  find.byKey(ValueKey('rule-source-$proposalId')),
+                )
+                .data,
+            proposal['source'],
+          );
           final definition =
               'Definition: ${proposal['review']['sections'][0]['fields'][0]['value']}';
           expect(find.text(definition), findsOneWidget);
@@ -188,6 +196,8 @@ void main() {
           expect(find.text(source), findsNothing);
           expect(find.text('Revoke rule'), findsNothing);
           await tester.tap(find.text(name));
+          await visible(find.byKey(ValueKey('rule-source-$proposalId')));
+          expect(find.text(source), findsOneWidget);
           await visible(find.text(definition));
           await visible(find.text('Revoke rule'));
           await tester.tap(find.text('Revoke rule'));

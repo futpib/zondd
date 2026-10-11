@@ -122,6 +122,7 @@ class RuleDefinition extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final source = proposal['source'];
     final raw = proposal['review'];
     final review = _isTextReview(raw) ? raw as Map : null;
     final yaml = SelectableText(
@@ -137,6 +138,25 @@ class RuleDefinition extends StatelessWidget {
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 12),
+        if (source is String && source.isNotEmpty) ...[
+          Text('Rule source', style: Theme.of(context).textTheme.titleSmall),
+          const Text('As received by the daemon'),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: SelectableText(
+              source,
+              key: ValueKey('rule-source-${proposal['id']}'),
+              style: mono,
+              textDirection: TextDirection.ltr,
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         if (review == null) ...[
           Text(
             'Complete rule data (YAML)',

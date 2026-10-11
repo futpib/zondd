@@ -160,11 +160,11 @@ void main() {
   );
 
   testWidgets(
-    'main review uses daemon definition and retains caller source in details',
+    'review shows received source before daemon definition and YAML details',
     (tester) async {
       final proposal = RuleControl().proposal;
       proposal['source'] =
-          '# misleading caller comment\nrule deploy() { run true }';
+          '# Keep source formatting\nrule deploy(ticket: ticket-id) {\n  run deploy\n}\n';
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -175,7 +175,13 @@ void main() {
         ),
       );
       expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
-      expect(find.text(proposal['source']), findsNothing);
+      final source = find.byKey(const ValueKey('rule-source-proposal-1'));
+      expect(tester.widget<SelectableText>(source).data, proposal['source']);
+      expect(find.text('As received by the daemon'), findsOneWidget);
+      expect(
+        tester.getTopLeft(source).dy,
+        lessThan(tester.getTopLeft(find.text('Normalized rule')).dy),
+      );
       expect(find.byKey(const ValueKey('rule-yaml-proposal-1')), findsNothing);
       await tester.ensureVisible(find.text('Rule details (YAML)'));
       await tester.tap(find.text('Rule details (YAML)'));
@@ -229,7 +235,7 @@ void main() {
       await tester.tap(find.text('deploy'));
       await tester.pumpAndSettle();
       expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
-      expect(find.text(api.proposal['source']), findsNothing);
+      expect(find.text(api.proposal['source']), findsOneWidget);
       expect(find.text('New daemon vocabulary'), findsOneWidget);
       await tester.tap(find.text('deploy'));
       await tester.pumpAndSettle();
@@ -293,12 +299,12 @@ void main() {
       await tester.enterText(find.byType(TextField), 'deploy');
       await tester.pumpAndSettle();
       expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
-      expect(find.text(api.proposal['source']), findsNothing);
+      expect(find.text(api.proposal['source']), findsOneWidget);
       await tester.tap(find.byTooltip('Refresh rules'));
       await tester.pumpAndSettle();
       expect(find.text('1 of 2 rules'), findsOneWidget);
       expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
-      expect(find.text(api.proposal['source']), findsNothing);
+      expect(find.text(api.proposal['source']), findsOneWidget);
       await tester.ensureVisible(find.text('Revoke rule'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Revoke rule'));
