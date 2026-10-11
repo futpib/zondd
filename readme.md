@@ -1,17 +1,37 @@
-# zondd
+# zond
 
-SSH-authenticated operations with exact command allowlists, named operations,
-caller-proposed typed rules, and a local approval queue. Linux, Rust, GPL-3.0-or-later.
+Let AI agents work on your Linux machines with permissions you control.
+
+An agent can request a command or propose a reusable rule. Review it from
+the zond Android app or CLI, then approve one execution, grant temporary
+permission, or allow the rule until revoked.
+
+## How it works
+
+1. Give the agent a dedicated SSH key restricted to the zond bridge.
+2. The agent submits commands or proposes rules using `zondctl`.
+3. Review the resolved command, parameters, working directory, and requested
+   privileges before approving.
+4. Inspect results and history, follow background jobs, and cancel work
+   when needed.
+
+The default policy requires approval for every valid command request.
+Reusable rules let you authorize repeat tasks with defined parameter
+constraints. Revocation prevents future invocations; running jobs can be
+cancelled separately.
+
+zond uses your existing OpenSSH server, optionally reached through
+iroh-ssh. `zondd` is the receiving daemon, `zondctl` is the CLI, and zond
+is the Android controller.
+
+Commands execute with the receiving Unix account's authority. zond
+controls command authorization; it does not provide a filesystem or
+network sandbox.
 
 [<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" height="80" alt="Get the Android controller on Obtainium">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/futpib/zondd)
 
 The zond Android controller's [Obtainium setup and release instructions](android-app/README.md#obtainium-and-apk-downloads)
 cover installation and updates. Downloads become available after the first Android release is published.
-
-Keep your existing OpenSSH server and iroh-ssh forwarding. OpenSSH authenticates
-the key; its fixed `authorized_keys` command bridges a versioned protocol to
-zondd. Both endpoints are included. No additional network listener or SSH server
-implementation is needed.
 
 ```text
 zondctl → ssh [→ iroh-ssh proxy] → sshd → zondd bridge
@@ -20,87 +40,6 @@ zondctl → ssh [→ iroh-ssh proxy] → sshd → zondd bridge
                                               ↑ separate admin Unix socket
                                          zondctl review
 ```
-
-The workspace follows slopd's shared-library/daemon/client split:
-
-- `libzond`: wire types, bounded framing, policy and operation schemas.
-- `libzondctl`: asynchronous Unix-socket and OpenSSH client.
-- `zondd`: user daemon and forced-command bridge.
-- `zondctl`: sending CLI and local approval interface.
-- `libzondtest`: shared isolated process fixtures and a Rust subprocess probe,
-  following slopd's `libsloptest` pattern.
-
-## Build and test
-
-```sh
-cargo build --workspace --bins
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo fmt --all --check
-```
-
-Named Rust integration tests live in `zondd/tests/integration.rs` and
-`zondctl/tests/integration.rs`, with shared fixtures in `libzondtest`.
-The normal suite starts real user daemons, tests approval through a PTY,
-and verifies that commands retain the user's UID, GID, supplementary groups,
-and local approval authority. Run it as your normal user, without sudo.
-
-Additional integration tests have explicit `#[ignore]` reasons because they
-require OpenSSH client/server, Iroh connectivity, or a running systemd user
-manager. After building the binaries, select them with Cargo:
-
-```sh
-# Real OpenSSH transport tests:
-cargo test -p zondctl --test integration -- --ignored --skip iroh_ssh --skip trusted_management
-# Also exercise the installed Iroh transport and real discovery:
-cargo test -p zondctl --test integration -- --ignored
-# Start and stop an isolated instance of the shipped systemd user service:
-cargo test -p zondd --test integration shipped_user_service -- --ignored
-```
-
-Fixtures create private temporary directories under the user's home (so SSH
-StrictModes can remain enabled), ephemeral keys, and isolated loopback sshd
-processes running as the current user. Drop guards clean up processes and files
-on success and assertion failures, and print logs on failure. The systemd test
-uses a uniquely named temporary unit and runtime directory, and removes both.
-Tests do not change your installed services or authorized keys. Iroh tests
-check pipe EOF after completion to catch orphaned proxy processes.
-
-## Continuous integration and releases
-
-GitHub Actions runs these workflows on pull requests and pushes to `master`:
-
-- **CI**: Rust formatting, Clippy, unit/integration tests, real SSH and key
-  enrollment, the systemd user service, and Linux archive builds on x86-64 and
-  ARM64; Flutter formatting, analysis and widget tests; workflow and shell linting.
-- **Transport and Android E2E**: real Iroh caller/management tests and the Android
-  controller tests on an API 35 emulator, including native builds for both app
-  architectures. This also runs weekly and can be started manually. It uses
-  public Iroh discovery/relays, so network failures fail the transport job.
-- **Dependency audit**: RustSec checks for both Rust lockfiles when they change,
-  weekly, or on manual dispatch.
-
-Tests run as the runner's ordinary user. CI installs test prerequisites and
-starts that user's systemd manager; the daemon and approval tests do not run as
-root. Android E2E uses disposable fixture keys and does not upload its test APK.
-The CLI transport tests and Android app pin `futpib/iroh-ssh` at
-`f7e04ea411b198a334d118675de5e015ae527dae`, using Iroh 1.3.0, matching
-`iroh-ssh-android`. Android E2E builds an ephemeral test server from the app's
-native lockfile. Android connections require a server with a compatible Iroh
-wire version.
-
-**Release Linux binaries** runs when a `vMAJOR.MINOR.PATCH` tag is pushed, or when
-manually dispatched against such a tag. The version must match the Rust workspace
-version. It tests and packages x86-64 and ARM64 Linux binaries, the user service,
-license, documentation and optional policy example, then publishes both archives
-and `SHA256SUMS`. Builds use Ubuntu 24.04 and require glibc 2.39 or newer.
-For a local native build, run `scripts/package-linux.sh 0.1.0 /tmp/zondd-dist`.
-Extract the archive, install `bin/zondd` and `bin/zondctl` into `~/.cargo/bin`, and
-follow the user-service setup below. No policy file is installed automatically.
-
-**Build Android APK** remains the manual signed Android release workflow. Linux
-releases do not replace Android as the repository's latest release; Obtainium
-users can also filter release titles with `^Android `.
 
 ## Configure the receiver
 
@@ -238,37 +177,6 @@ full authority, including approval. This also applies to programs authorized
 to run as that user. Use separate Unix accounts and separate user daemons when
 OS-level isolation between users is needed.
 
-## Apply policy changes
-
-After editing the config, run `zondctl reload` as the daemon user. It waits for
-validation and reports the applied revision or an error. The Android app's
-**Save & apply** does the same over ordinary SSH or SSH through Iroh.
-`systemctl --user reload zondd` sends SIGHUP; check the journal for its result.
-
-Reload reads the original startup config path, validates it, and prepares any
-new principal sockets before atomically replacing the active policy. Invalid
-configurations, untrusted files, and socket conflicts leave the active policy
-and approval queue intact. Rules, operations, principals, approval settings,
-and limits take effect without restarting. Changing `runtime_dir` requires a
-restart. `zondctl status` includes the active config's SHA-256 revision.
-
-Commands already admitted keep running with their original policy and limits.
-Reload re-evaluates waiting requests without disconnecting their callers:
-
-- Requests that still need approval keep their approval ID and original expiry.
-- Newly allowed requests execute using the new policy and limits, waiting for
-  capacity if necessary. Their original expiry still applies.
-- Newly denied requests, removed principals/operations, and requests needing
-  disabled approvals are rejected with the specific reason.
-- A changed executable, argv, or working directory requires fresh review, even
-  if the new rule allows it. The caller receives another `pending` event with a
-  new approval ID and the same request ID/deadline. Old approvals cannot apply.
-
-Reload, review decisions, and execution admission share the same lock. A denial
-can supersede an approval that is still waiting for capacity. Lower limits do
-not kill admitted commands. Removing a principal closes its listening socket
-while existing callers receive their outcomes. Reload requires admin authority.
-
 ## Send operations
 
 ```sh
@@ -326,6 +234,37 @@ disconnect cancels the command and exceeding the output limit kills it.
 survive caller disconnects, but stopping the daemon interrupts running jobs.
 Commands still have null stdin and no PTY, so programs that need interactive
 input cannot run this way.
+
+## Apply policy changes
+
+After editing the config, run `zondctl reload` as the daemon user. It waits for
+validation and reports the applied revision or an error. The Android app's
+**Save & apply** does the same over ordinary SSH or SSH through Iroh.
+`systemctl --user reload zondd` sends SIGHUP; check the journal for its result.
+
+Reload reads the original startup config path, validates it, and prepares any
+new principal sockets before atomically replacing the active policy. Invalid
+configurations, untrusted files, and socket conflicts leave the active policy
+and approval queue intact. Rules, operations, principals, approval settings,
+and limits take effect without restarting. Changing `runtime_dir` requires a
+restart. `zondctl status` includes the active config's SHA-256 revision.
+
+Commands already admitted keep running with their original policy and limits.
+Reload re-evaluates waiting requests without disconnecting their callers:
+
+- Requests that still need approval keep their approval ID and original expiry.
+- Newly allowed requests execute using the new policy and limits, waiting for
+  capacity if necessary. Their original expiry still applies.
+- Newly denied requests, removed principals/operations, and requests needing
+  disabled approvals are rejected with the specific reason.
+- A changed executable, argv, or working directory requires fresh review, even
+  if the new rule allows it. The caller receives another `pending` event with a
+  new approval ID and the same request ID/deadline. Old approvals cannot apply.
+
+Reload, review decisions, and execution admission share the same lock. A denial
+can supersede an approval that is still waiting for capacity. Lower limits do
+not kill admitted commands. Removing a principal closes its listening socket
+while existing callers receive their outcomes. Reload requires admin authority.
 
 ## Inspect caller permissions
 
@@ -798,6 +737,89 @@ there is no per-request cgroup, filesystem or network sandbox.
 The supplied systemd user service cleans its entire cgroup on shutdown.
 Treat these distinctions as part of configuring
 what an approved command is allowed to do.
+
+## Workspace
+
+The workspace follows slopd's shared-library/daemon/client split:
+
+- `libzond`: wire types, bounded framing, policy and operation schemas.
+- `libzondctl`: asynchronous Unix-socket and OpenSSH client.
+- `zondd`: user daemon and forced-command bridge.
+- `zondctl`: sending CLI and local approval interface.
+- `libzondtest`: shared isolated process fixtures and a Rust subprocess probe,
+  following slopd's `libsloptest` pattern.
+
+## Build and test
+
+```sh
+cargo build --workspace --bins
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+```
+
+Named Rust integration tests live in `zondd/tests/integration.rs` and
+`zondctl/tests/integration.rs`, with shared fixtures in `libzondtest`.
+The normal suite starts real user daemons, tests approval through a PTY,
+and verifies that commands retain the user's UID, GID, supplementary groups,
+and local approval authority. Run it as your normal user, without sudo.
+
+Additional integration tests have explicit `#[ignore]` reasons because they
+require OpenSSH client/server, Iroh connectivity, or a running systemd user
+manager. After building the binaries, select them with Cargo:
+
+```sh
+# Real OpenSSH transport tests:
+cargo test -p zondctl --test integration -- --ignored --skip iroh_ssh --skip trusted_management
+# Also exercise the installed Iroh transport and real discovery:
+cargo test -p zondctl --test integration -- --ignored
+# Start and stop an isolated instance of the shipped systemd user service:
+cargo test -p zondd --test integration shipped_user_service -- --ignored
+```
+
+Fixtures create private temporary directories under the user's home (so SSH
+StrictModes can remain enabled), ephemeral keys, and isolated loopback sshd
+processes running as the current user. Drop guards clean up processes and files
+on success and assertion failures, and print logs on failure. The systemd test
+uses a uniquely named temporary unit and runtime directory, and removes both.
+Tests do not change your installed services or authorized keys. Iroh tests
+check pipe EOF after completion to catch orphaned proxy processes.
+
+## Continuous integration and releases
+
+GitHub Actions runs these workflows on pull requests and pushes to `master`:
+
+- **CI**: Rust formatting, Clippy, unit/integration tests, real SSH and key
+  enrollment, the systemd user service, and Linux archive builds on x86-64 and
+  ARM64; Flutter formatting, analysis and widget tests; workflow and shell linting.
+- **Transport and Android E2E**: real Iroh caller/management tests and the Android
+  controller tests on an API 35 emulator, including native builds for both app
+  architectures. This also runs weekly and can be started manually. It uses
+  public Iroh discovery/relays, so network failures fail the transport job.
+- **Dependency audit**: RustSec checks for both Rust lockfiles when they change,
+  weekly, or on manual dispatch.
+
+Tests run as the runner's ordinary user. CI installs test prerequisites and
+starts that user's systemd manager; the daemon and approval tests do not run as
+root. Android E2E uses disposable fixture keys and does not upload its test APK.
+The CLI transport tests and Android app pin `futpib/iroh-ssh` at
+`f7e04ea411b198a334d118675de5e015ae527dae`, using Iroh 1.3.0, matching
+`iroh-ssh-android`. Android E2E builds an ephemeral test server from the app's
+native lockfile. Android connections require a server with a compatible Iroh
+wire version.
+
+**Release Linux binaries** runs when a `vMAJOR.MINOR.PATCH` tag is pushed, or when
+manually dispatched against such a tag. The version must match the Rust workspace
+version. It tests and packages x86-64 and ARM64 Linux binaries, the user service,
+license, documentation and optional policy example, then publishes both archives
+and `SHA256SUMS`. Builds use Ubuntu 24.04 and require glibc 2.39 or newer.
+For a local native build, run `scripts/package-linux.sh 0.1.0 /tmp/zondd-dist`.
+Extract the archive, install `bin/zondd` and `bin/zondctl` into `~/.cargo/bin`, and
+follow the [user-service setup](#configure-the-receiver). No policy file is installed automatically.
+
+**Build Android APK** remains the manual signed Android release workflow. Linux
+releases do not replace Android as the repository's latest release; Obtainium
+users can also filter release titles with `^Android `.
 
 ## Protocol version 1
 
