@@ -422,6 +422,24 @@ zondctl rules
 zondctl revoke-rule PROPOSAL_ID
 ```
 
+Each proposal includes a receiver-generated `review` document, covered by the
+same immutable digest as its source and resolved definition. Review format 1
+contains `version`, a plain-text `title`, and ordered `sections`; each section
+has a `title` and `fields` containing plain-text `label` and `value` strings.
+The receiver describes parameter constraints, checks, effects, authority and
+execution bindings. Clients render every section and field without interpreting
+the rule language or maintaining a list of type/check/effect names. New language
+constructs using this format need no Android update. The CLI also sends proposal
+source to the receiver for parsing, without requiring a matching local parser.
+
+New rendering semantics require a new review format version. Android disables
+approval for missing, malformed or unsupported review documents, including
+unknown fields, while allowing rejection and revocation. Updating an older
+daemon/client pair to this format requires updating both once. Saved proposals
+and grants whose review is missing or differs from the current receiver's
+description are invalidated and require a new proposal and approval; unchanged
+reviews survive restarts. Historical definitions remain visible.
+
 The Android **Caller rules** screen also lists definitions and supports
 revocation. Approval grants repeated invocations to the proposing **principal**,
 including all SSH keys assigned to it. Use different principals for separate

@@ -296,7 +296,6 @@ async fn run(cli: Cli) -> Result<u8> {
             } else {
                 source.clone().context("missing rule source")?
             };
-            libzond::rules::parse(&source)?;
             Request::ProposeRule { source }
         }
         Action::Rules => Request::Rules,
@@ -512,10 +511,6 @@ async fn review(cli: &Cli) -> Result<u8> {
         }
         for proposal in proposals {
             println!("{}", serde_json::to_string_pretty(&proposal)?);
-            println!(
-                "Approving this rule authorizes repeated invocations by {} as this Unix user, without another prompt. Commands retain no_new_privs.",
-                proposal.principal
-            );
             print!(
                 "Approve for 1 hour [a], approve until revoked [p], deny [d], skip [s], quit [q]: "
             );

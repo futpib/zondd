@@ -83,6 +83,7 @@ void main() {
           });
           expect(proposed['type'], 'rule_proposed');
           final proposal = proposed['proposal'] as Map;
+          expect(proposal['review']['version'], 1);
           proposalId = proposal['id'] as String;
           expect(
             (await request({'method': 'rules'}))['rules'],
@@ -102,6 +103,15 @@ void main() {
           await visible(find.text('Reusable rule proposal'));
           expect(find.text(source), findsOneWidget);
           expect(find.textContaining('repo-name: 1–100 ASCII'), findsOneWidget);
+          for (final section in proposal['review']['sections'] as List) {
+            expect(find.text(section['title'] as String), findsOneWidget);
+            for (final field in section['fields'] as List) {
+              expect(
+                find.text('${field['label']}: ${field['value']}'),
+                findsOneWidget,
+              );
+            }
+          }
           await visible(find.text('Approve rule'));
           await tester.tap(find.text('Approve rule'));
           await visible(
@@ -144,12 +154,16 @@ void main() {
           await tester.tap(find.text('Caller rules'));
           await visible(find.text('Revoke rule'));
           await tester.tap(find.text('Revoke rule'));
-          await visible(
-            find.descendant(
-              of: find.byKey(ValueKey('rule-state-$proposalId')),
-              matching: find.text('Status: revoked'),
-            ),
-          );
+          await tester.pump();
+          for (
+            var i = 0;
+            i < 300 &&
+                find.byType(LinearProgressIndicator).evaluate().isNotEmpty;
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          expect(find.byType(LinearProgressIndicator), findsNothing);
           final after =
               (await request({'method': 'permissions'}))['permissions']['rules']
                   as List;
@@ -158,6 +172,16 @@ void main() {
                 .where((s) => s['proposal']['id'] == proposalId)
                 .single['status'],
             'revoked',
+          );
+          // Revocation reorders active/history rows. Scroll back to build the
+          // updated card even when its full review is taller than the viewport.
+          await tester.drag(find.byType(ListView), const Offset(0, 10000));
+          await tester.pump(const Duration(milliseconds: 300));
+          await visible(
+            find.descendant(
+              of: find.byKey(ValueKey('rule-state-$proposalId')),
+              matching: find.text('Status: revoked'),
+            ),
           );
           expect(
             (await request({

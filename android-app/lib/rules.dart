@@ -3,6 +3,43 @@ import 'package:flutter/material.dart';
 import 'control.dart';
 import 'ui.dart';
 
+// Version 1 is plain text throughout. Never silently omit unrecognized fields
+// when deciding whether the entire approval document can be rendered.
+bool supportedRuleReview(Object? value) {
+  bool fields(Object? object, Set<String> names) =>
+      object is Map &&
+      object.length == names.length &&
+      names.every(object.containsKey);
+  bool text(Object? value) => value is String && value.trim().isNotEmpty;
+  if (!fields(value, {'version', 'title', 'sections'})) return false;
+  final review = value as Map;
+  if (review['version'] is! int ||
+      review['version'] != 1 ||
+      !text(review['title']) ||
+      review['sections'] is! List) {
+    return false;
+  }
+  final sections = review['sections'] as List;
+  if (sections.isEmpty) return false;
+  for (final section in sections) {
+    if (!fields(section, {'title', 'fields'}) ||
+        !text(section['title']) ||
+        section['fields'] is! List) {
+      return false;
+    }
+    final items = section['fields'] as List;
+    if (items.isEmpty) return false;
+    for (final item in items) {
+      if (!fields(item, {'label', 'value'}) ||
+          !text(item['label']) ||
+          !text(item['value'])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 class RuleProposalCard extends StatefulWidget {
   const RuleProposalCard({
     super.key,
@@ -35,10 +72,6 @@ class _RuleProposalCardState extends State<RuleProposalCard> {
           const SizedBox(height: 12),
           RuleDefinition(proposal: widget.proposal),
           const SizedBox(height: 12),
-          const Text(
-            'Approval permits repeated invocations by this principal (including every assigned key) without another prompt. Commands run as your Unix user without gaining new privileges.',
-          ),
-          const SizedBox(height: 12),
           DropdownButtonFormField<int>(
             initialValue: lifetime,
             decoration: const InputDecoration(labelText: 'Grant lifetime'),
@@ -47,7 +80,8 @@ class _RuleProposalCardState extends State<RuleProposalCard> {
               DropdownMenuItem(value: 86400, child: Text('24 hours')),
               DropdownMenuItem(value: 0, child: Text('Until revoked')),
             ],
-            onChanged: widget.enabled
+            onChanged:
+                widget.enabled && supportedRuleReview(widget.proposal['review'])
                 ? (value) => setState(() => lifetime = value!)
                 : null,
           ),
@@ -65,7 +99,9 @@ class _RuleProposalCardState extends State<RuleProposalCard> {
               const SizedBox(width: 12),
               Expanded(
                 child: FilledButton(
-                  onPressed: widget.enabled
+                  onPressed:
+                      widget.enabled &&
+                          supportedRuleReview(widget.proposal['review'])
                       ? () => widget.resolve(
                           true,
                           lifetime == 0 ? null : lifetime,
@@ -88,37 +124,37 @@ class RuleDefinition extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bound = proposal['bound'] as Map;
-    final rule = bound['rule'] as Map;
-    final parameters = rule['parameters'] as List;
+    final raw = proposal['review'];
+    final review = supportedRuleReview(raw) ? raw as Map : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          '${proposal['principal']} · ${rule['name']}',
+          '${proposal['principal']} · ${review?['title'] ?? proposal['id']}',
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 12),
         SelectableText(proposal['source'] as String, style: mono),
         const SizedBox(height: 12),
-        Text('Executable: ${jsonEncode(rule['program'])}'),
-        Text('Working directory: ${jsonEncode(bound['cwd'])}'),
-        Text('Server HOME: ${jsonEncode(bound['home'])}'),
-        if (parameters.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Text(
-            'Parameters: ${parameters.map((p) => '${p['name']}: ${p['kind']}').join(', ')}',
-          ),
-          const Text(
-            'repo-name: 1–100 ASCII letters, digits, dots, underscores or hyphens; starts with a letter or digit. Values are literal text.',
-          ),
-        ],
-        if (rule['create_new'] != null) ...[
-          const SizedBox(height: 8),
-          const Text(
-            'create-new publishes a directory only after success and only if its destination is still absent.',
-          ),
-        ],
+        if (review == null)
+          ErrorBox(
+            raw == null
+                ? 'This proposal has no review document. Update the daemon and submit a new proposal before approving.'
+                : 'This app cannot display the complete rule review. Approval is disabled; update the app or use a compatible reviewer.',
+          )
+        else
+          for (final section in review['sections'] as List) ...[
+            const SizedBox(height: 12),
+            Text(
+              section['title'] as String,
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            for (final field in section['fields'] as List)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: SelectableText('${field['label']}: ${field['value']}'),
+              ),
+          ],
         ExpansionTile(
           tilePadding: EdgeInsets.zero,
           title: const Text('Rule details'),

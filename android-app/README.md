@@ -88,6 +88,13 @@ Plain SSH connections do not depend on Iroh versions.
    hour. Use **Caller rules** to inspect definitions and revoke grants. See
    [caller rule syntax and semantics](../readme.md#propose-reusable-typed-rules).
 
+Rule explanations come from the daemon as a versioned plain-text review document,
+bound to the approval digest. Android renders its sections and fields generically,
+so new daemon types, checks and effects using that format do not require an app
+update. Unsupported or incomplete review formats disable approval; rejection and
+revocation remain available. Proposals from daemons predating review documents
+require a daemon update and a new proposal.
+
 QR scan buttons are available beside connection targets (including quick connect),
 private keys, passphrases, passwords, and relay URLs. Scan with the camera or choose
 a QR image from the gallery. The decoded text fills the field for review; it does

@@ -11,6 +11,29 @@ fn parse(output: std::process::Output) -> Value {
 }
 
 #[test]
+fn cli_leaves_rule_language_validation_to_the_receiver() {
+    let env = TestEnv::new();
+    // A newer daemon may know this type; the CLI must forward the source untouched.
+    let response = parse(checked(
+        env.cli().args([
+            "--principal",
+            "exec",
+            "--json",
+            "propose-rule",
+            "rule future(x: ticket-id) { run printf '%s' \"$x\" }",
+        ]),
+        125,
+    ));
+    assert_eq!(response["type"], "error");
+    assert!(
+        response["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown type 'ticket-id'")
+    );
+}
+
+#[test]
 fn cli_proposes_observes_approves_invokes_and_revokes_rules() {
     let env = TestEnv::new();
     let path = env.dir.path().join("echo.zond");

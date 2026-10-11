@@ -47,6 +47,168 @@ fn no_staging(root: &Path) -> bool {
 }
 
 #[test]
+fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
+    let env = TestEnv::new();
+    let source = r#"rule reviewed(x: repo-name) {
+  require is-dir "$HOME/code"
+  require absent "$HOME/code/$x"
+  create-new "$HOME/code/$x" as dest {
+    run mkdir "$dest" '$x'
+  }
+}"#;
+    assert!(
+        serde_json::from_value::<libzond::Request>(json!({
+            "method": "propose_rule", "source": source,
+            "review": {"version": 1, "title": "Caller-supplied misinformation", "sections": []}
+        }))
+        .is_err()
+    );
+    let proposal = &propose(&env, source);
+    let review = &proposal["review"];
+    assert_eq!(review["version"], 1);
+    assert_eq!(review["title"], "reviewed");
+    // Bridges preserve unknown review versions and fields for the UI to assess.
+    let mut future = json!({"type": "rule_proposed", "proposal": proposal});
+    future["proposal"]["review"]["version"] = json!(2);
+    future["proposal"]["review"]["new_required_field"] = json!({"unknown": true});
+    let forwarded: libzond::Event = serde_json::from_value(future.clone()).unwrap();
+    assert_eq!(serde_json::to_value(forwarded).unwrap(), future);
+    let field = |title: &str, label: &str| {
+        review["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["title"] == title)
+            .unwrap()["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["label"] == label)
+            .unwrap()["value"]
+            .as_str()
+            .unwrap()
+    };
+    assert!(
+        field("Parameters (positional order)", "x: repo-name")
+            .contains("[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+    );
+    assert!(field("Checks", "is-dir").contains("without following symlinks"));
+    assert!(field("Checks", "absent").contains("no dangling symlink"));
+    assert!(field("Effects", "create-new").contains("atomically"));
+    assert_eq!(
+        field("Effects", "Destination"),
+        "${HOME} + \"/code/\" + ${x}"
+    );
+    assert_eq!(field("Command arguments", "Argument 1"), "${dest}");
+    assert_eq!(field("Command arguments", "Argument 2"), "\"$x\"");
+
+    let mut unsigned: libzond::rules::Proposal = serde_json::from_value(proposal.clone()).unwrap();
+    let digest = std::mem::take(&mut unsigned.digest);
+    let hash = |p: &libzond::rules::Proposal| {
+        libzond::config::revision(&serde_json::to_string(p).unwrap())
+    };
+    assert_eq!(hash(&unsigned), digest);
+    unsigned.review.as_mut().unwrap()["sections"][0]["fields"][0]["value"] =
+        json!("Different authority");
+    let changed_digest = hash(&unsigned);
+    assert_ne!(changed_digest, digest);
+    let rejected = env.request(
+        "admin",
+        json!({
+            "method":"resolve_rule", "proposal_id":proposal["id"],
+            "digest":changed_digest, "approve":true
+        }),
+    );
+    assert_eq!(rejected["type"], "error");
+    for method in ["rules", "permissions", "pending"] {
+        let response = env.request(
+            if method == "pending" { "admin" } else { "exec" },
+            json!({"method":method}),
+        );
+        let observed = match method {
+            "rules" => &response["rules"][0]["proposal"],
+            "permissions" => &response["permissions"]["rules"][0]["proposal"],
+            _ => &response["proposals"][0],
+        };
+        assert_eq!(observed["review"], *review);
+        assert_eq!(observed["digest"], digest);
+    }
+}
+
+#[test]
+fn changed_or_legacy_reviews_require_new_approval_after_restart() {
+    let env = TestEnv::new();
+    fs::write(
+        &env.config,
+        env.policy.replace("timeout_secs = 4", "timeout_secs = 120"),
+    )
+    .unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["type"],
+        "reloaded"
+    );
+    let mut legacy = approve(&env, "rule legacy() { run true }");
+    let mut changed = approve(&env, "rule changed() { run true }");
+    let mut pending = propose(&env, "rule pending() { run true }");
+    let unchanged = approve(&env, "rule unchanged() { run true }");
+    env.stop_daemon();
+    legacy.as_object_mut().unwrap().remove("review");
+    changed["review"]["sections"][0]["fields"][0]["value"] = json!("Old semantics");
+    pending["review"]["version"] = json!(2);
+    let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+    for proposal in [&legacy, &changed, &pending] {
+        let id = proposal["id"].as_str().unwrap();
+        let raw: String = db
+            .query_row(
+                "SELECT record FROM rule_states WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut state: Value = serde_json::from_str(&raw).unwrap();
+        state["proposal"] = proposal.clone();
+        db.execute(
+            "UPDATE rule_states SET record = ?1 WHERE id = ?2",
+            [state.to_string().as_str(), id],
+        )
+        .unwrap();
+    }
+    drop(db);
+    env.start_daemon();
+    let rules = states(&env, "exec");
+    for proposal in [&legacy, &changed, &pending] {
+        let state = rules
+            .iter()
+            .find(|s| s["proposal"]["id"] == proposal["id"])
+            .unwrap();
+        assert_eq!(state["status"], "invalidated");
+        assert!(
+            state["reason"]
+                .as_str()
+                .unwrap()
+                .contains("rule review changed or is missing")
+        );
+        assert_eq!(
+            invoke(
+                &env,
+                proposal["bound"]["rule"]["name"].as_str().unwrap(),
+                &[]
+            )["type"],
+            "error"
+        );
+        assert_eq!(resolve(&env, proposal, true, None)["type"], "error");
+    }
+    assert_eq!(invoke(&env, "unchanged", &[])["code"], 0);
+    assert_eq!(
+        rules
+            .iter()
+            .find(|s| s["proposal"]["id"] == unchanged["id"])
+            .unwrap()["proposal"]["digest"],
+        unchanged["digest"]
+    );
+}
+
+#[test]
 fn approved_clone_runs_offline_survives_restart_and_is_observable_only_to_its_caller() {
     let env = TestEnv::new();
     let root = env.owned_workdir();

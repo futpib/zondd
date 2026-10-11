@@ -6,6 +6,8 @@ use libzond::{
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
+mod review;
+
 #[derive(Clone)]
 pub struct Rules(pub BTreeMap<String, RuleState>);
 
@@ -49,6 +51,13 @@ impl Rules {
             };
             let reason = if expiry.is_some_and(|e| e <= now()) {
                 Some(("expired", "rule or proposal expired"))
+            } else if review::describe(&proposal.bound).ok().as_ref() != proposal.review.as_ref()
+                || proposal.review.is_none()
+            {
+                Some((
+                    "invalidated",
+                    "rule review changed or is missing; submit a new proposal",
+                ))
             } else if principal_revision(config, &proposal.principal)
                 .ok()
                 .as_ref()
@@ -192,6 +201,7 @@ impl Rules {
             id: uuid::Uuid::new_v4().to_string(),
             principal: principal.into(),
             source,
+            review: Some(review::describe(&bound)?),
             bound,
             digest: String::new(),
             revision: current_revision.into(),
