@@ -132,6 +132,8 @@ void main() {
       );
       await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('All'));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'deploy');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('rule-expand-proposal-1')));
@@ -196,14 +198,18 @@ void main() {
     },
   );
 
-  Map<String, dynamic> otherRule() => {
+  Map<String, dynamic> otherRule({
+    String id = 'proposal-2',
+    String title = 'clone',
+    String status = 'expired',
+  }) => {
     'proposal': {
-      'id': 'proposal-2',
+      'id': id,
       'principal': 'builder',
       'source': 'run git clone example',
       'review': {
         'version': 1,
-        'title': 'clone',
+        'title': title,
         'sections': [
           {
             'title': 'Command',
@@ -214,14 +220,18 @@ void main() {
         ],
       },
     },
-    'status': 'expired',
+    'status': status,
     'reason': 'Grant lifetime elapsed',
   };
 
   testWidgets(
-    'rules start collapsed with visible caller, status and lifetime',
+    'current rules start collapsed with active before pending and history hidden',
     (tester) async {
-      final api = RuleControl()..extraRules.add(otherRule());
+      final api = RuleControl()
+        ..extraRules.addAll([
+          otherRule(),
+          otherRule(id: 'pending', title: 'waiting', status: 'pending'),
+        ]);
       await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
       await tester.pumpAndSettle();
       expect(find.text('2 rules'), findsOneWidget);
@@ -229,7 +239,12 @@ void main() {
       expect(find.text('Caller: caller'), findsOneWidget);
       expect(find.text('Status: active'), findsOneWidget);
       expect(find.text('Valid until revoked'), findsOneWidget);
-      expect(find.text('Status: expired'), findsOneWidget);
+      expect(find.text('Status: expired'), findsNothing);
+      expect(find.text('Status: pending'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('deploy')).dy,
+        lessThan(tester.getTopLeft(find.text('waiting')).dy),
+      );
       expect(find.byType(RuleDefinition), findsNothing);
       expect(find.text('Revoke rule'), findsNothing);
       await tester.tap(find.text('deploy'));
@@ -240,6 +255,19 @@ void main() {
       await tester.tap(find.text('deploy'));
       await tester.pumpAndSettle();
       expect(find.byType(RuleDefinition), findsNothing);
+      await tester.tap(find.text('All'));
+      await tester.pumpAndSettle();
+      expect(find.text('3 rules'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('waiting')).dy,
+        lessThan(tester.getTopLeft(find.text('clone')).dy),
+      );
+      await tester.tap(find.text('History'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 rule'), findsOneWidget);
+      expect(find.text('Status: expired'), findsOneWidget);
+      expect(find.text('Status: active'), findsNothing);
+      expect(find.text('Status: pending'), findsNothing);
     },
   );
 
@@ -249,6 +277,15 @@ void main() {
       final api = RuleControl()..extraRules.add(otherRule());
       api.proposal['future_check'] = {'condition': 'Special constraint'};
       await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'expired');
+      await tester.pumpAndSettle();
+      expect(find.text('No rules match your search.'), findsOneWidget);
+      await tester.tap(find.text('History'));
+      await tester.pumpAndSettle();
+      expect(find.text('clone'), findsOneWidget);
+      expect(find.text('1 of 1 rules'), findsOneWidget);
+      await tester.tap(find.text('All'));
       await tester.pumpAndSettle();
       for (final query in [
         '  DEPLOY  ',
@@ -291,6 +328,8 @@ void main() {
       final api = RuleControl()..extraRules.add(otherRule());
       await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('All'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('deploy'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'clone');
@@ -312,6 +351,12 @@ void main() {
       expect(api.revokedIds, {'proposal-1'});
       expect(find.text('Status: revoked'), findsOneWidget);
       expect(find.text('Revoke rule'), findsNothing);
+      await tester.tap(find.text('Current'));
+      await tester.pumpAndSettle();
+      expect(find.byType(RuleDefinition), findsNothing);
+      await tester.tap(find.text('History'));
+      await tester.pumpAndSettle();
+      expect(find.byType(RuleDefinition), findsOneWidget);
       await tester.tap(find.byTooltip('Clear search'));
       await tester.pumpAndSettle();
       expect(find.byType(RuleDefinition), findsOneWidget);
@@ -337,6 +382,10 @@ void main() {
       await tester.tap(find.text('Revoke rule'));
       await tester.pumpAndSettle();
       expect(api.revoked, isTrue);
+      expect(find.text('No current rule proposals or grants.'), findsOneWidget);
+      expect(find.text('Status: revoked'), findsNothing);
+      await tester.tap(find.text('History'));
+      await tester.pumpAndSettle();
       expect(find.text('Status: revoked'), findsOneWidget);
     },
   );

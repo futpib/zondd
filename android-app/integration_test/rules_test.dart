@@ -220,8 +220,11 @@ void main() {
                 .single['status'],
             'revoked',
           );
-          // Revocation reorders active/history rows. Scroll back to build the
-          // updated card even when its full review is taller than the viewport.
+          expect(find.byKey(ValueKey('rule-state-$proposalId')), findsNothing);
+          await tester.tap(find.text('History'));
+          await tester.pump(const Duration(milliseconds: 300));
+          // Scroll back to the historical card if its preserved expansion is
+          // taller than the viewport.
           await tester.drag(find.byType(ListView), const Offset(0, 10000));
           await tester.pump(const Duration(milliseconds: 300));
           await visible(

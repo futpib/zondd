@@ -170,6 +170,8 @@ void main() {
           await tester.pump(const Duration(milliseconds: 100));
         }
         expect(find.byType(LinearProgressIndicator), findsNothing);
+        await tester.tap(find.text('History'));
+        await settle();
         await tester.drag(find.byType(ListView), const Offset(0, 10000));
         await settle();
         await visible(find.text('Status: revoked'));

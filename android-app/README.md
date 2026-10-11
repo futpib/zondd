@@ -87,7 +87,10 @@ Plain SSH connections do not depend on Iroh versions.
    working directory, and parameter constraints. **Approve rule**
    grants repeated invocations for the selected lifetime; it defaults to one
    hour. **Caller rules** shows collapsed summaries with caller, status, and
-   lifetime. Search names, callers, status, or any rule content, then expand a
+   lifetime. The default **Current** filter shows active rules first, followed by
+   pending proposals. Choose **History** for previous rules, or **All** to search
+   both current and historical entries. Search names, callers, status, or any
+   rule content, then expand a
    matching entry to read its source and definition or revoke its grant. See
    [caller rule syntax and semantics](../readme.md#propose-reusable-typed-rules).
 

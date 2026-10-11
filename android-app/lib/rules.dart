@@ -188,6 +188,8 @@ class RuleDefinition extends StatelessWidget {
   }
 }
 
+enum _RuleFilter { current, history, all }
+
 class RulesPage extends StatefulWidget {
   const RulesPage({super.key, required this.api});
   final ControlApi api;
@@ -198,6 +200,7 @@ class RulesPage extends StatefulWidget {
 class _RulesPageState extends State<RulesPage> {
   final search = TextEditingController();
   final expandedRules = <String>{};
+  _RuleFilter filter = _RuleFilter.current;
   List<dynamic>? rules;
   String? error;
   bool busy = false, needsRecovery = false;
@@ -283,7 +286,17 @@ class _RulesPageState extends State<RulesPage> {
   Widget build(BuildContext context) {
     final query = search.text.trim().toLowerCase();
     final all = rules ?? [];
-    final matching = all
+    final scoped = [
+      if (filter != _RuleFilter.history) ...[
+        ...all.where((state) => state['status'] == 'active'),
+        ...all.where((state) => state['status'] == 'pending'),
+      ],
+      if (filter != _RuleFilter.current)
+        ...all.where(
+          (state) => !['active', 'pending'].contains(state['status']),
+        ),
+    ];
+    final matching = scoped
         .where(
           (state) =>
               query.isEmpty || jsonAsYaml(state).toLowerCase().contains(query),
@@ -324,6 +337,25 @@ class _RulesPageState extends State<RulesPage> {
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+            child: SegmentedButton<_RuleFilter>(
+              segments: const [
+                ButtonSegment(
+                  value: _RuleFilter.current,
+                  label: Text('Current'),
+                ),
+                ButtonSegment(
+                  value: _RuleFilter.history,
+                  label: Text('History'),
+                ),
+                ButtonSegment(value: _RuleFilter.all, label: Text('All')),
+              ],
+              selected: {filter},
+              onSelectionChanged: (selection) =>
+                  setState(() => filter = selection.single),
+            ),
+          ),
           if (unavailable)
             ListTile(
               leading: const Icon(Icons.cloud_off),
@@ -344,8 +376,8 @@ class _RulesPageState extends State<RulesPage> {
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Text(
                 query.isEmpty
-                    ? '${all.length} ${all.length == 1 ? 'rule' : 'rules'}'
-                    : '${matching.length} of ${all.length} rules',
+                    ? '${scoped.length} ${scoped.length == 1 ? 'rule' : 'rules'}'
+                    : '${matching.length} of ${scoped.length} rules',
               ),
             ),
           Expanded(
@@ -353,8 +385,13 @@ class _RulesPageState extends State<RulesPage> {
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               children: [
-                if (rules?.isEmpty == true)
-                  const Text('No rule proposals or grants.')
+                if (rules != null && scoped.isEmpty && query.isEmpty)
+                  Text(switch (filter) {
+                    _RuleFilter.current =>
+                      'No current rule proposals or grants.',
+                    _RuleFilter.history => 'No historical rules.',
+                    _RuleFilter.all => 'No rule proposals or grants.',
+                  })
                 else if (rules != null && matching.isEmpty)
                   const Text('No rules match your search.'),
                 for (final raw in matching)
