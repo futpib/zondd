@@ -2,10 +2,18 @@ use libzond::rules::{BoundRule, parse, valid_repo_name};
 
 const SOURCE: &str = r#"rule clone-futpib(x: repo-name) {
   require is-dir "$HOME/code"
-  create-new "$HOME/code/$x" as dest {
+  create-new-dir "$HOME/code/$x" as dest {
     run git clone -- "https://github.com/futpib/${x}.git" "$dest"
   }
 }"#;
+
+#[test]
+fn directory_effect_keeps_the_old_spelling_as_an_alias() {
+    assert_eq!(
+        parse(SOURCE).unwrap(),
+        parse(&SOURCE.replace("create-new-dir", "create-new")).unwrap()
+    );
+}
 
 #[test]
 fn names_are_full_ascii_components_with_no_normalization() {

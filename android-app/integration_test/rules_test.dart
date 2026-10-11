@@ -75,7 +75,7 @@ void main() {
 
         final name = 'android-rule-${iroh ? 'iroh' : 'ssh'}';
         final source =
-            'rule $name(x: repo-name) {\n  create-new "${fixture['runtime']}/\$x" as dest {\n    run mkdir "\$dest"\n  }\n}';
+            'rule $name(x: repo-name) {\n  create-new-dir "${fixture['runtime']}/\$x" as dest {\n    run mkdir "\$dest"\n  }\n}';
         String? proposalId;
         try {
           final proposed = await request({

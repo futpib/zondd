@@ -34,6 +34,24 @@ fn word(word: &Word) -> String {
         .join(" + ")
 }
 
+pub(super) fn is_current(bound: &BoundRule, review: Option<&serde_json::Value>) -> bool {
+    let Ok(mut current) = describe(bound) else {
+        return false;
+    };
+    if review == Some(&current) {
+        return true;
+    }
+    // The directory effect's spelling changed, but previously reviewed semantics did not.
+    if bound.rule.create_new.is_some() {
+        for section in current["sections"].as_array_mut().unwrap() {
+            if section["title"] == "Effects" {
+                section["fields"][0]["label"] = "create-new".into();
+            }
+        }
+    }
+    review == Some(&current)
+}
+
 pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
     let rule = &bound.rule;
     let mut sections = vec![
@@ -103,7 +121,7 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
     }
     if let Some(new) = &rule.create_new {
         sections.push(section("Effects", vec![
-            field("create-new", "Publishes a directory only after exit status zero, atomically and only if the destination is still absent. Never replaces an existing file, directory or symlink. Failure or cancellation discards staging; other command side effects are not rolled back."),
+            field("create-new-dir", "Publishes a directory only after exit status zero, atomically and only if the destination is still absent. Never replaces an existing file, directory or symlink. Failure or cancellation discards staging; other command side effects are not rolled back."),
             field("Destination", word(&new.path)),
             field("Output binding", format!("${{{}}} is a private staging path on the destination filesystem, not the final destination.", new.variable)),
             field("Parent directory", "Must already exist, be trusted and contain no symlinks. Publication fails if the filesystem cannot guarantee no replacement."),
@@ -124,4 +142,37 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
         title: rule.name.clone(),
         sections,
     })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_directory_label_preserves_grants_but_changed_semantics_do_not() {
+        let bound = BoundRule {
+            rule: libzond::rules::parse(
+                r#"rule directory(x: repo-name) {
+  create-new-dir "$HOME/$x" as dest { run mkdir "$dest" }
+}"#,
+            )
+            .unwrap(),
+            home: "/home/test".into(),
+            cwd: "/tmp".into(),
+        };
+        let current = describe(&bound).unwrap();
+        assert!(is_current(&bound, Some(&current)));
+        assert!(!is_current(&bound, None));
+        let mut legacy = current;
+        let effects = legacy["sections"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|s| s["title"] == "Effects")
+            .unwrap();
+        effects["fields"][0]["label"] = "create-new".into();
+        assert!(is_current(&bound, Some(&legacy)));
+        legacy["sections"][0]["fields"][0]["value"] = "Changed authority".into();
+        assert!(!is_current(&bound, Some(&legacy)));
+    }
 }

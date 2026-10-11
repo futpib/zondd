@@ -119,11 +119,11 @@ impl Staging {
         let parent = directory(
             destination
                 .parent()
-                .context("create-new needs a child path")?,
+                .context("create-new-dir needs a child path")?,
         )?;
         let destination = destination
             .file_name()
-            .context("create-new needs a child path")?;
+            .context("create-new-dir needs a child path")?;
         absent(&parent, destination)?;
         let name = format!(".zondd-new-{}", uuid::Uuid::new_v4());
         let c_name = CString::new(name.as_str())?;
@@ -177,7 +177,7 @@ impl Staging {
         };
         if rc != 0 {
             return Err(io::Error::last_os_error())
-                .context("create-new publication failed; destination was not replaced");
+                .context("create-new-dir publication failed; destination was not replaced");
         }
         Ok(())
     }

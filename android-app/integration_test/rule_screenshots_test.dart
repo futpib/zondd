@@ -86,7 +86,7 @@ void main() {
       try {
         const source = r'''rule clone-futpib(x: repo-name) {
   require is-dir "$HOME/code"
-  create-new "$HOME/code/$x" as dest {
+  create-new-dir "$HOME/code/$x" as dest {
     run git clone -- "https://github.com/futpib/$x.git" "$dest"
   }
 }''';

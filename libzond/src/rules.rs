@@ -145,7 +145,10 @@ impl BoundRule {
             .map(|new| {
                 let path = PathBuf::from(new.path.expand(&bindings)?);
                 validate_cwd(&path)?;
-                ensure!(path.file_name().is_some(), "create-new needs a child path");
+                ensure!(
+                    path.file_name().is_some(),
+                    "create-new-dir needs a child path"
+                );
                 Ok(path)
             })
             .transpose()?;
@@ -450,9 +453,9 @@ pub fn parse(source: &str) -> Result<Rule> {
     let create_new = if p
         .tokens
         .front()
-        .is_some_and(|t| matches!(t, Token::Word(w) if w.literal() == Some("create-new")))
+        .is_some_and(|t| matches!(t, Token::Word(w) if matches!(w.literal(), Some("create-new-dir" | "create-new"))))
     {
-        p.keyword("create-new")?;
+        p.literal()?;
         let path = p.word()?;
         p.keyword("as")?;
         let variable = p.literal()?;

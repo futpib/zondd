@@ -372,7 +372,7 @@ as `clone-futpib.zond` on the caller:
 ```text
 rule clone-futpib(x: repo-name) {
   require is-dir "$HOME/code"
-  create-new "$HOME/code/$x" as dest {
+  create-new-dir "$HOME/code/$x" as dest {
     run git clone -- "https://github.com/futpib/$x.git" "$dest"
   }
 }
@@ -455,7 +455,8 @@ name and do not add raw `exec` allowlist entries. Commands retain `no_new_privs`
 and cannot request the approval-mediated sudo capability.
 
 The language supports one `run`, optional `require is-dir` and `require absent`
-checks before it, and an optional `create-new PATH as VARIABLE { ... }` block.
+checks before it, and an optional `create-new-dir PATH as VARIABLE { ... }` block.
+`create-new` remains an alias for older rule source.
 Each check occupies its own line. Parameters are positional and declared as
 `name: repo-name`; up to 16 are allowed. `repo-name` requires a full match of
 `[A-Za-z0-9][A-Za-z0-9._-]{0,99}`: bounded ASCII, no slash, leading hyphen,
@@ -472,7 +473,7 @@ names resolve through `/usr/bin:/bin` when proposed; review and execution use
 the resulting absolute path. A rule cannot substitute its executable.
 
 `require` checks run again immediately before execution. They observe state at
-that moment; another process can change it afterward. Use `create-new` for the
+that moment; another process can change it afterward. Use `create-new-dir` for the
 stronger directory-publication guarantee. It requires an absent destination
 (including no dangling symlink), creates private staging on the same filesystem,
 and binds the output variable to a staging path. On exit status zero, the command
@@ -485,7 +486,7 @@ Parent directories must already exist, be trusted, and contain no symlinks.
 As with ordinary commands, this is not filesystem isolation: the approved
 executable runs as the daemon's Unix user, can access that user's other files,
 and follows its own program configuration. For example, Git can honor URL
-rewrites in its configuration. `create-new` protects the publication performed
+rewrites in its configuration. `create-new-dir` protects the publication performed
 by zondd; it does not sandbox arbitrary writes performed by an approved program.
 Review the full command and use a separate Unix account for isolation.
 

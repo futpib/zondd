@@ -52,7 +52,7 @@ fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
     let source = r#"rule reviewed(x: repo-name) {
   require is-dir "$HOME/code"
   require absent "$HOME/code/$x"
-  create-new "$HOME/code/$x" as dest {
+  create-new-dir "$HOME/code/$x" as dest {
     run mkdir "$dest" '$x'
   }
 }"#;
@@ -94,7 +94,7 @@ fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
     );
     assert!(field("Checks", "is-dir").contains("without following symlinks"));
     assert!(field("Checks", "absent").contains("no dangling symlink"));
-    assert!(field("Effects", "create-new").contains("atomically"));
+    assert!(field("Effects", "create-new-dir").contains("atomically"));
     assert_eq!(
         field("Effects", "Destination"),
         "${HOME} + \"/code/\" + ${x}"
@@ -223,7 +223,7 @@ fn approved_clone_runs_offline_survives_restart_and_is_observable_only_to_its_ca
     let source = format!(
         r#"rule clone-local(x: repo-name) {{
   require is-dir "{root}"
-  create-new "{root}/$x" as dest {{
+  create-new-dir "{root}/$x" as dest {{
     run git clone -- "{root}/source/$x.git" "$dest"
   }}
 }}"#,
@@ -421,7 +421,7 @@ fn preconditions_are_checked_at_execution_and_existing_entries_are_never_replace
     let source = format!(
         r#"rule guarded(x: repo-name) {{
   require absent "{root}/blocked"
-  create-new "{root}/$x" as dest {{ run mkdir "$dest" }}
+  create-new-dir "{root}/$x" as dest {{ run mkdir "$dest" }}
 }}"#,
         root = root.display()
     );
@@ -451,7 +451,7 @@ fn gate(env: &TestEnv, root: &Path, outcome: &str) -> (Session, std::path::PathB
     let gate = root.join("gate");
     mkfifo(&gate, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
     let source = format!(
-        r#"rule gated() {{ create-new "{root}/target" as dest {{
+        r#"rule gated() {{ create-new-dir "{root}/target" as dest {{
   run "{probe}" create_new_gate "$dest" "{ready}" "{gate}" "{outcome}"
 }} }}"#,
         root = root.display(),

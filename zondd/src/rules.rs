@@ -51,9 +51,7 @@ impl Rules {
             };
             let reason = if expiry.is_some_and(|e| e <= now()) {
                 Some(("expired", "rule or proposal expired"))
-            } else if review::describe(&proposal.bound).ok().as_ref() != proposal.review.as_ref()
-                || proposal.review.is_none()
-            {
+            } else if !review::is_current(&proposal.bound, proposal.review.as_ref()) {
                 Some((
                     "invalidated",
                     "rule review changed or is missing; submit a new proposal",
