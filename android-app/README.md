@@ -258,6 +258,19 @@ FLUTTER=/path/to/flutter python3 android-app/scripts/capture-screenshots.py \
   --device emulator-5554 --output /tmp/zondd-screenshots
 ```
 
+For reusable rule review, grant lifetime, YAML details, and revocation:
+
+```sh
+ZONDD_ANDROID_TEST=integration_test/rule_screenshots_test.dart \
+FLUTTER=/path/to/flutter python3 android-app/scripts/capture-screenshots.py \
+  --device emulator-5554 --output /tmp/zondd-rule-screenshots
+```
+
+This submits the `clone-futpib` rule to the isolated daemon and approves and
+revokes it without invoking a clone. The final two screens use an explicitly
+labeled future-format fixture in the production approval widget to demonstrate
+the YAML fallback and enabled approval controls.
+
 To exercise QR import through real camera frames, start a disposable emulator
 with `-camera-back virtualscene`, install `qrencode` and Python Pillow
 (`qrencode python3-pil` on Ubuntu), then run:
