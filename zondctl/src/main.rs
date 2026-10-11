@@ -58,11 +58,17 @@ enum Action {
         /// Run from this directory if an exact directory rule permits it.
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Return the job ID when the command backgrounds instead of following it.
+        #[arg(long)]
+        detach: bool,
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
     },
     /// Invoke a named operation with ordered, schema-validated arguments.
     Invoke {
+        /// Return the job ID when the command backgrounds instead of following it.
+        #[arg(long)]
+        detach: bool,
         operation: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -284,14 +290,16 @@ async fn run(cli: Cli) -> Result<u8> {
         };
     }
     let request = match &cli.command {
-        Action::Exec { argv, cwd } => Request::Run {
+        Action::Exec { argv, cwd, .. } => Request::Run {
             command: Command {
                 program: argv[0].clone(),
                 args: argv[1..].to_vec(),
             },
             cwd: cwd.clone(),
         },
-        Action::Invoke { operation, args } => Request::Invoke {
+        Action::Invoke {
+            operation, args, ..
+        } => Request::Invoke {
             operation: operation.clone(),
             args: args.clone(),
         },
@@ -450,11 +458,19 @@ async fn run(cli: Cli) -> Result<u8> {
             unreachable!()
         }
     };
+    let auto_follow = matches!(
+        cli.command,
+        Action::Exec { detach: false, .. } | Action::Invoke { detach: false, .. }
+    );
+    let mut following = None;
     let mut client = cli.connect().await?;
     client.send(request).await?;
     loop {
         let event = tokio::select! {
-            r = client.next() => r?,
+            r = client.next() => match &following {
+                Some(id) => r.with_context(|| format!("following job {id}; resume with follow {id}"))?,
+                None => r?,
+            },
             _ = tokio::signal::ctrl_c() => return Ok(130),
         };
         if cli.json {
@@ -514,6 +530,31 @@ async fn run(cli: Cli) -> Result<u8> {
                 }
             }
             Event::Submitted { request_id } => {
+                if auto_follow {
+                    if !cli.json {
+                        eprintln!(
+                            "Following job {request_id}; Ctrl-C stops following, cancel stops the job"
+                        );
+                    }
+                    following = Some(request_id.clone());
+                    drop(client);
+                    let connect = async {
+                        let mut next = cli.connect().await?;
+                        next.send(Request::Follow {
+                            request_id: request_id.clone(),
+                            after: 0,
+                        })
+                        .await?;
+                        Ok::<_, anyhow::Error>(next)
+                    };
+                    client = tokio::select! {
+                        result = connect => result.with_context(|| format!(
+                            "following job {request_id}; resume with follow {request_id}"
+                        ))?,
+                        _ = tokio::signal::ctrl_c() => return Ok(130),
+                    };
+                    continue;
+                }
                 if !cli.json {
                     eprintln!(
                         "Command continues in background; use follow, job, or cancel with this ID:"
@@ -534,7 +575,13 @@ async fn run(cli: Cli) -> Result<u8> {
                         "completed" => request
                             .result
                             .as_ref()
-                            .and_then(|r| r["code"].as_i64())
+                            .and_then(|r| {
+                                r["code"].as_i64().or_else(|| {
+                                    r["signal"]
+                                        .as_i64()
+                                        .map(|signal| signal.saturating_add(128))
+                                })
+                            })
                             .unwrap_or(128)
                             .clamp(0, 255) as u8,
                         "rejected" | "denied" => 126,
@@ -711,4 +758,26 @@ fn read_interaction(
     }
     challenge.validate_answer(&values)?;
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detach_option_does_not_consume_command_arguments() {
+        let cli = Cli::try_parse_from(["zondctl", "exec", "printf", "%s", "--detach"]).unwrap();
+        let Action::Exec { detach, argv, .. } = cli.command else {
+            panic!("expected exec")
+        };
+        assert!(!detach);
+        assert_eq!(argv, ["printf", "%s", "--detach"]);
+
+        let cli = Cli::try_parse_from(["zondctl", "invoke", "greet", "--", "--detach"]).unwrap();
+        let Action::Invoke { detach, args, .. } = cli.command else {
+            panic!("expected invoke")
+        };
+        assert!(!detach);
+        assert_eq!(args, ["--detach"]);
+    }
 }

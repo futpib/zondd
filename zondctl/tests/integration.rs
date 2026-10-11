@@ -165,7 +165,7 @@ fn ssh_long_command_backgrounds_and_can_be_followed_without_restarting() {
     let ssh = SshEnv::new();
     let result = checked(
         ssh.remote("exec")
-            .args(["--json", "exec", "/usr/bin/sleep", "3"]),
+            .args(["--json", "exec", "--detach", "/usr/bin/sleep", "3"]),
         0,
     );
     let submitted: libzondtest::serde_json::Value =

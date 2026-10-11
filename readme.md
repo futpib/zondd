@@ -217,14 +217,23 @@ zondctl --principal monitor invoke service-status slopd.service
 ```
 
 `exec` and `invoke` return the command result when it finishes within
-`command_timeout_secs`. If execution runs past that deadline, the CLI prints
-a request ID and the command keeps running under the daemon. There is no need
-to restart it. Use the same caller key or principal to inspect, follow, or
+`command_timeout_secs`. If execution runs past that deadline, the command keeps
+running under the daemon and the CLI automatically follows its retained and live
+output until completion. Both `exec` and `invoke` exit with the command's result,
+including in `--json` mode. There is no need to restart the command.
+
+Use `--detach` before the program or operation name to return the job ID when
+the command moves to the background. It still waits for approval and the daemon's
+execution deadline; commands finishing before that deadline return their result
+normally. A detached submission exits with zero to acknowledge the job, not its
+eventual result. Use the same caller key or principal to inspect, follow, or
 cancel it afterward.
 
 ```sh
 zondctl --host alice@server --identity ~/.ssh/caller exec /usr/bin/long-command --flag
 zondctl --host alice@server --identity ~/.ssh/caller exec --cwd /var/tmp /usr/bin/pwd
+zondctl --host alice@server --identity ~/.ssh/caller exec --detach /usr/bin/long-command --flag
+zondctl --host alice@server --identity ~/.ssh/caller invoke --detach system-upgrade
 zondctl --host alice@server --identity ~/.ssh/caller follow REQUEST_ID
 zondctl --host alice@server --identity ~/.ssh/caller job REQUEST_ID
 zondctl --host alice@server --identity ~/.ssh/caller cancel REQUEST_ID
@@ -233,7 +242,10 @@ zondctl --host alice@server --identity ~/.ssh/caller cancel REQUEST_ID
 
 `follow` streams retained output first, then live stdout and stderr, and exits
 with the job's result. It may be disconnected and restarted; `--after SEQUENCE`
-resumes after an output chunk sequence from `--json` mode. A gap event warns
+resumes after an output chunk sequence from `--json` mode. Automatic following
+also emits the `submitted`, output and final job events in JSON mode. Once
+following, Ctrl-C exits the CLI with status 130 and leaves the job running;
+use `cancel` to stop it. A gap event warns
 when earlier output has been discarded. `cancel` kills the job's process group.
 Once a command moves to the background, it has no wall-time timeout and
 `max_output_bytes` becomes a per-job output retention cap. Before that point,

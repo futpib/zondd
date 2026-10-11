@@ -40,6 +40,7 @@ jobs:
       - name: Test real SSH and key enrollment
         run: |
           cargo test --locked -p zondctl --test integration -- --ignored --skip iroh_ssh --skip trusted_management
+          cargo test --locked -p zondctl --test jobs -- --ignored --skip iroh_ssh
           cargo test --locked -p zondctl --test authorize -- --ignored
       - name: Prepare runner's systemd user manager
         run: |

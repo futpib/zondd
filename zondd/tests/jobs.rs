@@ -149,8 +149,14 @@ fn daemon_restart_interrupts_a_backgrounded_job_without_replaying_it() {
 fn cli_starts_and_follows_a_managed_job() {
     let env = TestEnv::new();
     let started = checked(
-        env.cli()
-            .args(["--principal", "exec", "exec", "/usr/bin/sleep", "3"]),
+        env.cli().args([
+            "--principal",
+            "exec",
+            "exec",
+            "--detach",
+            "/usr/bin/sleep",
+            "3",
+        ]),
         0,
     );
     let id = String::from_utf8(started.stdout).unwrap();

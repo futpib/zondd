@@ -34,7 +34,9 @@ jobs:
           cargo install --git https://github.com/futpib/iroh-ssh --rev "$IROH_SSH_REV" --locked iroh-ssh
       - run: cargo build --locked --workspace --bins
       - name: Test real SSH and Iroh transports
-        run: cargo test --locked -p zondctl --test integration -- --ignored --test-threads=1
+        run: |
+          cargo test --locked -p zondctl --test integration -- --ignored --test-threads=1
+          cargo test --locked -p zondctl --test jobs -- --ignored --test-threads=1
 
   android:
     runs-on: ubuntu-24.04

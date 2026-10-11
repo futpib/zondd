@@ -104,6 +104,9 @@ fn main() {
                 std::thread::sleep(Duration::from_secs(3));
             }
             eprintln!("late");
+            if let Some(code) = args.get(3) {
+                std::process::exit(code.parse().unwrap());
+            }
         }
         "large" => {
             std::io::stdout().write_all(&vec![b'x'; 2048]).unwrap();
