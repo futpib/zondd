@@ -147,9 +147,11 @@ saved policy when started. Changing `runtime_dir` still requires a restart.
 Restart/stop cancel active work.
 The policy overview shows the saved callers, ordered rules, and named operations.
 **Edit TOML** keeps validation and saving visible while editing; unsaved drafts
-survive tab changes, validation errors, and stale-save errors. Command arguments
-in approvals are individually JSON-quoted so boundaries and control characters
-remain visible; the display is not a shell command to copy and execute.
+survive tab changes, validation errors, and stale-save errors. Structured data in approvals, password challenges, policy summaries, history and
+activity is displayed as YAML. Commands show an explicit executable and argument
+list, preserving argument boundaries, scalar types and visible control characters.
+In policy rules, `args: null` means any arguments; `args: []` means no arguments.
+Command output remains the original text, and the policy editor uses TOML.
 
 The **History** tab keeps every request outcome, including rejection, denial,
 expiry, cancellation and interruption. Details show command/context, output,

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'control.dart';
 import 'ui.dart';
+import 'json_yaml.dart';
 
 const activeStatuses = {
   'received',
@@ -28,14 +29,8 @@ String statusLabel(String status) => switch (status) {
 String timestamp(dynamic value) => DateTime.fromMillisecondsSinceEpoch(
   value as int,
 ).toLocal().toString().split('.').first;
-String commandText(Map<String, dynamic> record) {
-  final command = record['command'] as Map?;
-  if (command == null) return jsonEncode(record['input']);
-  return [
-    jsonEncode(command['program']),
-    ...(command['args'] as List).map(jsonEncode),
-  ].join(' ');
-}
+String commandText(Map<String, dynamic> record) =>
+    jsonAsYaml(record['command'] ?? record['input']);
 
 IconData statusIcon(String status) => switch (status) {
   'completed' => Icons.check_circle_outline,
@@ -262,10 +257,7 @@ class ActionTile extends StatelessWidget {
       children: [
         Align(
           alignment: Alignment.centerLeft,
-          child: SelectableText(
-            const JsonEncoder.withIndent('  ').convert(action['detail']),
-            style: mono,
-          ),
+          child: SelectableText(jsonAsYaml(action['detail']), style: mono),
         ),
       ],
     ),
@@ -510,10 +502,7 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
             SelectableText(commandText(r), style: mono),
             if (r['cwd'] != null) ...[
               const SizedBox(height: 12),
-              SelectableText(
-                'Working directory: ${jsonEncode(r['cwd'])}',
-                style: mono,
-              ),
+              SelectableText(jsonAsYaml({'cwd': r['cwd']}), style: mono),
             ],
             const SizedBox(height: 12),
             Text(r['reason'] as String),
@@ -606,22 +595,12 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
             ),
             ExpansionTile(
               title: const Text('Original request'),
-              children: [
-                SelectableText(
-                  const JsonEncoder.withIndent('  ').convert(r['input']),
-                  style: mono,
-                ),
-              ],
+              children: [SelectableText(jsonAsYaml(r['input']), style: mono)],
             ),
             if (result != null)
               ExpansionTile(
                 title: const Text('Raw result'),
-                children: [
-                  SelectableText(
-                    const JsonEncoder.withIndent('  ').convert(result),
-                    style: mono,
-                  ),
-                ],
+                children: [SelectableText(jsonAsYaml(result), style: mono)],
               ),
             const SizedBox(height: 24),
             Text('Activity', style: Theme.of(context).textTheme.titleLarge),

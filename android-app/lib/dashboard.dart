@@ -1,12 +1,12 @@
 import 'policy_overview.dart';
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:toml/toml.dart';
 import 'control.dart';
 import 'ui.dart';
 import 'history.dart';
 import 'rules.dart';
+import 'json_yaml.dart';
 
 class Dashboard extends StatefulWidget {
   const Dashboard({
@@ -555,10 +555,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 color: Theme.of(context).colorScheme.surface,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: SelectableText(
-                [jsonEncode(program), ...arguments.map(jsonEncode)].join(' '),
-                style: mono,
-              ),
+              child: SelectableText(jsonAsYaml(command), style: mono),
             ),
             const SizedBox(height: 12),
             Text(
@@ -589,17 +586,14 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Exact arguments'),
-                  subtitle: SelectableText(
-                    const JsonEncoder.withIndent('  ').convert(arguments),
-                    style: mono,
-                  ),
+                  subtitle: SelectableText(jsonAsYaml(arguments), style: mono),
                 ),
                 if (request['cwd'] != null)
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Working directory'),
                     subtitle: SelectableText(
-                      jsonEncode(request['cwd']),
+                      jsonAsYaml(request['cwd']),
                       style: mono,
                     ),
                   ),
@@ -653,13 +647,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
             const SizedBox(height: 8),
             Text('${challenge['principal']} · ${challenge['operation']}'),
             const SizedBox(height: 8),
-            SelectableText(
-              [
-                jsonEncode(command['program']),
-                ...(command['args'] as List).map(jsonEncode),
-              ].join(' '),
-              style: mono,
-            ),
+            SelectableText(jsonAsYaml(command), style: mono),
             const SizedBox(height: 8),
             Text(challenge['prompt'] as String),
             const SizedBox(height: 12),
@@ -970,7 +958,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                               contentPadding: EdgeInsets.zero,
                               title: const Text('Working directory'),
                               subtitle: SelectableText(
-                                '${entry.value['cwd']}',
+                                jsonAsYaml(entry.value['cwd']),
                                 style: mono,
                               ),
                             ),
@@ -997,9 +985,21 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                                     context,
                                   ).textTheme.labelMedium,
                                 ),
-                                subtitle: SelectableText(
-                                  '${rule['program']}\n${rule.containsKey('args') ? jsonEncode(rule['args']) : 'Any arguments'}\nWorking directory: ${rule['cwd'] ?? entry.value['cwd']}',
-                                  style: mono,
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (!rule.containsKey('args'))
+                                      const Text('Any arguments'),
+                                    SelectableText(
+                                      jsonAsYaml({
+                                        'program': rule['program'],
+                                        'args': rule['args'],
+                                        'cwd':
+                                            rule['cwd'] ?? entry.value['cwd'],
+                                      }),
+                                      style: mono,
+                                    ),
+                                  ],
                                 ),
                               ),
                           ],
@@ -1023,11 +1023,10 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                                     .toUpperCase(),
                               ),
                               subtitle: SelectableText(
-                                [
-                                  jsonEncode(entry.value['program']),
-                                  ...(entry.value['fixed_args'] as List? ?? [])
-                                      .map(jsonEncode),
-                                ].join(' '),
+                                jsonAsYaml({
+                                  'program': entry.value['program'],
+                                  'fixed_args': entry.value['fixed_args'] ?? [],
+                                }),
                                 style: mono,
                               ),
                             ),
@@ -1037,7 +1036,9 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                                 contentPadding: EdgeInsets.zero,
                                 title: Text('${argument['name']}'),
                                 subtitle: Text(
-                                  'Choices: ${(argument['choices'] as List? ?? []).map(jsonEncode).join(', ')}',
+                                  jsonAsYaml({
+                                    'choices': argument['choices'] ?? [],
+                                  }),
                                 ),
                               ),
                           ],
