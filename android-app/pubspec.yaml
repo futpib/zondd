@@ -20,6 +20,8 @@ dependencies:
   crypto: ^3.0.7
   toml: ^0.18.0
   flutter_zxing: ^2.2.1
+  yaml: ^3.1.4
+  yaml_edit: ^2.2.4
 
 dev_dependencies:
   flutter_test:
@@ -28,7 +30,6 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   integration_test:
     sdk: flutter
-  yaml: ^3.1.4
 
 flutter:
 

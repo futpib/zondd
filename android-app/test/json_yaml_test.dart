@@ -47,7 +47,7 @@ void main() {
             'list': [true, 'true'],
           },
         }),
-        '"nested":\n  "list":\n    - true\n    - "true"\n',
+        'nested:\n  list:\n    - true\n    - "true"',
       );
     },
   );
@@ -72,13 +72,27 @@ void main() {
       final value = {for (final text in strings) text: text};
       final yaml = jsonAsYaml(value);
       expect(loadYaml(yaml), equals(value));
-      expect(yaml, contains(r'\u0085'));
-      expect(yaml, contains(r'\u2028'));
+      expect(yaml, contains(r'\N'));
+      expect(yaml, contains(r'\L'));
       expect(yaml, contains(r'\u202e'));
       expect(yaml, isNot(contains('\u0085')));
       expect(yaml, isNot(contains('\u202e')));
     },
   );
+
+  test('ordinary strings are plain and multiline source uses a block', () {
+    const source = 'rule clone(x: repo-name) {\n  run git clone "\$x"\n}';
+    final value = {
+      'name': 'clone-futpib',
+      'source': source,
+      'args': ['clone', '--', 'https://github.com/futpib/zondd.git'],
+    };
+    final yaml = jsonAsYaml(value);
+    expect(yaml, contains('name: clone-futpib\n'));
+    expect(yaml, contains('source: |-\n'));
+    expect(yaml, contains('args:\n  - clone\n  - --\n'));
+    expect(loadYaml(yaml), equals(value));
+  });
 
   test(
     'arbitrary JSON trees round-trip through YAML without losing fields',
