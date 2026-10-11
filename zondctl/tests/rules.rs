@@ -200,4 +200,73 @@ fn ssh_caller_proposals_and_rule_introspection_use_the_authenticated_principal()
         0,
     ));
     assert_eq!(permissions["permissions"]["rules"][0]["status"], "active");
+    checked(
+        ssh.remote("ops")
+            .args(["withdraw", proposal["id"].as_str().unwrap()]),
+        125,
+    );
+    let withdrawn = parse(checked(
+        ssh.remote("exec")
+            .args(["--json", "withdraw", proposal["id"].as_str().unwrap()]),
+        0,
+    ));
+    assert_eq!(withdrawn["rule"]["status"], "withdrawn");
+    assert_eq!(withdrawn["rule"]["proposal"], proposal);
+    checked(
+        ssh.remote("exec")
+            .args(["invoke", "echo-rule", "after-withdrawal"]),
+        125,
+    );
+}
+
+#[test]
+#[ignore = "requires OpenSSH client/server and iroh-ssh"]
+fn iroh_caller_can_withdraw_a_pending_proposal_and_submit_its_replacement() {
+    let ssh = SshEnv::new();
+    fs::write(
+        &ssh.env.config,
+        ssh.env
+            .policy
+            .replace("timeout_secs = 4", "timeout_secs = 60"),
+    )
+    .unwrap();
+    checked(ssh.env.cli().arg("reload"), 0);
+    let endpoint = ssh.start_iroh();
+    let remote = |principal: &str| {
+        let mut command = std::process::Command::new(&ssh.env.ctl);
+        command
+            .arg("--host")
+            .arg(format!("{}@{endpoint}", ssh.env.user.name))
+            .arg("--iroh")
+            .arg("--identity")
+            .arg(ssh.env.dir.path().join(format!("{principal}-key")))
+            .arg("--ssh-config")
+            .arg(&ssh.config)
+            .arg("--json");
+        command
+    };
+    let proposal =
+        parse(checked(remote("exec").args(["propose-rule", RULE]), 0))["proposal"].clone();
+    let id = proposal["id"].as_str().unwrap();
+    checked(remote("ops").args(["withdraw", id]), 125);
+    let withdrawn = parse(checked(remote("exec").args(["withdraw", id]), 0));
+    assert_eq!(withdrawn["rule"]["status"], "withdrawn");
+    assert_eq!(withdrawn["rule"]["proposal"], proposal);
+    let replacement =
+        parse(checked(remote("exec").args(["propose-rule", RULE]), 0))["proposal"].clone();
+    assert_ne!(replacement["id"], proposal["id"]);
+    checked(
+        remote("exec").args(["withdraw", replacement["id"].as_str().unwrap()]),
+        0,
+    );
+    let audit = ssh
+        .env
+        .request("admin", json!({"method":"actions","limit":100}));
+    assert!(
+        audit["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["action"] == "rule_withdrawn" && a["detail"]["proposal"] == proposal)
+    );
 }

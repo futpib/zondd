@@ -53,6 +53,9 @@ pub enum Request {
     Cancel {
         request_id: String,
     },
+    Withdraw {
+        id: String,
+    },
     ListOperations,
     Permissions {},
     Check {

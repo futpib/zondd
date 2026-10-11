@@ -81,6 +81,10 @@ enum Action {
     Cancel {
         id: String,
     },
+    /// Withdraw your request or rule proposal by ID, preserving its audit history.
+    Withdraw {
+        id: String,
+    },
     /// Submit a reusable rule for admin approval; quote inline source to preserve $variables.
     ProposeRule {
         #[arg(required_unless_present = "file", conflicts_with = "file")]
@@ -285,6 +289,7 @@ async fn run(cli: Cli) -> Result<u8> {
         Action::Cancel { id } => Request::Cancel {
             request_id: id.clone(),
         },
+        Action::Withdraw { id } => Request::Withdraw { id: id.clone() },
         Action::ProposeRule { source, file } => {
             let source = if let Some(path) = file {
                 use std::io::Read;

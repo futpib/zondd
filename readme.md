@@ -385,6 +385,7 @@ zondctl --host alice@server --identity ~/.ssh/caller propose-rule --file clone-f
 zondctl --host alice@server --identity ~/.ssh/caller rules
 zondctl --host alice@server --identity ~/.ssh/caller check invoke clone-futpib zondd
 zondctl --host alice@server --identity ~/.ssh/caller invoke clone-futpib zondd
+zondctl --host alice@server --identity ~/.ssh/caller withdraw PROPOSAL_ID
 ```
 
 Inline proposals also work as one quoted argument; preserve `$variables` from
@@ -406,6 +407,22 @@ produce an explanation before any executable starts.
 The rules response has its own revision; `permissions` and `check` return
 `rules_revision` alongside the existing config revision, so callers can detect
 grant changes even when TOML is unchanged.
+
+Callers can use `zondctl withdraw ID` with their own command request ID or rule
+proposal ID. Pending rules leave the approval queue, and approved rules lose
+permission for future invocations. Both remain visible with status `withdrawn`;
+the rule name can then be proposed again. Already admitted invocations continue
+unless their command request is withdrawn separately. Commands awaiting approval,
+waiting for capacity, or running (including background jobs) are cancelled using
+the existing process-group cleanup. Completed work cannot be undone or withdrawn.
+
+Withdrawal is scoped to the authenticated principal, including its other assigned
+keys, and never deletes history. The original command or rule source, compiled
+definition, review, digest and prior approval records remain available. The daemon
+records withdrawal intent and commits the state change and timestamped audit event
+before removing authority or cancelling work. If that write fails, withdrawal
+fails without changing the submission. Administrators can inspect `rule_withdrawn`
+and `request_withdrawn` in `zondctl actions`; command details also retain the event.
 
 On the receiving host, `zondctl review` and the Android approval screen display
 rule proposals separately from one-time command requests. Review includes the

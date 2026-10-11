@@ -903,6 +903,18 @@ fn cancel_job_with_reason(
     reason: &str,
 ) -> Result<Event> {
     let mut active = state.active.lock().unwrap();
+    let event = cancel_job_locked(&mut active, principal, id, reason, "request_cancelled")?;
+    state.changed.send_replace(());
+    Ok(event)
+}
+
+fn cancel_job_locked(
+    active: &mut Active,
+    principal: Option<&str>,
+    id: &str,
+    reason: &str,
+    action: &str,
+) -> Result<Event> {
     ensure!(!active.stopping, "daemon stopping");
     let mut record = active.history.get(id)?;
     ensure!(
@@ -913,12 +925,13 @@ fn cancel_job_with_reason(
     let abort = active.jobs.get(id).cloned().context("job is not running")?;
     record.status = "cancelled".into();
     record.reason = reason.into();
-    active
-        .history
-        .record(&mut record, "request_cancelled", json!({"reason":reason}))?;
+    active.history.record(
+        &mut record,
+        action,
+        json!({"reason":reason,"principal":principal}),
+    )?;
     active.pending.remove(id);
     abort.abort();
-    state.changed.send_replace(());
     Ok(Event::Cancelled {
         request_id: id.into(),
     })
@@ -1049,6 +1062,25 @@ fn caller_query(state: &State, name: String, request: Request) -> Result<Event> 
         return Ok(reject("principal is no longer configured"));
     };
     match request {
+        Request::Withdraw { id } => {
+            ensure!(!active.stopping, "daemon stopping");
+            let event = if active.rules.0.contains_key(&id) {
+                let Active { rules, history, .. } = &mut *active;
+                Event::RuleResolved {
+                    rule: Box::new(rules.withdraw(&name, &id, history)?),
+                }
+            } else {
+                cancel_job_locked(
+                    &mut active,
+                    Some(&name),
+                    &id,
+                    "withdrawn by caller",
+                    "request_withdrawn",
+                )?
+            };
+            state.changed.send_replace(());
+            Ok(event)
+        }
         Request::ProposeRule { source } => {
             let config = active.config.clone();
             let revision = active.revision.clone();
@@ -1148,6 +1180,10 @@ fn caller_query(state: &State, name: String, request: Request) -> Result<Event> 
 
 fn prepare(state: &State, record: &mut RequestRecord) -> Result<Option<Event>> {
     let mut active = state.active.lock().unwrap();
+    let stored = active.history.get(&record.request_id)?;
+    if stored.is_terminal() {
+        return Ok(Some(reject(&stored.reason)));
+    }
     refresh_rules(&mut active)?;
     let config = active.config.clone();
     let Evaluation {

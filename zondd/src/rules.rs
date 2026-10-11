@@ -159,7 +159,7 @@ impl Rules {
                 .values()
                 .any(|s| s.proposal.principal == principal
                     && s.proposal.bound.rule.name == rule.name),
-            "rule already active or pending; revoke it before proposing a replacement"
+            "rule already active or pending; withdraw it before proposing a replacement"
         );
         let program = if rule.program.contains('/') {
             let path = PathBuf::from(&rule.program);
@@ -284,6 +284,25 @@ impl Rules {
         } else {
             self.0.remove(id);
         }
+        Ok(state)
+    }
+
+    pub fn withdraw(
+        &mut self,
+        principal: &str,
+        id: &str,
+        history: &mut History,
+    ) -> Result<RuleState> {
+        let mut state = self
+            .0
+            .get(id)
+            .filter(|s| s.proposal.principal == principal)
+            .context("unknown submission")?
+            .clone();
+        state.status = "withdrawn".into();
+        state.reason = "rule withdrawn by caller".into();
+        history.save_rule_states(std::slice::from_ref(&state), "rule_withdrawn")?;
+        self.0.remove(id);
         Ok(state)
     }
 
