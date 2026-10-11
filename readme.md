@@ -641,13 +641,20 @@ records on startup are marked interrupted; they are never automatically replayed
 
 ```sh
 zondctl history --limit 30
+zondctl history --query paru --limit 30
 zondctl request REQUEST_ID
 zondctl retry REQUEST_ID
 zondctl actions --limit 50
+zondctl actions --query 'approval granted'
 zondctl actions --request-id REQUEST_ID
 ```
 
 History and activity use descending sequence cursors (`--before`) for paging.
+The optional `--query` filters stored request summaries or action names/details
+before pagination, so it also finds older records. It matches literal substrings
+(ASCII case-insensitive); `%` and `_` are ordinary characters. Request searches
+include input, command, caller, directory, status and reason, but not retained
+stdout/stderr. Keep the same query when following a `next_before` cursor.
 The Android **History** tab includes all outcomes, request details, retained output,
 approval events, daemon activity and **Run again**. Run again submits the original
 structured request as a new request under the same principal's current policy;
@@ -687,8 +694,8 @@ Responses are `{ "version": 1, "ok": true, "result": ... }` or
 without requiring stdin EOF. Methods:
 
 - `pending`, `status`, `resolve` (`approval_id`, `approve`): local admin requests.
-- `history` (`before`, `limit`), `request_detail` (`request_id`), `retry`
-  (`request_id`), `actions` (`before`, `limit`, optional `request_id`): history,
+- `history` (`before`, `limit`, optional `query`), `request_detail` (`request_id`), `retry`
+  (`request_id`), `actions` (`before`, `limit`, optional `request_id` and `query`): history,
   results, resubmission and the persistent action log.
 - `read_config`: returns `path`, `content`, SHA-256 `revision`.
 - `validate_config` (`content`): parse and validate without saving.

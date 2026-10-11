@@ -99,6 +99,16 @@ available. Known formats also offer **Rule details (YAML)**. The fallback preser
 all fields and scalar types, including nested definitions and escaped control
 characters. Rejection and revocation remain available in either view.
 
+**Policy** searches caller and operation names, commands, directories, and their
+other configuration fields. Entries start collapsed and retain their expansion
+while filtering. **Saved connections** and **SSH keys** search their public labels,
+addresses, transports, providers, and fingerprints; credentials are excluded.
+**History** searches requests and activity across the daemon's stored pages,
+including command arguments, callers, status, reasons, and action details. Keep
+the query while using **Load earlier** to page through matches. This history
+search requires updated `zondd` and `zondctl` on the receiver. Command output is
+available in request details but is not included in the summary search.
+
 QR scan buttons are available beside connection targets (including quick connect),
 private keys, passphrases, passwords, and relay URLs. Scan with the camera or choose
 a QR image from the gallery. The decoded text fills the field for review; it does

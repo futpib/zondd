@@ -218,3 +218,91 @@ fn large_requests_and_long_action_trails_remain_pageable() {
     assert!(actions.iter().all(|a| a["request_id"] == id));
     drop(caller);
 }
+
+#[test]
+fn search_filters_before_pagination_and_keeps_actions_scoped() {
+    let env = TestEnv::new();
+    for text in [
+        "Old Needle",
+        "new needle",
+        "literal %_ ' λ\nquoted \"word\"",
+    ] {
+        env.request("exec", command("/usr/bin/false", &[text]));
+    }
+    for _ in 0..31 {
+        env.request("exec", command("/usr/bin/false", &["recent noise"]));
+    }
+    let page = env.request(
+        "admin",
+        json!({"method":"history","query":" NEEDLE ","limit":1}),
+    );
+    assert_eq!(
+        page["requests"][0]["input"]["command"]["args"][0],
+        "new needle"
+    );
+    let next = env.request(
+        "admin",
+        json!({"method":"history","query":"needle","limit":1,"before":page["next_before"]}),
+    );
+    assert_eq!(
+        next["requests"][0]["input"]["command"]["args"][0],
+        "Old Needle"
+    );
+    for query in ["%_", "λ\nquoted \"word\""] {
+        let page = env.request("admin", json!({"method":"history","query":query}));
+        assert_eq!(page["requests"].as_array().unwrap().len(), 1, "{page}");
+    }
+    let id = next["requests"][0]["request_id"].as_str().unwrap();
+    let actions = env.request(
+        "admin",
+        json!({"method":"actions","request_id":id,"query":"REQUEST","limit":1}),
+    );
+    assert_eq!(actions["actions"].as_array().unwrap().len(), 1, "{actions}");
+    assert_eq!(actions["actions"][0]["request_id"], id);
+    let next_actions = env.request("admin", json!({"method":"actions","request_id":id,"query":"REQUEST","before":actions["next_before"],"limit":100}));
+    assert!(!next_actions["actions"].as_array().unwrap().is_empty());
+    assert!(
+        next_actions["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["request_id"] == id)
+    );
+    let detail = env.request("admin", json!({"method":"actions","query":"OLD NEEDLE"}));
+    assert_eq!(detail["actions"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["actions"][0]["request_id"], id);
+    let named = env.request(
+        "admin",
+        json!({"method":"actions","query":"REQUEST RECEIVED"}),
+    );
+    assert!(
+        named["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["action"] == "request_received")
+    );
+    assert!(!named["actions"].as_array().unwrap().is_empty());
+    for method in ["history", "actions"] {
+        let missing = env.request(
+            "admin",
+            json!({"method":method,"query":"never-existing-search-text"}),
+        );
+        assert!(
+            missing[if method == "history" {
+                "requests"
+            } else {
+                "actions"
+            }]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+            "{missing}"
+        );
+        assert_eq!(missing["next_before"], Value::Null);
+        assert_eq!(
+            env.request("exec", json!({"method":method,"query":"needle"}))["type"],
+            "rejected"
+        );
+    }
+}

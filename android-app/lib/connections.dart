@@ -9,6 +9,7 @@ import 'identities.dart';
 import 'keys_page.dart';
 import 'qr_scan.dart';
 import 'ui.dart';
+import 'search.dart';
 
 class Target {
   const Target(this.user, this.host, this.port);
@@ -95,6 +96,7 @@ class ConnectionsPage extends StatefulWidget {
 
 class _ConnectionsPageState extends State<ConnectionsPage> {
   final store = const ProfileStore(), target = TextEditingController();
+  final search = TextEditingController();
   List<Profile> profiles = [];
   List<Identity> keys = [];
   String? keyId, error;
@@ -111,6 +113,7 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   void dispose() {
     authentication?.close();
     target.dispose();
+    search.dispose();
     super.dispose();
   }
 
@@ -364,188 +367,214 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('zond'),
-      actions: [
-        IconButton(
-          tooltip: 'SSH keys',
-          onPressed: busy ? null : manageKeys,
-          icon: const Icon(Icons.key_outlined),
-        ),
-      ],
-    ),
-    body: ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const SizedBox(height: 12),
-        TransportSelector(
-          iroh: iroh,
-          onChanged: busy ? null : (v) => setState(() => iroh = v),
-        ),
-        const SizedBox(height: 24),
-        TextField(
-          controller: target,
-          enabled: !busy,
-          autocorrect: false,
-          enableSuggestions: false,
-          decoration: InputDecoration(
-            labelText: 'Target',
-            hintText: iroh ? 'user@endpoint_id' : 'user@host:port',
-            suffixIcon: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                QrScanButton(
-                  controller: target,
-                  label: 'target',
-                  enabled: !busy,
-                  trim: true,
-                ),
-                IconButton(
-                  tooltip: 'Paste target',
-                  icon: const Icon(Icons.content_paste),
-                  onPressed: busy
-                      ? null
-                      : () async {
-                          final data = await Clipboard.getData(
-                            Clipboard.kTextPlain,
-                          );
-                          if (mounted && data != null) {
-                            target.text = data.text?.trim() ?? '';
-                          }
-                        },
-                ),
-              ],
-            ),
+  Widget build(BuildContext context) {
+    final matching = profiles
+        .where(
+          (p) => matchesSearch(search.text, [
+            p.name,
+            Target.of(p),
+            p.iroh ? 'Iroh' : 'SSH',
+          ]),
+        )
+        .toList();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('zond'),
+        actions: [
+          IconButton(
+            tooltip: 'SSH keys',
+            onPressed: busy ? null : manageKeys,
+            icon: const Icon(Icons.key_outlined),
           ),
-          onSubmitted: (_) => busy ? null : quickConnect(),
-        ),
-        const SizedBox(height: 16),
-        if (keys.isNotEmpty)
-          DropdownButtonFormField<String>(
-            key: ValueKey(keyId),
-            initialValue: keyId,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: 'Authentication',
-              prefixIcon: Icon(Icons.key_outlined),
-            ),
-            items: [
-              const DropdownMenuItem(
-                value: '',
-                child: Text('Password / no SSH key'),
-              ),
-              for (final k in keys)
-                DropdownMenuItem(
-                  value: k.id,
-                  child: Text(k.label, overflow: TextOverflow.ellipsis),
-                ),
-            ],
-            onChanged: busy ? null : (v) => setState(() => keyId = v),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 12),
+          TransportSelector(
+            iroh: iroh,
+            onChanged: busy ? null : (v) => setState(() => iroh = v),
           ),
-        if (keys.isEmpty)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.key_outlined),
-            title: const Text('Add an SSH key'),
-            subtitle: const Text('Import or generate an identity'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: busy ? null : manageKeys,
-          ),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton.icon(
-            onPressed: busy || loading || !profilesReady
-                ? null
-                : () async {
-                    Profile? p;
-                    if (target.text.trim().isNotEmpty) {
-                      try {
-                        final t = Target.parse(target.text, iroh);
-                        p = Profile(
-                          name: '',
-                          host: t.host,
-                          user: t.user,
-                          port: t.port,
-                          iroh: iroh,
-                          keyId: keyId ?? '',
-                        );
-                      } catch (e) {
-                        setState(() => error = '$e');
-                        return;
-                      }
-                    }
-                    await edit(p);
-                  },
-            icon: const Icon(Icons.tune, size: 18),
-            label: const Text('Connection options'),
-          ),
-        ),
-        if (error != null) ErrorBox(error!),
-        if (storageError != null) ErrorBox(storageError!),
-        if (storageError != null)
-          TextButton.icon(
-            onPressed: loading || busy ? null : load,
-            icon: const Icon(Icons.refresh),
-            label: const Text('Retry loading connections'),
-          ),
-        FilledButton.icon(
-          onPressed: busy || loading || !profilesReady ? null : quickConnect,
-          icon: busy
-              ? const SizedBox.square(
-                  dimension: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.arrow_forward),
-          label: Text(busy ? 'Connecting…' : 'Connect'),
-        ),
-        SectionHeading(
-          'Saved connections',
-          trailing: IconButton(
-            tooltip: 'Add connection',
-            onPressed: busy || loading || !profilesReady ? null : () => edit(),
-            icon: const Icon(Icons.add),
-          ),
-        ),
-        if (profiles.isEmpty && profilesReady)
-          const EmptyState(
-            Icons.dns_outlined,
-            'Your servers, one tap away',
-            'Connect above or add a connection with custom settings.',
-          ),
-        for (final p in profiles)
-          Card(
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 8,
-              ),
-              leading: Icon(
-                p.iroh ? Icons.cloud_outlined : Icons.computer_outlined,
-              ),
-              title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(
-                Target.of(p),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: mono.copyWith(fontSize: 12),
-              ),
-              onTap: busy ? null : () => connect(p),
-              trailing: PopupMenuButton<String>(
-                enabled: !busy && !loading && profilesReady,
-                onSelected: (v) =>
-                    v == 'edit' ? edit(p) : forget(p, v == 'key'),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'edit', child: Text('Edit')),
-                  PopupMenuItem(value: 'key', child: Text('Forget host key')),
-                  PopupMenuItem(value: 'delete', child: Text('Delete')),
+          const SizedBox(height: 24),
+          TextField(
+            controller: target,
+            enabled: !busy,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: InputDecoration(
+              labelText: 'Target',
+              hintText: iroh ? 'user@endpoint_id' : 'user@host:port',
+              suffixIcon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  QrScanButton(
+                    controller: target,
+                    label: 'target',
+                    enabled: !busy,
+                    trim: true,
+                  ),
+                  IconButton(
+                    tooltip: 'Paste target',
+                    icon: const Icon(Icons.content_paste),
+                    onPressed: busy
+                        ? null
+                        : () async {
+                            final data = await Clipboard.getData(
+                              Clipboard.kTextPlain,
+                            );
+                            if (mounted && data != null) {
+                              target.text = data.text?.trim() ?? '';
+                            }
+                          },
+                  ),
                 ],
               ),
             ),
+            onSubmitted: (_) => busy ? null : quickConnect(),
           ),
-      ],
-    ),
-  );
+          const SizedBox(height: 16),
+          if (keys.isNotEmpty)
+            DropdownButtonFormField<String>(
+              key: ValueKey(keyId),
+              initialValue: keyId,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Authentication',
+                prefixIcon: Icon(Icons.key_outlined),
+              ),
+              items: [
+                const DropdownMenuItem(
+                  value: '',
+                  child: Text('Password / no SSH key'),
+                ),
+                for (final k in keys)
+                  DropdownMenuItem(
+                    value: k.id,
+                    child: Text(k.label, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: busy ? null : (v) => setState(() => keyId = v),
+            ),
+          if (keys.isEmpty)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.key_outlined),
+              title: const Text('Add an SSH key'),
+              subtitle: const Text('Import or generate an identity'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: busy ? null : manageKeys,
+            ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: busy || loading || !profilesReady
+                  ? null
+                  : () async {
+                      Profile? p;
+                      if (target.text.trim().isNotEmpty) {
+                        try {
+                          final t = Target.parse(target.text, iroh);
+                          p = Profile(
+                            name: '',
+                            host: t.host,
+                            user: t.user,
+                            port: t.port,
+                            iroh: iroh,
+                            keyId: keyId ?? '',
+                          );
+                        } catch (e) {
+                          setState(() => error = '$e');
+                          return;
+                        }
+                      }
+                      await edit(p);
+                    },
+              icon: const Icon(Icons.tune, size: 18),
+              label: const Text('Connection options'),
+            ),
+          ),
+          if (error != null) ErrorBox(error!),
+          if (storageError != null) ErrorBox(storageError!),
+          if (storageError != null)
+            TextButton.icon(
+              onPressed: loading || busy ? null : load,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry loading connections'),
+            ),
+          FilledButton.icon(
+            onPressed: busy || loading || !profilesReady ? null : quickConnect,
+            icon: busy
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.arrow_forward),
+            label: Text(busy ? 'Connecting…' : 'Connect'),
+          ),
+          SectionHeading(
+            'Saved connections',
+            trailing: IconButton(
+              tooltip: 'Add connection',
+              onPressed: busy || loading || !profilesReady
+                  ? null
+                  : () => edit(),
+              icon: const Icon(Icons.add),
+            ),
+          ),
+          ListSearchField(
+            controller: search,
+            label: 'Search connections',
+            hint: 'Name, user, host, or transport',
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          if (profiles.isNotEmpty && matching.isEmpty)
+            const Text('No connections match your search.'),
+          if (profiles.isEmpty && profilesReady)
+            const EmptyState(
+              Icons.dns_outlined,
+              'Your servers, one tap away',
+              'Connect above or add a connection with custom settings.',
+            ),
+          for (final p in matching)
+            Card(
+              child: ListTile(
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                leading: Icon(
+                  p.iroh ? Icons.cloud_outlined : Icons.computer_outlined,
+                ),
+                title: Text(
+                  p.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  Target.of(p),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: mono.copyWith(fontSize: 12),
+                ),
+                onTap: busy ? null : () => connect(p),
+                trailing: PopupMenuButton<String>(
+                  enabled: !busy && !loading && profilesReady,
+                  onSelected: (v) =>
+                      v == 'edit' ? edit(p) : forget(p, v == 'key'),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'edit', child: Text('Edit')),
+                    PopupMenuItem(value: 'key', child: Text('Forget host key')),
+                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class ProfilePage extends StatefulWidget {

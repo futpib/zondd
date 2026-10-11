@@ -119,6 +119,34 @@ fn local_principal_runs_the_same_caller_protocol() {
 }
 
 #[test]
+fn history_search_passes_through_management_and_cli() {
+    let env = TestEnv::new();
+    env.request(
+        "exec",
+        libzondtest::command("/usr/bin/false", &["searchable-marker"]),
+    );
+    for method in ["history", "actions"] {
+        let page = control(
+            &env,
+            json!({"version":1,"method":method,"query":"searchable-marker","limit":1}),
+        );
+        assert_eq!(page["ok"], true, "{page}");
+        let rows = if method == "history" {
+            "requests"
+        } else {
+            "actions"
+        };
+        assert_eq!(page["result"][rows].as_array().unwrap().len(), 1);
+        let output = libzondtest::checked(
+            env.cli()
+                .args([method, "--query", "searchable-marker", "--limit", "1"]),
+            0,
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("searchable-marker"));
+    }
+}
+
+#[test]
 fn missing_policy_is_editable_without_creating_it_on_read() {
     let env = TestEnv::new();
     std::fs::remove_file(&env.config).unwrap();

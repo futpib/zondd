@@ -187,12 +187,21 @@ impl History {
         Ok(record)
     }
 
-    pub fn list(&self, before: Option<u64>, limit: usize) -> Result<Vec<RequestRecord>> {
-        let mut q = self.0.prepare("SELECT sequence,record FROM requests WHERE sequence < ?1 ORDER BY sequence DESC LIMIT ?2")?;
+    pub fn list(
+        &self,
+        before: Option<u64>,
+        limit: usize,
+        query: Option<&str>,
+    ) -> Result<Vec<RequestRecord>> {
+        let mut q = self.0.prepare("SELECT sequence,record FROM requests WHERE sequence < ?1
+            AND (?3 = '' OR EXISTS (SELECT 1 FROM json_tree(record) WHERE atom IS NOT NULL AND instr(lower(CAST(atom AS TEXT)), lower(?3)) > 0)
+                OR instr(CASE json_extract(record, '$.status') WHEN 'completed' THEN 'finished' WHEN 'pending' THEN 'needs approval' ELSE '' END, lower(?3)) > 0)
+            ORDER BY sequence DESC LIMIT ?2")?;
         let rows = q.query_map(
             params![
                 before.unwrap_or(i64::MAX as u64).min(i64::MAX as u64) as i64,
-                limit as i64
+                limit as i64,
+                query.unwrap_or("").trim(),
             ],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
         )?;
@@ -210,13 +219,18 @@ impl History {
         id: Option<&str>,
         before: Option<u64>,
         limit: usize,
+        query: Option<&str>,
     ) -> Result<Vec<ActionRecord>> {
-        let mut q = self.0.prepare("SELECT sequence,time,request_id,action,detail FROM actions WHERE (?1 IS NULL OR request_id=?1) AND sequence < ?2 ORDER BY sequence DESC LIMIT ?3")?;
+        let mut q = self.0.prepare("SELECT sequence,time,request_id,action,detail FROM actions WHERE (?1 IS NULL OR request_id=?1) AND sequence < ?2
+            AND (?4 = '' OR instr(lower(action || ' ' || replace(action, '_', ' ') || ' ' || coalesce(request_id, '')), lower(?4)) > 0
+                OR EXISTS (SELECT 1 FROM json_tree(detail) WHERE atom IS NOT NULL AND instr(lower(CAST(atom AS TEXT)), lower(?4)) > 0))
+            ORDER BY sequence DESC LIMIT ?3")?;
         let rows = q.query_map(
             params![
                 id,
                 before.unwrap_or(i64::MAX as u64).min(i64::MAX as u64) as i64,
-                limit as i64
+                limit as i64,
+                query.unwrap_or("").trim(),
             ],
             |r| {
                 Ok((

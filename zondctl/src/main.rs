@@ -152,6 +152,9 @@ enum Action {
         before: Option<u64>,
         #[arg(long)]
         limit: Option<usize>,
+        /// Search request summaries before pagination (literal, case-insensitive text).
+        #[arg(long)]
+        query: Option<String>,
     },
     /// Inspect a request and its action history.
     Request {
@@ -169,6 +172,9 @@ enum Action {
         before: Option<u64>,
         #[arg(long)]
         limit: Option<usize>,
+        /// Search action names and details before pagination.
+        #[arg(long)]
+        query: Option<String>,
     },
     /// Trusted management JSON over stdio; invoke through a normal SSH login.
     Control {
@@ -370,9 +376,14 @@ async fn run(cli: Cli) -> Result<u8> {
         },
         Action::Status => Request::Status,
         Action::Reload => Request::Reload { revision: None },
-        Action::History { before, limit } => Request::History {
+        Action::History {
+            before,
+            limit,
+            query,
+        } => Request::History {
             before: *before,
             limit: *limit,
+            query: query.clone(),
         },
         Action::Request { id } => Request::RequestDetail {
             request_id: id.clone(),
@@ -384,10 +395,12 @@ async fn run(cli: Cli) -> Result<u8> {
             request_id,
             before,
             limit,
+            query,
         } => Request::Actions {
             request_id: request_id.clone(),
             before: *before,
             limit: *limit,
+            query: query.clone(),
         },
         Action::Review
         | Action::Control { .. }

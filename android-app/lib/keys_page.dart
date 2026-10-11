@@ -10,6 +10,7 @@ import 'identities.dart';
 import 'open_keychain.dart';
 import 'qr_scan.dart';
 import 'ui.dart';
+import 'search.dart';
 
 class KeysPage extends StatefulWidget {
   const KeysPage({super.key});
@@ -20,12 +21,14 @@ class KeysPage extends StatefulWidget {
 class _KeysPageState extends State<KeysPage> {
   final store = IdentityStore();
   List<Identity> keys = [];
+  final search = TextEditingController();
   String? error;
   bool importingExternal = false;
   OpenKeychainOperation? importOperation;
   @override
   void dispose() {
     unawaited(importOperation?.cancel());
+    search.dispose();
     super.dispose();
   }
 
@@ -214,89 +217,112 @@ class _KeysPageState extends State<KeysPage> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('SSH keys')),
-    body: ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        Text(
-          'One key, all your servers',
-          style: Theme.of(context).textTheme.headlineSmall,
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Import or generate a local key, or use a key held by OpenKeychain. Local private keys stay encrypted on this device; external keys stay with their provider.',
-        ),
-        const SizedBox(height: 24),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () => add(true),
-                icon: const Icon(Icons.add),
-                label: const Text('Generate'),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => add(false),
-                icon: const Icon(Icons.file_download_outlined),
-                label: const Text('Import'),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        OutlinedButton.icon(
-          onPressed: importingExternal ? null : addExternal,
-          icon: const Icon(Icons.security),
-          label: Text(
-            importingExternal ? 'Opening provider…' : 'Add from OpenKeychain',
+  Widget build(BuildContext context) {
+    final matching = keys
+        .where(
+          (key) => matchesSearch(search.text, [
+            key.label,
+            key.publicKey,
+            key.fingerprint,
+          ]),
+        )
+        .toList();
+    return Scaffold(
+      appBar: AppBar(title: const Text('SSH keys')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Text(
+            'One key, all your servers',
+            style: Theme.of(context).textTheme.headlineSmall,
           ),
-        ),
-        if (importOperation != null)
-          TextButton(
-            onPressed: () => importOperation?.cancel(),
-            child: const Text('Cancel key import'),
+          const SizedBox(height: 8),
+          const Text(
+            'Import or generate a local key, or use a key held by OpenKeychain. Local private keys stay encrypted on this device; external keys stay with their provider.',
           ),
-        if (error != null) ...[const SizedBox(height: 16), ErrorBox(error!)],
-        SectionHeading('Identities · ${keys.length}'),
-        if (keys.isEmpty)
-          const EmptyState(
-            Icons.key_outlined,
-            'No SSH keys yet',
-            'Your public key goes on the server. Choose where to keep your private key.',
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () => add(true),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Generate'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => add(false),
+                  icon: const Icon(Icons.file_download_outlined),
+                  label: const Text('Import'),
+                ),
+              ),
+            ],
           ),
-        for (final key in keys)
-          Card(
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 8,
-              ),
-              leading: Icon(
-                key.externalKey == null ? Icons.key : Icons.security,
-              ),
-              title: Text(key.name),
-              subtitle: Text(
-                '${key.externalKey == null ? key.publicKey.split(' ').first : key.externalKey!.providerLabel}\n${key.fingerprint}',
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: mono.copyWith(fontSize: 11),
-              ),
-              onTap: () => publicKey(key),
-              trailing: PopupMenuButton<String>(
-                onSelected: (_) => remove(key),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'delete', child: Text('Delete')),
-                ],
-              ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: importingExternal ? null : addExternal,
+            icon: const Icon(Icons.security),
+            label: Text(
+              importingExternal ? 'Opening provider…' : 'Add from OpenKeychain',
             ),
           ),
-      ],
-    ),
-  );
+          if (importOperation != null)
+            TextButton(
+              onPressed: () => importOperation?.cancel(),
+              child: const Text('Cancel key import'),
+            ),
+          if (error != null) ...[const SizedBox(height: 16), ErrorBox(error!)],
+          SectionHeading(
+            'Identities · ${search.text.trim().isEmpty ? keys.length : '${matching.length} of ${keys.length}'}',
+          ),
+          ListSearchField(
+            controller: search,
+            label: 'Search SSH keys',
+            hint: 'Name, provider, type, or fingerprint',
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          if (keys.isNotEmpty && matching.isEmpty)
+            const Text('No SSH keys match your search.'),
+          if (keys.isEmpty)
+            const EmptyState(
+              Icons.key_outlined,
+              'No SSH keys yet',
+              'Your public key goes on the server. Choose where to keep your private key.',
+            ),
+          for (final key in matching)
+            Card(
+              key: ValueKey(key.id),
+              child: ListTile(
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                leading: Icon(
+                  key.externalKey == null ? Icons.key : Icons.security,
+                ),
+                title: Text(key.name),
+                subtitle: Text(
+                  '${key.externalKey == null ? key.publicKey.split(' ').first : key.externalKey!.providerLabel}\n${key.fingerprint}',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: mono.copyWith(fontSize: 11),
+                ),
+                onTap: () => publicKey(key),
+                trailing: PopupMenuButton<String>(
+                  onSelected: (_) => remove(key),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class AddKeyPage extends StatefulWidget {

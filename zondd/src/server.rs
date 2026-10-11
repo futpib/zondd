@@ -88,7 +88,15 @@ fn audit_request(request: &Request) -> serde_json::Value {
         } => {
             json!({"method":"credential","challenge_id":challenge_id,"provided":password.is_some()})
         }
-        _ => serde_json::to_value(request).unwrap_or_else(|_| json!({"method":"invalid"})),
+        _ => {
+            let mut value =
+                serde_json::to_value(request).unwrap_or_else(|_| json!({"method":"invalid"}));
+            // Searching must not create an audit entry containing the search text itself.
+            if matches!(request, Request::History { .. } | Request::Actions { .. }) {
+                value.as_object_mut().unwrap().remove("query");
+            }
+            value
+        }
     }
 }
 
@@ -1719,9 +1727,19 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
                 .context("daemon shutting down")?;
             receive.await.context("daemon shutting down")?
         }
-        Request::History { before, limit } => {
+        Request::History {
+            before,
+            limit,
+            query,
+        } => {
             let limit = limit.unwrap_or(30).clamp(1, 100);
-            let mut requests = state.active.lock().unwrap().history.list(before, limit)?;
+            let mut requests =
+                state
+                    .active
+                    .lock()
+                    .unwrap()
+                    .history
+                    .list(before, limit, query.as_deref())?;
             let full = requests.len() == limit;
             let trimmed = trim_page(&mut requests, serde_json::to_vec)?;
             let next_before = (full || trimmed).then(|| requests.last().unwrap().sequence);
@@ -1732,7 +1750,7 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
         }
         Request::RequestDetail { request_id } => {
             let active = state.active.lock().unwrap();
-            let mut actions = active.history.actions(Some(&request_id), None, 30)?;
+            let mut actions = active.history.actions(Some(&request_id), None, 30, None)?;
             let full = actions.len() == 30;
             let trimmed = trim_page(&mut actions, serde_json::to_vec)?;
             let next_before = (full || trimmed).then(|| actions.last().unwrap().sequence);
@@ -1746,12 +1764,14 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
             request_id,
             before,
             limit,
+            query,
         } => {
             let limit = limit.unwrap_or(50).clamp(1, 100);
             let mut actions = state.active.lock().unwrap().history.actions(
                 request_id.as_deref(),
                 before,
                 limit,
+                query.as_deref(),
             )?;
             let full = actions.len() == limit;
             let trimmed = trim_page(&mut actions, serde_json::to_vec)?;

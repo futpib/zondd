@@ -1,6 +1,7 @@
 import 'policy_overview.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'search.dart';
 import 'package:toml/toml.dart';
 import 'control.dart';
 import 'ui.dart';
@@ -64,6 +65,8 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   Map<String, String> serviceState = {};
   Map defaultPrincipals = {};
   bool applyRequired = false;
+  final policySearch = TextEditingController();
+  final expandedPolicy = <String>{};
   @override
   void initState() {
     super.initState();
@@ -78,6 +81,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     timer?.cancel();
     connection?.removeListener(connectionChanged);
     config.dispose();
+    policySearch.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -789,6 +793,18 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     final principals = parsed?['principals'] as Map? ?? defaultPrincipals;
     final operations = parsed?['operations'] as Map? ?? {};
     final approvals = parsed?['approvals'] as Map? ?? {};
+    final matchingPrincipals = principals.entries
+        .where(
+          (entry) => matchesSearch(policySearch.text, {entry.key: entry.value}),
+        )
+        .toList();
+    final matchingOperations = operations.entries
+        .where(
+          (entry) => matchesSearch(policySearch.text, {entry.key: entry.value}),
+        )
+        .toList();
+    String count(int visible, int total) =>
+        policySearch.text.trim().isEmpty ? '$total' : '$visible of $total';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -867,7 +883,17 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
               ),
             ),
           ),
-        ] else
+        ] else ...[
+          if (parsed != null && revision != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: ListSearchField(
+                controller: policySearch,
+                label: 'Search policy',
+                hint: 'Caller, operation, command, or directory',
+                onChanged: (_) => setState(() {}),
+              ),
+            ),
           Expanded(
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -936,10 +962,28 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
-                    SectionHeading('Callers · ${principals.length}'),
-                    for (final entry in principals.entries)
+                    if (policySearch.text.trim().isNotEmpty &&
+                        matchingPrincipals.isEmpty &&
+                        matchingOperations.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 16),
+                        child: Text(
+                          'No callers or operations match your search.',
+                        ),
+                      ),
+                    SectionHeading(
+                      'Callers · ${count(matchingPrincipals.length, principals.length)}',
+                    ),
+                    for (final entry in matchingPrincipals)
                       Card(
+                        key: ValueKey('policy-caller-${entry.key}'),
                         child: ExpansionTile(
+                          initiallyExpanded: expandedPolicy.contains(
+                            'caller:${entry.key}',
+                          ),
+                          onExpansionChanged: (expanded) => expanded
+                              ? expandedPolicy.add('caller:${entry.key}')
+                              : expandedPolicy.remove('caller:${entry.key}'),
                           leading: const Icon(Icons.person_outline),
                           title: Text('${entry.key}'),
                           subtitle: Text(
@@ -1005,10 +1049,19 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                           ],
                         ),
                       ),
-                    SectionHeading('Operations · ${operations.length}'),
-                    for (final entry in operations.entries)
+                    SectionHeading(
+                      'Operations · ${count(matchingOperations.length, operations.length)}',
+                    ),
+                    for (final entry in matchingOperations)
                       Card(
+                        key: ValueKey('policy-operation-${entry.key}'),
                         child: ExpansionTile(
+                          initiallyExpanded: expandedPolicy.contains(
+                            'operation:${entry.key}',
+                          ),
+                          onExpansionChanged: (expanded) => expanded
+                              ? expandedPolicy.add('operation:${entry.key}')
+                              : expandedPolicy.remove('operation:${entry.key}'),
                           leading: const Icon(Icons.terminal),
                           title: Text('${entry.key}'),
                           subtitle: Text(
@@ -1052,6 +1105,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
               ],
             ),
           ),
+        ],
       ],
     );
   }

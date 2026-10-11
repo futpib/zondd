@@ -42,6 +42,7 @@ enum Control {
     History {
         before: Option<u64>,
         limit: Option<usize>,
+        query: Option<String>,
     },
     RequestDetail {
         request_id: String,
@@ -53,6 +54,7 @@ enum Control {
         request_id: Option<String>,
         before: Option<u64>,
         limit: Option<usize>,
+        query: Option<String>,
     },
     ReadConfig {},
     ValidateConfig {
@@ -151,17 +153,27 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
             password,
         },
         Control::Status {} => Request::Status,
-        Control::History { before, limit } => Request::History { before, limit },
+        Control::History {
+            before,
+            limit,
+            query,
+        } => Request::History {
+            before,
+            limit,
+            query,
+        },
         Control::RequestDetail { request_id } => Request::RequestDetail { request_id },
         Control::Retry { request_id } => Request::Retry { request_id },
         Control::Actions {
             request_id,
             before,
             limit,
+            query,
         } => Request::Actions {
             request_id,
             before,
             limit,
+            query,
         },
         Control::ReloadConfig { revision } => Request::Reload {
             revision: Some(revision),

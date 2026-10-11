@@ -78,6 +78,8 @@ pub enum Request {
     History {
         before: Option<u64>,
         limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
     },
     RequestDetail {
         request_id: String,
@@ -89,6 +91,8 @@ pub enum Request {
         request_id: Option<String>,
         before: Option<u64>,
         limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
     },
     Audit {
         action: String,
