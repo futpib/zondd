@@ -3,7 +3,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'transport.dart';
@@ -156,18 +157,100 @@ abstract class ControlApi {
 class ConnectionLost implements Exception {
   const ConnectionLost();
   @override
-  String toString() => 'Connection lost. Reconnect to continue.';
+  String toString() => 'Connection lost.';
+}
+
+/// A transport can report an idle disconnect before another request is sent.
+abstract interface class ConnectionEvents {
+  Future<void> get done;
 }
 
 /// Keeps the dashboard and its drafts alive while replacing the transport.
 /// Requests are never retried: a lost response may hide a completed mutation.
-class ControlConnection extends ChangeNotifier implements ControlApi {
-  ControlConnection(this._api, this._connect);
+class ControlConnection extends ChangeNotifier
+    with WidgetsBindingObserver
+    implements ControlApi {
+  ControlConnection(this._api, this._connect, {this.onClose}) {
+    WidgetsBinding.instance.addObserver(this);
+    _foreground = _isForeground(WidgetsBinding.instance.lifecycleState);
+    _watch(_api!);
+  }
   ControlApi? _api;
   final Future<ControlApi> Function() _connect;
+  final VoidCallback? onClose;
   Future<void>? _reconnection;
-  bool disconnected = false, _closed = false;
+  Timer? _retry;
+  int _retrySeconds = 1;
+  int generation = 0;
+  bool disconnected = false, _closed = false, _foreground = true;
+  bool _needsAttention = false;
+  Object? reconnectError;
   bool get reconnecting => _reconnection != null;
+  String get connectionStatus {
+    if (reconnecting) return 'Reconnecting…';
+    if (_needsAttention) return '$reconnectError. Tap Reconnect to try again.';
+    return 'Connection lost. Retrying automatically…';
+  }
+
+  bool _isForeground(AppLifecycleState? state) =>
+      state == null ||
+      state == AppLifecycleState.resumed ||
+      state == AppLifecycleState.inactive;
+
+  void _watch(ControlApi api) {
+    if (api is ConnectionEvents) {
+      (api as ConnectionEvents).done.then(
+        (_) => _lost(api),
+        onError: (Object _) => _lost(api),
+      );
+    }
+  }
+
+  void _lost(ControlApi api) {
+    if (_closed || api != _api || disconnected) return;
+    disconnected = true;
+    _scheduleRetry();
+    notifyListeners();
+  }
+
+  void _scheduleRetry({bool immediate = false}) {
+    if (_closed ||
+        !_foreground ||
+        _needsAttention ||
+        reconnecting ||
+        !disconnected ||
+        _retry != null) {
+      return;
+    }
+    _retry = Timer(Duration(seconds: immediate ? 0 : _retrySeconds), () async {
+      _retry = null;
+      try {
+        await reconnect();
+      } catch (_) {
+        // reconnect records the failure and schedules the next attempt.
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = _isForeground(state);
+    if (!_foreground) {
+      _retry?.cancel();
+      _retry = null;
+    } else if (state == AppLifecycleState.resumed) {
+      _retry?.cancel();
+      _retry = null;
+      if (disconnected) {
+        _scheduleRetry(immediate: true);
+      } else {
+        // Detect a stale connection immediately after Android resumes the app.
+        request({
+          'method': 'status',
+        }).catchError((Object _) => <String, dynamic>{});
+      }
+    }
+  }
 
   @override
   Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
@@ -178,19 +261,35 @@ class ControlConnection extends ChangeNotifier implements ControlApi {
     try {
       final result = await api.request(body);
       if (_closed || api != _api) throw const ConnectionLost();
+      _retrySeconds = 1;
       return result;
     } on ConnectionLost {
-      if (!_closed && api == _api && !disconnected) {
-        disconnected = true;
-        notifyListeners();
-      }
+      _lost(api);
       rethrow;
     }
   }
 
+  bool _requiresInteraction(Object error) =>
+      error is AuthenticationCancelled ||
+      error is SSHAuthFailError ||
+      error is SSHHostkeyError ||
+      error is SSHKeyDecodeError ||
+      error is StateError ||
+      error is FormatException ||
+      error is UnsupportedError ||
+      error is PlatformException ||
+      (error is SSHInternalError && _requiresInteraction(error.error)) ||
+      (error is SSHAuthAbortError &&
+          error.reason != null &&
+          _requiresInteraction(error.reason!));
+
   Future<void> reconnect() {
     if (_closed) return Future.error(const ConnectionLost());
     if (_reconnection != null) return _reconnection!;
+    _retry?.cancel();
+    _retry = null;
+    _needsAttention = false;
+    reconnectError = null;
     final done = Completer<void>();
     _reconnection = done.future;
     disconnected = true;
@@ -207,13 +306,21 @@ class ControlConnection extends ChangeNotifier implements ControlApi {
           throw const ConnectionLost();
         }
         _api = next;
+        _watch(next);
         disconnected = false;
+        generation++;
         done.complete();
       } catch (error, stack) {
+        reconnectError = error;
+        _needsAttention = _requiresInteraction(error);
+        _retrySeconds = (_retrySeconds * 2).clamp(1, 30);
         done.completeError(error, stack);
       } finally {
         _reconnection = null;
-        if (!_closed) notifyListeners();
+        if (!_closed) {
+          _scheduleRetry();
+          notifyListeners();
+        }
       }
     }();
     return done.future;
@@ -223,9 +330,19 @@ class ControlConnection extends ChangeNotifier implements ControlApi {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    WidgetsBinding.instance.removeObserver(this);
+    _retry?.cancel();
+    _retry = null;
+    onClose?.call();
     final api = _api;
     _api = null;
     await api?.close();
+  }
+
+  @override
+  void dispose() {
+    unawaited(close());
+    super.dispose();
   }
 }
 
@@ -256,12 +373,14 @@ class AuthenticationCancelled implements Exception {
   String toString() => 'Authentication cancelled';
 }
 
-class SshControl implements ControlApi {
+class SshControl implements ControlApi, ConnectionEvents {
   SshControl._(this._ssh, this.profile, this._tunnel);
   final SSHClient _ssh;
   final Profile profile;
   final int? _tunnel;
   bool _closed = false;
+  @override
+  Future<void> get done => _ssh.done;
 
   static Future<SshControl> connect(
     Profile profile,

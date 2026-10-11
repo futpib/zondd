@@ -47,6 +47,7 @@ Map<String, dynamic> reviewDocument() => {
 
 class RuleControl implements ControlApi {
   Map<String, dynamic>? resolution;
+  int revocations = 0;
   final revokedIds = <String>{};
   final extraRules = <Map<String, dynamic>>[];
   bool get revoked => revokedIds.contains(proposal['id']);
@@ -94,6 +95,7 @@ class RuleControl implements ControlApi {
       };
     }
     if (body['method'] == 'revoke_rule') {
+      revocations++;
       revokedIds.add(body['grant_id'] as String);
       return {'type': 'rule_revoked'};
     }
@@ -101,7 +103,62 @@ class RuleControl implements ControlApi {
   }
 }
 
+class LostRevokeReply implements ControlApi {
+  LostRevokeReply(this.server);
+  final RuleControl server;
+  bool lost = false;
+  @override
+  Future<void> close() async {}
+  @override
+  Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
+    if (lost) throw const ConnectionLost();
+    final result = await server.request(body);
+    if (body['method'] == 'revoke_rule') {
+      lost = true;
+      throw const ConnectionLost();
+    }
+    return result;
+  }
+}
+
 void main() {
+  testWidgets(
+    'rules recover a lost revoke reply without losing the filter or replaying',
+    (tester) async {
+      final server = RuleControl();
+      final api = ControlConnection(
+        LostRevokeReply(server),
+        () async => server,
+      );
+      await tester.pumpWidget(MaterialApp(home: RulesPage(api: api)));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'deploy');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('rule-expand-proposal-1')));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Revoke rule'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Revoke rule'));
+      await tester.pumpAndSettle();
+      expect(api.disconnected, isTrue);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(api.disconnected, isFalse);
+      expect(server.revocations, 1);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'deploy',
+      );
+      expect(find.byType(RuleDefinition), findsOneWidget);
+      await tester.drag(find.byType(ListView), const Offset(0, 10000));
+      await tester.pumpAndSettle();
+      expect(find.text('Status: revoked'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await api.close();
+      api.dispose();
+    },
+  );
+
   testWidgets(
     'main review uses daemon definition and retains caller source in details',
     (tester) async {

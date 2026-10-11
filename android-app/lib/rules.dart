@@ -180,21 +180,46 @@ class _RulesPageState extends State<RulesPage> {
   final expandedRules = <String>{};
   List<dynamic>? rules;
   String? error;
-  bool busy = false;
+  bool busy = false, needsRecovery = false;
+  int connectionGeneration = 0;
+  ControlConnection? get connection =>
+      widget.api is ControlConnection ? widget.api as ControlConnection : null;
+  bool get unavailable => connection?.disconnected ?? false;
+  void connectionChanged() {
+    if (!mounted) return;
+    if (connection!.generation != connectionGeneration) {
+      connectionGeneration = connection!.generation;
+      needsRecovery = true;
+    }
+    setState(() {});
+    if (needsRecovery) refresh();
+  }
+
+  Future<void> reconnect() async {
+    try {
+      await connection!.reconnect();
+    } catch (e) {
+      if (mounted) setState(() => error = '$e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    connection?.addListener(connectionChanged);
     refresh();
   }
 
   @override
   void dispose() {
+    connection?.removeListener(connectionChanged);
     search.dispose();
     super.dispose();
   }
 
   Future<void> refresh() async {
-    if (busy) return;
+    if (busy || unavailable) return;
+    needsRecovery = false;
     setState(() {
       busy = true;
       error = null;
@@ -205,7 +230,10 @@ class _RulesPageState extends State<RulesPage> {
     } catch (e) {
       if (mounted) setState(() => error = '$e');
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted) {
+        setState(() => busy = false);
+        if (needsRecovery) refresh();
+      }
     }
   }
 
@@ -223,7 +251,10 @@ class _RulesPageState extends State<RulesPage> {
       if (mounted) setState(() => error = '$e');
       return;
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted) {
+        setState(() => busy = false);
+        if (needsRecovery) refresh();
+      }
     }
     if (mounted) await refresh();
   }
@@ -243,7 +274,7 @@ class _RulesPageState extends State<RulesPage> {
         title: const Text('Caller rules'),
         actions: [
           IconButton(
-            onPressed: busy ? null : refresh,
+            onPressed: busy || unavailable ? null : refresh,
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh rules',
           ),
@@ -273,7 +304,20 @@ class _RulesPageState extends State<RulesPage> {
               ),
             ),
           ),
-          if (error != null) ErrorBox(error!),
+          if (unavailable)
+            ListTile(
+              leading: const Icon(Icons.cloud_off),
+              title: Text(connection!.connectionStatus),
+              trailing: TextButton(
+                onPressed: connection!.reconnecting ? null : reconnect,
+                child: const Text('Reconnect'),
+              ),
+            ),
+          if (error != null &&
+              (!unavailable ||
+                  (error != const ConnectionLost().toString() &&
+                      error != '${connection?.reconnectError}')))
+            ErrorBox(error!),
           if (busy) const LinearProgressIndicator(),
           if (rules != null)
             Padding(
@@ -338,7 +382,7 @@ class _RulesPageState extends State<RulesPage> {
           RuleDefinition(proposal: proposal),
           if (state['status'] == 'active')
             OutlinedButton(
-              onPressed: busy ? null : () => revoke(proposal),
+              onPressed: busy || unavailable ? null : () => revoke(proposal),
               child: const Text('Revoke rule'),
             ),
         ],

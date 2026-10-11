@@ -132,7 +132,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.text('Connection lost. Reconnect to continue.'),
+        find.text('Connection lost. Retrying automatically…'),
         findsOneWidget,
       );
       for (final error in ['Server unavailable', 'Authentication cancelled']) {
@@ -145,7 +145,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('All caught up'), findsOneWidget);
       expect(
-        find.text('Connection lost. Reconnect to continue.'),
+        find.text('Connection lost. Retrying automatically…'),
         findsNothing,
       );
       await tester.pumpWidget(const SizedBox.shrink());

@@ -122,17 +122,21 @@ command; each argument is quoted separately. SSH login banners on stdout or
 startup scripts that change the login working directory can interfere; use an
 absolute executable path for the latter.
 
-If the SSH connection drops, tap **Reconnect** on the dashboard or request details to open a new
-SSH session (and a new Iroh tunnel when applicable). The same host-key checks and
-authentication prompts apply. Reconnection keeps your current tab and unsaved
-policy edits; failed or cancelled attempts can be retried. The toolbar also has
-**Reconnect** for a stalled connection. Pending approvals, service status, and
-history refresh after recovery. Actions are never replayed automatically: if a
-connection failed during an approval, save, or command, check its state before
-trying that action again. Policy recovery reads the saved server revision without
-replacing your draft. If a save succeeded but its reply was lost, subsequent edits
-can be saved normally. If someone else changed the server policy, **Save & apply**
-shows that version and asks before replacing it; cancelling preserves your draft.
+If the SSH connection drops, the app automatically opens a new SSH session (and
+Iroh tunnel when applicable). Retries start after one second and back off to at
+most 30 seconds while the app is visible; returning to the app retries immediately.
+The same host-key checks and authentication prompts apply. Cancelling authentication,
+a rejected identity, or a host-key error pauses automatic retries until you tap
+**Reconnect**. You can still reconnect manually or leave a reconnecting screen.
+
+Reconnection keeps your current screen, rule filters, and unsaved policy edits.
+Pending approvals, service status, rules, and history refresh after recovery.
+Actions are never replayed automatically: if a connection failed during an approval,
+save, or command, check its state before trying that action again. Policy recovery
+reads the saved server revision without replacing your draft. If a save succeeded
+but its reply was lost, subsequent edits can be saved normally. If someone else
+changed the server policy, **Save & apply** shows that version and asks before
+replacing it; cancelling preserves your draft.
 
 Unreadable saved-connection entries do not hide usable connections. Their raw
 records remain encrypted and are preserved when you save other connections. If

@@ -81,7 +81,7 @@ class StalledDetailControl extends ReviewControl {
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   testWidgets(
-    'detail screen reconnects after failure and cancellation without replay',
+    'detail screen recovers automatically and respects cancelled authentication',
     (tester) async {
       final old = ReviewControl(PolicyState());
       var reconnects = 0;
@@ -108,14 +108,16 @@ void main() {
       await tester.pumpAndSettle();
       expect(api.disconnected, isTrue);
       expect(
-        find.text('Connection lost. Reconnect to continue.'),
+        find.text('Connection lost. Retrying automatically…'),
         findsOneWidget,
       );
       expect(find.byTooltip('Reconnect'), findsOneWidget);
-      await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
+      await tester.pump(const Duration(seconds: 1));
       await tester.pumpAndSettle();
       expect(api.disconnected, isTrue);
       expect(find.textContaining('Authentication cancelled'), findsOneWidget);
+      await tester.pump(const Duration(minutes: 1));
+      expect(reconnects, 1);
       await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
       await tester.pumpAndSettle();
       expect(reconnects, 2);
@@ -150,7 +152,7 @@ void main() {
       expect(api.disconnected, isTrue);
       const newerDraft = '$draft# more edits after losing the save reply\n';
       await tester.enterText(find.byType(TextField), newerDraft);
-      await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
+      await tester.pump(const Duration(seconds: 1));
       await tester.pumpAndSettle();
       expect(api.disconnected, isFalse);
       await tester.tap(find.text('Save & apply'));
@@ -219,7 +221,7 @@ void main() {
     old.pending.completeError(const ConnectionLost());
     await tester.pumpAndSettle();
     expect(find.text('Run again'), findsOneWidget);
-    expect(find.text('Connection lost. Reconnect to continue.'), findsNothing);
+    expect(find.text('Connection lost. Retrying automatically…'), findsNothing);
     expect(api.disconnected, isFalse);
     await tester.pumpWidget(const SizedBox.shrink());
     await api.close();

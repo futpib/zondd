@@ -376,8 +376,20 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
       widget.api is ControlConnection ? widget.api as ControlConnection : null;
   bool get unavailable =>
       connection?.disconnected == true || connection?.reconnecting == true;
+  int connectionGeneration = 0;
+  bool needsRecovery = false;
   void connectionChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    if (unavailable) {
+      fetchGeneration++;
+      loading = false;
+    }
+    if (connection!.generation != connectionGeneration) {
+      connectionGeneration = connection!.generation;
+      needsRecovery = true;
+    }
+    setState(() {});
+    if (needsRecovery) unawaited(fetch());
   }
 
   Future<void> reconnect() async {
@@ -404,7 +416,11 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
     connection?.addListener(connectionChanged);
     fetch();
     timer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (record == null || activeStatuses.contains(record!['status'])) fetch();
+      if (needsRecovery ||
+          record == null ||
+          activeStatuses.contains(record!['status'])) {
+        fetch();
+      }
     });
   }
 
@@ -417,6 +433,7 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
 
   Future<void> fetch() async {
     if (loading || acting || unavailable) return;
+    needsRecovery = false;
     final generation = ++fetchGeneration;
     setState(() => loading = true);
     try {
@@ -553,11 +570,7 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
           if (unavailable)
             ListTile(
               leading: const Icon(Icons.cloud_off),
-              title: Text(
-                connection!.reconnecting
-                    ? 'Reconnecting…'
-                    : 'Connection lost. Reconnect to continue.',
-              ),
+              title: Text(connection!.connectionStatus),
               trailing: TextButton(
                 onPressed: acting || connection!.reconnecting
                     ? null
@@ -566,7 +579,9 @@ class _RequestDetailsPageState extends State<RequestDetailsPage> {
               ),
             ),
           if (error != null &&
-              (!unavailable || error != const ConnectionLost().toString()))
+              (!unavailable ||
+                  (error != const ConnectionLost().toString() &&
+                      error != '${connection?.reconnectError}')))
             ErrorBox(error!),
           if (acting) const LinearProgressIndicator(),
           if (r == null && error == null && !unavailable)

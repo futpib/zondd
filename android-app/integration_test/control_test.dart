@@ -141,7 +141,11 @@ void main() {
         );
         final first = await open();
         final original = await first.request({'method': 'read_config'});
-        final api = ControlConnection(LostSaveReply(first), open);
+        final allowReconnect = Completer<void>();
+        final api = ControlConnection(LostSaveReply(first), () async {
+          await allowReconnect.future;
+          return open();
+        });
         // Integration binding otherwise keeps the real IME attached. Injected
         // enterText values do not update that IME's buffer, which can send its
         // old value when the editor disables during reconnect.
@@ -190,7 +194,7 @@ void main() {
             tester.widget<TextField>(find.byType(TextField)).controller!.text,
             newer,
           );
-          await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
+          allowReconnect.complete();
           for (
             var i = 0;
             i < 400 && (api.disconnected || api.reconnecting);
@@ -245,66 +249,69 @@ void main() {
         }
       },
     );
-    testWidgets('recover a closed ${iroh ? 'Iroh' : 'SSH'} session in place', (
-      tester,
-    ) async {
-      var connections = 0;
-      Future<SshControl> open() async {
-        connections++;
-        return SshControl.connect(
-          profile(iroh),
-          (_, fp) async => fp == fixture['fingerprint'],
-        );
-      }
+    testWidgets(
+      'automatically recover a closed ${iroh ? 'Iroh' : 'SSH'} session in place',
+      (tester) async {
+        var connections = 0;
+        Future<SshControl> open() async {
+          connections++;
+          return SshControl.connect(
+            profile(iroh),
+            (_, fp) async => fp == fixture['fingerprint'],
+          );
+        }
 
-      final transport = await open();
-      final api = ControlConnection(transport, open);
-      try {
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Dashboard(api: api, name: 'Recovery'),
-          ),
-        );
-        for (
-          var i = 0;
-          i < 200 && find.text('All caught up').evaluate().isEmpty;
-          i++
-        ) {
-          await tester.pump(const Duration(milliseconds: 100));
+        final transport = await open();
+        final api = ControlConnection(transport, open);
+        try {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Dashboard(api: api, name: 'Recovery'),
+            ),
+          );
+          for (
+            var i = 0;
+            i < 200 && find.text('All caught up').evaluate().isEmpty;
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          expect(find.text('All caught up'), findsOneWidget);
+          await transport.close();
+          for (
+            var i = 0;
+            i < 200 && find.text('Reconnect').evaluate().isEmpty;
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          expect(
+            find.text('Connection lost. Retrying automatically…'),
+            findsOneWidget,
+          );
+          for (
+            var i = 0;
+            i < 400 &&
+                (api.disconnected ||
+                    find.text('All caught up').evaluate().isEmpty);
+            i++
+          ) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+          expect(api.disconnected, isFalse);
+          expect(find.text('All caught up'), findsOneWidget);
+          expect(connections, 2);
+          expect(
+            (await api.request({'method': 'pending'}))['requests'],
+            isEmpty,
+          );
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await api.close();
+          api.dispose();
         }
-        expect(find.text('All caught up'), findsOneWidget);
-        await transport.close();
-        for (
-          var i = 0;
-          i < 200 && find.text('Reconnect').evaluate().isEmpty;
-          i++
-        ) {
-          await tester.pump(const Duration(milliseconds: 100));
-        }
-        expect(
-          find.text('Connection lost. Reconnect to continue.'),
-          findsOneWidget,
-        );
-        await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
-        for (
-          var i = 0;
-          i < 400 &&
-              (api.disconnected ||
-                  find.text('All caught up').evaluate().isEmpty);
-          i++
-        ) {
-          await tester.pump(const Duration(milliseconds: 100));
-        }
-        expect(api.disconnected, isFalse);
-        expect(find.text('All caught up'), findsOneWidget);
-        expect(connections, 2);
-        expect((await api.request({'method': 'pending'}))['requests'], isEmpty);
-      } finally {
-        await tester.pumpWidget(const SizedBox.shrink());
-        await api.close();
-        api.dispose();
-      }
-    });
+      },
+    );
   }
 
   testWidgets(
@@ -645,16 +652,16 @@ void main() {
             }
             expect(find.text('Run again'), findsOneWidget);
             await api.close();
-            await tester.tap(find.byTooltip('Refresh'));
             for (var i = 0; i < 200 && !recovery.disconnected; i++) {
               await tester.pump(const Duration(milliseconds: 100));
             }
             await tester.pump();
-            await tester.tap(find.widgetWithText(TextButton, 'Reconnect'));
             for (var i = 0; i < 400 && recovery.disconnected; i++) {
               await tester.pump(const Duration(milliseconds: 100));
             }
             expect(recovery.disconnected, isFalse);
+            expect(recovery.generation, 1);
+            expect(find.text('Run again'), findsOneWidget);
             expect(
               (await recovery.request({
                 'method': 'request_detail',

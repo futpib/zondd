@@ -296,7 +296,11 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
     }
 
     try {
-      final api = ControlConnection(await open(), open);
+      final api = ControlConnection(
+        await open(),
+        open,
+        onClose: () => authentication?.close(),
+      );
       try {
         if (save &&
             !profiles.any(

@@ -29,22 +29,37 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   bool get reconnecting => connection?.reconnecting ?? false;
   bool get disconnected => connection?.disconnected ?? false;
 
+  int connectionGeneration = 0, fetchGeneration = 0;
+  bool needsRecovery = false;
   void connectionChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    if (disconnected) {
+      fetchGeneration++;
+      polling = false;
+    }
+    if (connection!.generation != connectionGeneration) {
+      connectionGeneration = connection!.generation;
+      needsRecovery = true;
+    }
+    setState(() {});
+    unawaited(recover());
   }
 
   Future<void> reconnect() async {
     if (acting || reconnecting) return;
-    await action(() async {
-      await connection!.reconnect();
-    });
-    if (!mounted || disconnected) return;
+    await action(() => connection!.reconnect());
+  }
+
+  Future<void> recover() async {
+    if (!mounted || !needsRecovery || acting || disconnected) return;
+    needsRecovery = false;
     if (tab == 0) await refresh();
     if (loadedConfig != null) {
       await action(() async {
         await reconcilePolicy();
       });
     }
+    if (!mounted || disconnected) return;
     if (tab == 1 && loadedConfig == null) await loadConfig();
     if (tab == 2) await service('status');
     if (tab == 3) await historyKey.currentState?.fetch();
@@ -98,9 +113,10 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   Future<void> refresh() async {
     if (polling || acting || disconnected || tab != 0) return;
     polling = true;
+    final generation = ++fetchGeneration;
     try {
       final result = await widget.api.request({'method': 'pending'});
-      if (mounted) {
+      if (mounted && generation == fetchGeneration) {
         setState(() {
           queue = result['requests'] as List;
           credentials = result['credentials'] as List? ?? [];
@@ -110,9 +126,11 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted && generation == fetchGeneration) {
+        setState(() => error = '$e');
+      }
     } finally {
-      polling = false;
+      if (generation == fetchGeneration) polling = false;
     }
   }
 
@@ -128,7 +146,10 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     } catch (e) {
       if (mounted) setState(() => error = '$e');
     } finally {
-      if (mounted) setState(() => acting = false);
+      if (mounted) {
+        setState(() => acting = false);
+        unawaited(recover());
+      }
     }
   }
 
@@ -302,11 +323,9 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => PopScope(
-    canPop:
-        !reconnecting && (loadedConfig == null || config.text == loadedConfig),
+    canPop: loadedConfig == null || config.text == loadedConfig,
     onPopInvokedWithResult: (didPop, _) async {
       if (!didPop &&
-          !reconnecting &&
           await confirm(
             'Discard unsaved edits?',
             'Disconnect from ${widget.name}.',
@@ -401,13 +420,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                 children: [
                   const Icon(Icons.cloud_off),
                   const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      reconnecting
-                          ? 'Reconnecting…'
-                          : 'Connection lost. Reconnect to continue.',
-                    ),
-                  ),
+                  Expanded(child: Text(connection!.connectionStatus)),
                   TextButton(
                     onPressed: acting || reconnecting ? null : reconnect,
                     child: const Text('Reconnect'),
@@ -416,7 +429,9 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
               ),
             ),
           if (error != null &&
-              (!disconnected || error != const ConnectionLost().toString()))
+              (!disconnected ||
+                  (error != const ConnectionLost().toString() &&
+                      error != '${connection?.reconnectError}')))
             ErrorBox(error!),
           if (message != null)
             Padding(
