@@ -42,6 +42,14 @@ class PasswordChangeHandler(AuthHandler):
         self._send_auth_result(username, method, result)
 
 
+# Older Paramiko versions dispatch through a static table of base-class methods.
+# Replace that entry so their server also reaches the password-change handler.
+if isinstance(AuthHandler._server_handler_table, dict):
+    PasswordChangeHandler._server_handler_table = {
+        **AuthHandler._server_handler_table,
+        paramiko.common.MSG_USERAUTH_REQUEST: PasswordChangeHandler._parse_userauth_request,
+    }
+
 paramiko.transport.AuthHandler = PasswordChangeHandler
 
 
