@@ -187,6 +187,38 @@ OS-level isolation between users is needed.
 
 ## Send operations
 
+Save a connection on the caller machine after enrolling its public key. Use the
+receiver's Unix username, address and the matching private key:
+
+```sh
+zondctl --host alice@server --identity ~/.ssh/caller connections add work-vm
+# For Iroh, supply --iroh and use the endpoint ID as the address:
+zondctl --iroh --host alice@<64-hex-endpoint-id> \
+  --identity ~/.ssh/caller connections add iroh-vm
+
+zondctl connections
+zondctl --host work-vm context
+zondctl --host work-vm permissions
+zondctl --host work-vm exec /usr/bin/uptime
+```
+
+`connections add` prints ready-to-run commands. Each named connection is an
+ordinary OpenSSH config in `$XDG_CONFIG_HOME/zondctl/connections/NAME.conf`
+(normally `~/.config/zondctl/connections/NAME.conf`). It remembers the receiver,
+username, key path, port and Iroh transport; it never copies a private key.
+Explicit `--port` and `--identity` still work. An explicit `--ssh-config`
+selects that file instead of the saved connection. Remove a local connection
+with `zondctl connections remove NAME`; use `revoke-key` on the receiver to
+revoke access.
+
+`context` resolves SSH settings without connecting and shows the receiver,
+transport, candidate identities and role. `permissions` verifies the
+authenticated principal and its policy on the receiver. With no `--host`,
+zondctl selects a **local** Unix socket: the admin socket by default, or a caller
+socket with `--principal`. It never automatically selects a saved receiver.
+
+You can also supply the connection settings on every command:
+
 ```sh
 zondctl --host alice@server --identity ~/.ssh/caller exec /usr/bin/uptime
 # With the built-in policy this waits for approval; review with zondctl review.
@@ -221,6 +253,19 @@ zondctl --principal monitor invoke service-status slopd.service
 running under the daemon and the CLI automatically follows its retained and live
 output until completion. Both `exec` and `invoke` exit with the command's result,
 including in `--json` mode. There is no need to restart the command.
+
+Human-readable lifecycle notices go to stderr: the selected receiver, a pending
+request's principal and approval expiry, an exact command to inspect it, and the
+final exit code or signal. Command stdout remains suitable for pipes. Use
+`--quiet` before the subcommand to suppress notices while retaining command
+stderr and errors, or `--json` for protocol events without human-readable notices.
+
+`request REQUEST_ID` shows your principal's request and its action history;
+`job REQUEST_ID` shows its current or final state. On older receivers that
+require admin access for `request`, the CLI suggests the equivalent `job` command.
+Commands marked **admin only** in `--help`, such as `pending`, `status`, `history`
+and `approve`, require the receiver's local admin socket or the Zond controller.
+The restricted caller key cannot perform administrative actions.
 
 Use `--detach` before the program or operation name to return the job ID when
 the command moves to the background. It still waits for approval and the daemon's
@@ -901,12 +946,15 @@ the version and ID. An optional `pending` event precedes one terminal event:
 `completed.stdout` and `.stderr` are base64 strings so arbitrary output bytes
 survive JSON transport; `code` or `signal` describes termination.
 
-Principal methods: `run`, `invoke`, `follow`, `job`, `cancel`,
+Principal methods: `run`, `invoke`, `follow`, `job`, `request_detail`, `cancel`,
 `list_operations`, `permissions`, `check`. A `run` or `invoke` that exceeds the
 execution deadline returns `submitted` with a request ID. `follow` emits
 base64 `output` events with per-job sequence numbers, optional
 `output_truncated`, then a terminal `job` event. `job` returns one status
 snapshot; `cancel` returns `cancelled`.
+`request_detail` accepts `request_id` and returns the caller principal's request
+and recent actions. Other principals' requests and unknown IDs both return
+`unknown request`; admins can inspect any request.
 The `check` body wraps a `run` or `invoke` as `input`, for example:
 
 ```json
@@ -916,8 +964,8 @@ The `check` body wraps a `run` or `invoke` as `input`, for example:
 Neither introspection method accepts a principal selector. Local admin methods:
 `pending`, `resolve` (`approval_id`, boolean `approve`), `credential`
 (`challenge_id`, nullable `password`), `status`, and
-`follow`/`job`/`cancel` for any managed job. Neither
-endpoint accepts the other endpoint's methods. Request types reject unknown
+`follow`/`job`/`cancel` for any managed job. Caller endpoints reject
+admin-only methods. Request types reject unknown
 fields. Requests are limited to 64 KiB including LF; responses to 4 MiB.
 The `pending` queue has `requests` for approvals and `credentials` for active
 sudo prompts. A null credential password rejects that prompt. The first request

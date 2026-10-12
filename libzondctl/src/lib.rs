@@ -21,6 +21,57 @@ pub struct SshOptions {
     pub iroh: bool,
 }
 
+impl SshOptions {
+    /// Build the same SSH options for execution and configuration inspection.
+    pub fn command(&self) -> Result<Command> {
+        ensure!(
+            !self.host.is_empty()
+                && !self.host.starts_with('-')
+                && !self.host.chars().any(char::is_whitespace),
+            "invalid SSH destination"
+        );
+        let mut command = Command::new("ssh");
+        command.as_std_mut().process_group(0);
+        command.args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "RequestTTY=no",
+            "-o",
+            "RemoteCommand=none",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
+        ]);
+        if let Some(path) = &self.config {
+            command.arg("-F").arg(path);
+        }
+        if let Some(path) = &self.identity {
+            command
+                .arg("-i")
+                .arg(path)
+                .args(["-o", "IdentitiesOnly=yes"]);
+        }
+        if let Some(port) = self.port {
+            command.arg("-p").arg(port.to_string());
+        }
+        if self.iroh {
+            // ProxyCommand is interpreted by a shell; never interpolate client-controlled text.
+            let endpoint = self.host.rsplit('@').next().unwrap_or_default();
+            ensure!(
+                endpoint.len() == 64 && endpoint.bytes().all(|b| b.is_ascii_hexdigit()),
+                "--iroh requires user@<64-hex endpoint ID>"
+            );
+            command.args(["-o", "ProxyCommand=iroh-ssh proxy %h"]);
+        }
+        Ok(command)
+    }
+}
+
 pub struct Client {
     read: BufReader<Pin<Box<dyn AsyncRead + Send>>>,
     write: Pin<Box<dyn AsyncWrite + Send>>,
@@ -56,50 +107,7 @@ impl Client {
     }
 
     pub fn ssh(options: &SshOptions) -> Result<Self> {
-        ensure!(
-            !options.host.is_empty()
-                && !options.host.starts_with('-')
-                && !options.host.chars().any(char::is_whitespace),
-            "invalid SSH destination"
-        );
-        let mut command = Command::new("ssh");
-        command.as_std_mut().process_group(0);
-        command.args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ClearAllForwardings=yes",
-            "-o",
-            "RequestTTY=no",
-            "-o",
-            "RemoteCommand=none",
-            "-o",
-            "ControlMaster=no",
-            "-o",
-            "ControlPath=none",
-        ]);
-        if let Some(path) = &options.config {
-            command.arg("-F").arg(path);
-        }
-        if let Some(path) = &options.identity {
-            command
-                .arg("-i")
-                .arg(path)
-                .args(["-o", "IdentitiesOnly=yes"]);
-        }
-        if let Some(port) = options.port {
-            command.arg("-p").arg(port.to_string());
-        }
-        if options.iroh {
-            // ProxyCommand is interpreted by a shell; never interpolate client-controlled text.
-            let endpoint = options.host.rsplit('@').next().unwrap_or_default();
-            ensure!(
-                endpoint.len() == 64 && endpoint.bytes().all(|b| b.is_ascii_hexdigit()),
-                "--iroh requires user@<64-hex endpoint ID>"
-            );
-            command.args(["-o", "ProxyCommand=iroh-ssh proxy %h"]);
-        }
+        let mut command = options.command()?;
         command
             .arg(&options.host)
             .stdin(Stdio::piped())

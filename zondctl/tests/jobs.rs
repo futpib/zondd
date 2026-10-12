@@ -152,6 +152,8 @@ fn automatic_follow_keeps_command_stdout_and_stderr_separate() {
         .read_to_string(&mut stderr)
         .unwrap();
     assert!(stderr.contains("Following job"), "{stderr}");
+    assert!(stderr.contains("Receiver: local socket"), "{stderr}");
+    assert!(stderr.contains("Completed: exit 7."), "{stderr}");
     assert_eq!(stderr.lines().filter(|line| *line == "late").count(), 1);
 }
 

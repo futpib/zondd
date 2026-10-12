@@ -3,10 +3,11 @@ use libzondtest::{
     nix::{pty::openpty, sys::signal::Signal},
     pipe_output, read_json, read_until,
     serde_json::json,
+    wait_for,
 };
 use std::{
     fs::File,
-    io::Write,
+    io::{Read, Write},
     process::{Command, Stdio},
     time::Duration,
 };
@@ -75,6 +76,229 @@ fn local_caller_inspects_permissions_and_checks_both_input_types() {
         assert_eq!(event.pointer(field).unwrap(), expected, "{event}");
     }
     assert!(env.queue().is_empty());
+}
+
+#[test]
+fn callers_inspect_only_their_own_request_history() {
+    let env = TestEnv::new();
+    let (mut session, approval) =
+        env.pending(command("/usr/bin/printf", &["%s", "request-details"]));
+    let id = env.queue()[0]["request_id"].as_str().unwrap().to_owned();
+    let detail = checked(
+        env.cli()
+            .args(["--principal", "exec", "--json", "request", &id]),
+        0,
+    );
+    let detail: libzondtest::serde_json::Value =
+        libzondtest::serde_json::from_slice(&detail.stdout).unwrap();
+    assert_eq!(detail["type"], "request_detail");
+    assert_eq!(detail["request"]["status"], "pending");
+    assert!(
+        detail["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["request_id"] == id)
+    );
+    for other in [&id, "does-not-exist"] {
+        let denied = checked(
+            env.cli()
+                .args(["--principal", "ops", "--json", "request", other]),
+            125,
+        );
+        let denied: libzondtest::serde_json::Value =
+            libzondtest::serde_json::from_slice(&denied.stdout).unwrap();
+        assert_eq!(denied["message"], "unknown request");
+    }
+    env.resolve(&approval, true);
+    assert_eq!(session.event()["type"], "completed");
+    let detail = checked(
+        env.cli()
+            .args(["--principal", "exec", "--json", "request", &id]),
+        0,
+    );
+    let detail: libzondtest::serde_json::Value =
+        libzondtest::serde_json::from_slice(&detail.stdout).unwrap();
+    assert_eq!(detail["request"]["status"], "completed");
+    checked(env.cli().args(["request", &id]), 0);
+}
+
+#[test]
+fn caller_admin_rejection_explains_the_available_path() {
+    let env = TestEnv::new();
+    let output = checked(env.cli().args(["--principal", "exec", "pending"]), 126);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("caller connection")
+            && stderr.contains("permissions")
+            && stderr.contains("admin socket"),
+        "{stderr}"
+    );
+    let help = checked(env.cli().arg("--help"), 0);
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(
+        help.lines()
+            .find(|line| line.trim_start().starts_with("pending "))
+            .unwrap()
+            .contains("admin only")
+    );
+}
+
+#[test]
+fn approval_notices_preserve_streams_exit_codes_and_json() {
+    let env = TestEnv::new();
+    for mode in [None, Some("--quiet"), Some("--json")] {
+        let mut command = env.cli();
+        command.args(["--principal", "exec"]);
+        if let Some(mode) = mode {
+            command.arg(mode);
+        }
+        let mut caller = Process::spawn(
+            command
+                .args([
+                    "exec",
+                    "/bin/sh",
+                    "-c",
+                    "printf raw-out; printf raw-err >&2; exit 7",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        );
+        wait_for(|| !env.queue().is_empty());
+        env.resolve(env.queue()[0]["approval_id"].as_str().unwrap(), true);
+        assert_eq!(caller.wait(Duration::from_secs(5)).code(), Some(7));
+        let mut stdout = String::new();
+        caller
+            .child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_to_string(&mut stdout)
+            .unwrap();
+        let mut stderr = String::new();
+        caller
+            .child
+            .stderr
+            .as_mut()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        if mode == Some("--json") {
+            let events: Vec<libzondtest::serde_json::Value> = stdout
+                .lines()
+                .map(|line| libzondtest::serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0]["type"], "pending");
+            assert_eq!(events[1]["type"], "completed");
+            assert_eq!(decoded(&events[1], "stdout"), b"raw-out");
+            assert_eq!(decoded(&events[1], "stderr"), b"raw-err");
+            assert!(stderr.is_empty(), "{stderr}");
+        } else {
+            assert_eq!(stdout, "raw-out");
+            if mode == Some("--quiet") {
+                assert_eq!(stderr, "raw-err");
+            } else {
+                assert!(stderr.contains("Waiting for approval in Zond"), "{stderr}");
+                assert!(stderr.contains("raw-err"), "{stderr}");
+                assert!(stderr.contains("Completed: exit 7."), "{stderr}");
+            }
+        }
+    }
+}
+
+fn saved_ssh_connection(iroh: bool) {
+    let ssh = SshEnv::new();
+    let root = ssh.env.dir.path().join("caller");
+    let mut add = if iroh {
+        let endpoint = ssh.start_iroh();
+        let mut command = Command::new(&ssh.env.ctl);
+        command
+            .arg("--host")
+            .arg(format!("{}@{endpoint}", ssh.env.user.name))
+            .arg("--iroh")
+            .arg("--identity")
+            .arg(ssh.env.dir.path().join("exec-key"))
+            .arg("--ssh-config")
+            .arg(&ssh.config);
+        command
+    } else {
+        ssh.remote("exec")
+    };
+    checked(
+        add.env("XDG_CONFIG_HOME", &root)
+            .args(["connections", "add", "test-vm"]),
+        0,
+    );
+    let mut caller = Command::new(&ssh.env.ctl);
+    caller
+        .env("XDG_CONFIG_HOME", &root)
+        .args(["--host", "test-vm"]);
+    let mut process = Process::spawn(
+        caller
+            .args(["exec", "/usr/bin/printf", "%s", "saved-approved"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
+    let prefix = read_until(process.child.stderr.as_mut().unwrap(), b"Inspect:");
+    let prefix = String::from_utf8(prefix).unwrap();
+    assert!(
+        prefix.contains("Receiver: test-vm")
+            && prefix.contains("Waiting for approval in Zond")
+            && prefix.contains("Expires in"),
+        "{prefix}"
+    );
+    let queue = ssh.env.queue();
+    let request = queue[0]["request_id"].as_str().unwrap();
+    checked(
+        Command::new(&ssh.env.ctl)
+            .env("XDG_CONFIG_HOME", &root)
+            .args(["--host", "test-vm", "job", request]),
+        0,
+    );
+    checked(
+        Command::new(&ssh.env.ctl)
+            .env("XDG_CONFIG_HOME", &root)
+            .args(["--host", "test-vm", "request", request]),
+        0,
+    );
+    ssh.env
+        .resolve(queue[0]["approval_id"].as_str().unwrap(), true);
+    assert!(process.wait(Duration::from_secs(10)).success());
+    let mut stdout = String::new();
+    process
+        .child
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    assert_eq!(stdout, "saved-approved");
+    let mut stderr = String::new();
+    process
+        .child
+        .stderr
+        .as_mut()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(
+        stderr.contains(&format!("zondctl --host test-vm job {request}"))
+            && stderr.contains("Completed: exit 0."),
+        "{stderr}"
+    );
+}
+
+#[test]
+#[ignore = "requires OpenSSH client/server"]
+fn saved_connection_submits_inspects_and_completes_over_ssh() {
+    saved_ssh_connection(false);
+}
+
+#[test]
+#[ignore = "requires OpenSSH, iroh-ssh, and working discovery/relay connectivity"]
+fn iroh_ssh_saved_connection_submits_inspects_and_completes() {
+    saved_ssh_connection(true);
 }
 
 #[test]

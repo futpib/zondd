@@ -16,6 +16,12 @@ pub fn config_path() -> PathBuf {
         .join("zondd/config.toml")
 }
 
+pub fn connections_dir() -> PathBuf {
+    dirs::config_dir()
+        .expect("could not determine the user's config directory")
+        .join("zondctl/connections")
+}
+
 /// Shared by daemon, bridge, and reviewer, including SSH sessions without XDG vars.
 pub fn runtime_dir() -> PathBuf {
     if let Some(path) = dirs::runtime_dir() {

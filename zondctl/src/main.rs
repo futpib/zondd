@@ -1,4 +1,5 @@
 mod authorize;
+mod connections;
 mod control;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -19,7 +20,7 @@ use std::{
     about = "Run SSH-authenticated operations and review zondd approvals"
 )]
 struct Cli {
-    /// SSH destination, such as automation@server or an ssh_config alias.
+    /// Saved connection name, user@server, or an ssh_config alias.
     #[arg(long, conflicts_with = "socket")]
     host: Option<String>,
     /// Use iroh-ssh as OpenSSH's ProxyCommand (host must contain the endpoint ID).
@@ -43,12 +44,22 @@ struct Cli {
     /// Print protocol events as JSON instead of command output.
     #[arg(long)]
     json: bool,
+    /// Suppress receiver and lifecycle notices; command stderr and errors remain visible.
+    #[arg(long)]
+    quiet: bool,
     #[command(subcommand)]
     command: Action,
 }
 
 #[derive(Subcommand)]
 enum Action {
+    /// List saved receivers, or add/remove a named OpenSSH connection on this machine.
+    Connections {
+        #[command(subcommand)]
+        action: Option<connections::Action>,
+    },
+    /// Show the selected receiver, transport, identities and role without connecting.
+    Context,
     /// Preview and confirm a restricted caller key in this account's authorized_keys.
     AuthorizeKey(authorize::Options),
     /// Remove one or all zondd-managed entries from this account's authorized_keys.
@@ -80,17 +91,11 @@ enum Action {
         after: u64,
     },
     /// Inspect the current or final state of a managed job.
-    Job {
-        id: String,
-    },
+    Job { id: String },
     /// Stop a managed job and its process group.
-    Cancel {
-        id: String,
-    },
+    Cancel { id: String },
     /// Withdraw your request or rule proposal by ID, preserving its audit history.
-    Withdraw {
-        id: String,
-    },
+    Withdraw { id: String },
     /// Submit a reusable rule for admin approval; quote inline source to preserve $variables.
     ProposeRule {
         #[arg(required_unless_present = "file", conflicts_with = "file")]
@@ -121,9 +126,8 @@ enum Action {
         digest: String,
     },
     /// Revoke future invocations of an approved rule (admin only).
-    RevokeRule {
-        id: String,
-    },
+    RevokeRule { id: String },
+    /// List named operations available to this caller.
     Operations,
     /// Inspect this caller's rules, named operations, approvals, and limits.
     Permissions,
@@ -132,37 +136,31 @@ enum Action {
         #[command(subcommand)]
         input: CheckAction,
     },
+    /// List requests awaiting review (admin only).
     Pending,
-    Approve {
-        id: String,
-    },
-    Deny {
-        id: String,
-    },
-    /// Answer a running operation's sudo password challenge from a terminal.
-    Credential {
-        id: String,
-    },
-    /// Reject a running operation's sudo password challenge.
-    RejectCredential {
-        id: String,
-    },
-    /// Answer an application's input form privately, or decline it with --reject.
+    /// Approve one pending command (admin only).
+    Approve { id: String },
+    /// Deny one pending command (admin only).
+    Deny { id: String },
+    /// Answer a running operation's sudo password challenge from a terminal (admin only).
+    Credential { id: String },
+    /// Reject a running operation's sudo password challenge (admin only).
+    RejectCredential { id: String },
+    /// Answer an application's input form privately, or decline it (admin only).
     Interaction {
         id: String,
         #[arg(long)]
         reject: bool,
     },
-    /// Ask an unavailable application to retry authentication.
-    RetryAdapter {
-        name: String,
-    },
-    /// Review pending commands interactively on the local admin socket.
+    /// Ask an unavailable application to retry authentication (admin only).
+    RetryAdapter { name: String },
+    /// Review pending commands interactively on the local admin socket (admin only).
     Review,
+    /// Show receiver-wide daemon state (admin only; callers can use permissions).
     Status,
-    /// Apply the daemon's saved configuration without interrupting running commands.
+    /// Apply the daemon's saved configuration without interrupting running commands (admin only).
     Reload,
-    /// Show recent requests, including completed and rejected requests.
+    /// Show recent requests, including completed and rejected requests (admin only).
     History {
         #[arg(long)]
         before: Option<u64>,
@@ -172,15 +170,11 @@ enum Action {
         #[arg(long)]
         query: Option<String>,
     },
-    /// Inspect a request and its action history.
-    Request {
-        id: String,
-    },
-    /// Submit a completed request again under current policy.
-    Retry {
-        id: String,
-    },
-    /// Show the daemon action log.
+    /// Inspect your own request and its action history; admins can inspect any request.
+    Request { id: String },
+    /// Submit a completed request again under current policy (admin only).
+    Retry { id: String },
+    /// Show the daemon action log (admin only).
     Actions {
         #[arg(long)]
         request_id: Option<String>,
@@ -216,24 +210,125 @@ enum CheckAction {
 }
 
 impl Cli {
-    async fn connect(&self) -> Result<Client> {
-        if let Some(host) = &self.host {
-            Client::ssh(&SshOptions {
-                host: host.clone(),
-                identity: self.identity.clone(),
-                port: self.port,
-                config: self.ssh_config.clone(),
-                iroh: self.iroh,
+    fn ssh_options(&self) -> Result<Option<SshOptions>> {
+        self.host
+            .as_ref()
+            .map(|host| {
+                Ok(SshOptions {
+                    host: host.clone(),
+                    identity: self.identity.clone(),
+                    port: self.port,
+                    config: match &self.ssh_config {
+                        Some(path) => Some(path.clone()),
+                        None => connections::saved(host)?,
+                    },
+                    iroh: self.iroh,
+                })
             })
-        } else {
-            Client::local(&self.socket.clone().unwrap_or_else(|| {
-                self.runtime_dir.join(format!(
-                    "{}.sock",
-                    self.principal.as_deref().unwrap_or("admin")
-                ))
-            }))
-            .await
+            .transpose()
+    }
+
+    fn local_socket(&self) -> PathBuf {
+        self.socket.clone().unwrap_or_else(|| {
+            self.runtime_dir.join(format!(
+                "{}.sock",
+                self.principal.as_deref().unwrap_or("admin")
+            ))
+        })
+    }
+
+    fn receiver(&self) -> String {
+        match &self.host {
+            Some(host) => format!("{host} (remote caller)"),
+            None => format!("local socket {}", self.local_socket().display()),
         }
+    }
+
+    fn inspect_command(&self, id: &str) -> String {
+        let mut args = vec!["zondctl".to_owned()];
+        if let Some(host) = &self.host {
+            args.extend(["--host".into(), host.clone()]);
+            if self.iroh {
+                args.push("--iroh".into());
+            }
+            if let Some(path) = &self.identity {
+                args.extend(["--identity".into(), path.display().to_string()]);
+            }
+            if let Some(port) = self.port {
+                args.extend(["--port".into(), port.to_string()]);
+            }
+            if let Some(path) = &self.ssh_config {
+                args.extend(["--ssh-config".into(), path.display().to_string()]);
+            }
+        } else {
+            args.extend(["--socket".into(), self.local_socket().display().to_string()]);
+        }
+        args.extend(["job".into(), id.into()]);
+        args.iter()
+            .map(|s| connections::quote(s))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn notices(&self) -> bool {
+        !self.json && !self.quiet
+    }
+
+    async fn connect(&self) -> Result<Client> {
+        if let Some(options) = self.ssh_options()? {
+            Client::ssh(&options)
+        } else {
+            Client::local(&self.local_socket()).await.with_context(|| format!(
+                "cannot connect to {}; for a remote receiver use --host NAME; list saved receivers with `zondctl connections`, or inspect the selection with `zondctl context`", self.receiver()
+            ))
+        }
+    }
+
+    async fn context(&self) -> Result<()> {
+        if let Some(options) = self.ssh_options()? {
+            let info = connections::describe(&options).await?;
+            if self.json {
+                println!("{}", serde_json::to_string(&info)?);
+            } else {
+                println!(
+                    "Receiver: {}\nDestination: {}\nPort: {}\nTransport: {}\nRole: {}",
+                    info.receiver, info.destination, info.port, info.transport, info.role
+                );
+                println!("Identities: {}", info.identities.join(", "));
+                if let Some(path) = info.ssh_config {
+                    println!("SSH config: {}", path.display());
+                }
+                if let Some(proxy) = info.proxy {
+                    println!("Proxy: {proxy}");
+                }
+                println!(
+                    "No connection made. Use permissions to verify the authenticated caller and policy."
+                );
+            }
+        } else {
+            let role = if self.principal.is_some() {
+                "caller"
+            } else if self.socket.is_some() {
+                "selected by socket"
+            } else {
+                "admin"
+            };
+            if self.json {
+                println!(
+                    "{}",
+                    serde_json::json!({"receiver":"local", "transport":"Unix socket", "role":role, "socket":self.local_socket(), "principal":self.principal})
+                );
+            } else {
+                println!(
+                    "Receiver: local\nSocket: {}\nTransport: Unix socket\nRole: {role}",
+                    self.local_socket().display()
+                );
+                println!(
+                    "For a remote receiver, use --host NAME. List saved receivers with `zondctl connections`."
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -249,6 +344,71 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<u8> {
+    if let Action::Connections { action } = &cli.command {
+        match action {
+            Some(connections::Action::Add { name }) => {
+                let options = SshOptions {
+                    host: cli.host.clone().context("connections add requires --host RECEIVER; optionally supply --identity, --port and --iroh before connections")?,
+                    identity: cli.identity.clone(), port: cli.port, config: cli.ssh_config.clone(), iroh: cli.iroh,
+                };
+                let path = connections::add(name, &options)?;
+                if cli.json {
+                    println!("{}", serde_json::json!({"name":name,"ssh_config":path}));
+                } else {
+                    println!(
+                        "Saved {name}: {}\nInspect: zondctl --host {name} context\nConnect: zondctl --host {name} permissions\nRun: zondctl --host {name} exec /usr/bin/uptime",
+                        path.display()
+                    );
+                }
+            }
+            Some(connections::Action::Remove { name }) => {
+                connections::remove(name)?;
+                if cli.json {
+                    println!("{}", serde_json::json!({"removed":name}));
+                } else {
+                    println!("Removed connection {name}. Receiver key authorization is unchanged.");
+                }
+            }
+            None => {
+                let mut entries = Vec::new();
+                for name in connections::names()? {
+                    entries.push(
+                        connections::describe(&SshOptions {
+                            config: connections::saved(&name)?,
+                            host: name,
+                            identity: None,
+                            port: None,
+                            iroh: false,
+                        })
+                        .await?,
+                    );
+                }
+                if cli.json {
+                    println!("{}", serde_json::to_string(&entries)?);
+                } else if entries.is_empty() {
+                    println!(
+                        "No saved connections. Save a receiver with:\n  zondctl --host USER@HOST --identity KEY connections add NAME\nAdd --iroh before connections for an Iroh endpoint ID."
+                    );
+                } else {
+                    println!("#  NAME  DESTINATION  TRANSPORT  ROLE");
+                    for (i, entry) in entries.iter().enumerate() {
+                        println!(
+                            "{}  {}  {}  {}  caller",
+                            i + 1,
+                            entry.receiver,
+                            entry.destination,
+                            entry.transport
+                        );
+                    }
+                }
+            }
+        }
+        return Ok(0);
+    }
+    if matches!(cli.command, Action::Context) {
+        cli.context().await?;
+        return Ok(0);
+    }
     if let Some(principal) = &cli.principal {
         ensure!(
             libzond::config::valid_name(principal) && principal != "admin",
@@ -451,7 +611,9 @@ async fn run(cli: Cli) -> Result<u8> {
             limit: *limit,
             query: query.clone(),
         },
-        Action::Review
+        Action::Connections { .. }
+        | Action::Context
+        | Action::Review
         | Action::Control { .. }
         | Action::AuthorizeKey(_)
         | Action::RevokeKey(_) => {
@@ -463,6 +625,14 @@ async fn run(cli: Cli) -> Result<u8> {
         Action::Exec { detach: false, .. } | Action::Invoke { detach: false, .. }
     );
     let mut following = None;
+    if cli.notices()
+        && matches!(
+            cli.command,
+            Action::Exec { .. } | Action::Invoke { .. } | Action::Follow { .. }
+        )
+    {
+        eprintln!("Receiver: {}", cli.receiver());
+    }
     let mut client = cli.connect().await?;
     client.send(request).await?;
     loop {
@@ -478,10 +648,18 @@ async fn run(cli: Cli) -> Result<u8> {
         }
         match event {
             Event::Pending { request } => {
-                if !cli.json {
+                if cli.notices() {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_millis() as u64;
+                    let seconds = request.expires_unix_ms.saturating_sub(now).div_ceil(1000);
                     eprintln!(
-                        "Request {} (principal {}): {} [approval {}]",
-                        request.request_id, request.principal, request.reason, request.approval_id
+                        "Request: {} (principal {})\nWaiting for approval in Zond. Expires in {seconds} seconds.\nApproval: {}\nReason: {}\nInspect: {}",
+                        request.request_id,
+                        request.principal,
+                        request.approval_id,
+                        request.reason,
+                        cli.inspect_command(&request.request_id)
                     );
                 }
             }
@@ -495,6 +673,13 @@ async fn run(cli: Cli) -> Result<u8> {
                     std::io::stdout().write_all(&STANDARD.decode(stdout)?)?;
                     std::io::stderr().write_all(&STANDARD.decode(stderr)?)?;
                 }
+                if cli.notices() {
+                    if let Some(signal) = signal {
+                        eprintln!("Completed: signal {signal}.");
+                    } else {
+                        eprintln!("Completed: exit {}.", code.unwrap_or(128));
+                    }
+                }
                 return Ok(code
                     .unwrap_or_else(|| 128 + signal.unwrap_or(0))
                     .clamp(0, 255) as u8);
@@ -502,6 +687,18 @@ async fn run(cli: Cli) -> Result<u8> {
             Event::Rejected { reason } => {
                 if !cli.json {
                     eprintln!("Rejected: {reason}");
+                    if reason.contains("administration is unavailable") {
+                        if let Action::Request { id } = &cli.command {
+                            eprintln!(
+                                "This receiver requires admin access for request history. Inspect your own request with: {}",
+                                cli.inspect_command(id)
+                            );
+                        } else {
+                            eprintln!(
+                                "This is a caller connection. Use permissions to inspect its policy; administrative commands require the receiver's local admin socket or the Zond controller."
+                            );
+                        }
+                    }
                 }
                 return Ok(126);
             }
@@ -531,7 +728,7 @@ async fn run(cli: Cli) -> Result<u8> {
             }
             Event::Submitted { request_id } => {
                 if auto_follow {
-                    if !cli.json {
+                    if cli.notices() {
                         eprintln!(
                             "Following job {request_id}; Ctrl-C stops following, cancel stops the job"
                         );
@@ -556,21 +753,32 @@ async fn run(cli: Cli) -> Result<u8> {
                     continue;
                 }
                 if !cli.json {
-                    eprintln!(
-                        "Command continues in background; use follow, job, or cancel with this ID:"
-                    );
+                    if cli.notices() {
+                        eprintln!(
+                            "Command continues in background; use follow, job, or cancel with this ID:"
+                        );
+                    }
                     println!("{request_id}");
                 }
                 return Ok(0);
             }
             Event::Job { request } => {
-                if !cli.json {
+                if !cli.json && (cli.notices() || matches!(cli.command, Action::Job { .. })) {
                     eprintln!(
                         "Job {}: {} ({})",
                         request.request_id, request.status, request.reason
                     );
                 }
                 if request.is_terminal() {
+                    if cli.notices()
+                        && let Some(result) = &request.result
+                    {
+                        if let Some(code) = result.get("code").and_then(|v| v.as_i64()) {
+                            eprintln!("Completed: exit {code}.");
+                        } else if let Some(signal) = result.get("signal").and_then(|v| v.as_i64()) {
+                            eprintln!("Completed: signal {signal}.");
+                        }
+                    }
                     return Ok(match request.status.as_str() {
                         "completed" => request
                             .result

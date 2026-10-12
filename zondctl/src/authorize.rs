@@ -98,6 +98,12 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn caller_setup() {
+    println!(
+        "Next, on the caller machine, save this receiver and the matching private key:\n  zondctl --host USER@HOST --identity /path/to/caller connections add NAME\nUse the receiver's Unix user for USER and its address for HOST. For Iroh, use its endpoint ID as HOST and add --iroh before connections.\nThen: zondctl --host NAME permissions\nList saved receivers: zondctl connections"
+    );
+}
+
 fn simple_word(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -385,6 +391,7 @@ pub async fn run(options: &Options) -> Result<u8> {
     }
     if before.text == after {
         println!("Key is already configured; no changes.");
+        caller_setup();
         return Ok(0);
     }
     println!("Caller: {}\nKey: {}", options.principal, public.fingerprint);
@@ -409,6 +416,7 @@ pub async fn run(options: &Options) -> Result<u8> {
             eprintln!("Key installed, but could not record management action: {result:?}");
         }
     }
+    caller_setup();
     Ok(0)
 }
 

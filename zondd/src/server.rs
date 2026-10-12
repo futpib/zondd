@@ -913,6 +913,27 @@ fn visible_job(state: &State, principal: Option<&str>, id: &str) -> Result<Reque
     Ok(record)
 }
 
+fn request_detail(state: &State, principal: Option<&str>, id: &str) -> Result<Event> {
+    let active = state.active.lock().unwrap();
+    let request = active
+        .history
+        .get(id)
+        .map_err(|_| anyhow::anyhow!("unknown request"))?;
+    ensure!(
+        principal.is_none_or(|name| name == request.principal),
+        "unknown request"
+    );
+    let mut actions = active.history.actions(Some(id), None, 30, None)?;
+    let full = actions.len() == 30;
+    let trimmed = trim_page(&mut actions, serde_json::to_vec)?;
+    let next_before = (full || trimmed).then(|| actions.last().unwrap().sequence);
+    Ok(Event::RequestDetail {
+        request: Box::new(request),
+        actions,
+        next_before,
+    })
+}
+
 fn cancel_job(state: &State, principal: Option<&str>, id: &str) -> Result<Event> {
     cancel_job_with_reason(state, principal, id, "cancelled by operator")
 }
@@ -1035,6 +1056,9 @@ async fn dispatch(
         return Ok(Event::Job {
             request: Box::new(visible_job(&state, principal.as_deref(), request_id)?),
         });
+    }
+    if let (Some(name), Request::RequestDetail { request_id }) = (&principal, &request) {
+        return request_detail(&state, Some(name), request_id);
     }
     if let Request::Cancel { request_id } = &request {
         return cancel_job(&state, principal.as_deref(), request_id);
@@ -1777,18 +1801,7 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
                 next_before,
             })
         }
-        Request::RequestDetail { request_id } => {
-            let active = state.active.lock().unwrap();
-            let mut actions = active.history.actions(Some(&request_id), None, 30, None)?;
-            let full = actions.len() == 30;
-            let trimmed = trim_page(&mut actions, serde_json::to_vec)?;
-            let next_before = (full || trimmed).then(|| actions.last().unwrap().sequence);
-            Ok(Event::RequestDetail {
-                request: Box::new(active.history.get(&request_id)?),
-                actions,
-                next_before,
-            })
-        }
+        Request::RequestDetail { request_id } => request_detail(state, None, &request_id),
         Request::Actions {
             request_id,
             before,

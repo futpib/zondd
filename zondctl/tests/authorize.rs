@@ -88,6 +88,8 @@ fn inline_public_key_is_reviewed_and_installed_without_a_file_argument() {
     assert!(String::from_utf8_lossy(&preview).contains(public.trim()));
     assert!(!keys.exists());
     terminal.write_all(b"y\n").unwrap();
+    let setup = read_until(&mut terminal, b"List saved receivers: zondctl connections");
+    assert!(String::from_utf8_lossy(&setup).contains("connections add NAME"));
     assert!(process.wait(Duration::from_secs(5)).success());
     assert!(fs::read_to_string(&keys).unwrap().contains(public.trim()));
     assert!(
