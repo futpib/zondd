@@ -8,7 +8,7 @@ use nix::{
 };
 use serde_json::{Value, json};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::{self, File, Permissions},
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
@@ -261,6 +261,7 @@ pub struct TestEnv {
     pub user: User,
     pub policy: String,
     processes: RefCell<Vec<Process>>,
+    daemon_process: Cell<usize>,
 }
 
 impl Default for TestEnv {
@@ -308,6 +309,7 @@ impl TestEnv {
             user,
             policy,
             processes: RefCell::default(),
+            daemon_process: Cell::new(0),
         };
         env.start_daemon();
         env
@@ -321,7 +323,8 @@ impl TestEnv {
         processes.len() - 1
     }
     pub fn start_daemon(&self) {
-        self.start(self.daemon_command().arg("serve"), "daemon");
+        self.daemon_process
+            .set(self.start(self.daemon_command().arg("serve"), "daemon"));
         wait_for(|| UnixStream::connect(self.runtime.join("ops.sock")).is_ok());
     }
     pub fn daemon_command(&self) -> Command {
@@ -334,10 +337,10 @@ impl TestEnv {
         cmd
     }
     pub fn stop_daemon(&self) {
-        self.processes.borrow_mut()[0].stop();
+        self.processes.borrow_mut()[self.daemon_process.get()].stop();
     }
     pub fn signal_daemon(&self, signal: Signal) {
-        self.processes.borrow()[0].signal(signal);
+        self.processes.borrow()[self.daemon_process.get()].signal(signal);
     }
     pub fn session(&self, principal: &str, body: Value) -> Session {
         Session::new(&self.runtime.join(format!("{principal}.sock")), body)
