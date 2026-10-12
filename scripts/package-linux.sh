@@ -25,5 +25,8 @@ cargo build --locked --release -p zondd -p zondctl --target "$host"
 install -Dm755 "target/$host/release/zondd" "$staging/$name/bin/zondd"
 install -Dm755 "target/$host/release/zondctl" "$staging/$name/bin/zondctl"
 install -m644 LICENSE readme.md config.example.toml zondd.service "$staging/$name/"
+install -d "$staging/$name/adapters/python"
+install -m644 adapters/readme.md adapters/credential-api-v1.schema.json "$staging/$name/adapters/"
+install -m644 adapters/python/zond_interaction.py "$staging/$name/adapters/python/"
 tar -C "$staging" -czf "$output/$name.tar.gz" "$name"
 (cd "$output" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")

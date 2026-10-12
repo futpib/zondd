@@ -42,9 +42,6 @@ enum Control {
         challenge_id: String,
         values: Option<std::collections::BTreeMap<String, SecretString>>,
     },
-    RetryAdapter {
-        adapter: String,
-    },
     Status {},
     History {
         before: Option<u64>,
@@ -132,7 +129,6 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
 
 async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Value> {
     let request = match request {
-        Control::RetryAdapter { adapter } => Request::RetryAdapter { adapter },
         Control::AnswerInteraction {
             challenge_id,
             values,

@@ -1,4 +1,4 @@
-"""Blocking client for a daemon-managed adapter's private stdin/stdout protocol.
+"""Blocking client for a service-side adapter's private stdin/stdout protocol.
 
 Keep stdout for this protocol. Never put answers in logs or exception messages.
 Application automation belongs in the adapter, not in this module.

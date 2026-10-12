@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+pub mod credential;
 use libzond::{Envelope, Event, MAX_RESPONSE_BYTES, Request, VERSION, wire};
 use std::{
     os::unix::process::CommandExt,

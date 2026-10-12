@@ -6,12 +6,15 @@ Map<String, dynamic> challenge() => {
   'challenge_id': 'one',
   'recipient': {
     'label': 'Configured Gateway',
-    'adapter': 'ibkr',
+    'name': 'ibkr',
     'session_id': 'session',
     'origin': 'configured service',
-    'command': {'program': '/opt/adapter', 'args': []},
-    'cwd': '/',
+    'identity': 'private connection key and Unix peer credentials',
+    'peer_uid': 1000,
+    'peer_pid': 123,
+    'configuration_revision': 'configured revision',
   },
+  'provider_origin': 'https://example.test',
   'prompt': 'Software-supplied prompt',
   'expires_unix_ms': DateTime.now().millisecondsSinceEpoch + 60000,
   'fields': [
@@ -62,6 +65,10 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
       expect(find.text('Configured recipient'), findsOneWidget);
+      expect(
+        find.text('Permitted provider origin: https://example.test'),
+        findsOneWidget,
+      );
       expect(find.text('Trusted server · Configured Gateway'), findsOneWidget);
       expect(find.text('Application-supplied prompt'), findsOneWidget);
       final inputs = tester
@@ -91,7 +98,7 @@ void main() {
       );
       await tester.tap(find.text('Application-supplied details (YAML)'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('example.test'), findsOneWidget);
+      expect(find.textContaining('scope: example.test'), findsOneWidget);
       expect(
         tester
             .widgetList<SelectableText>(find.byType(SelectableText))

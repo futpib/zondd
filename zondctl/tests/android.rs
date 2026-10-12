@@ -119,6 +119,26 @@ fn android_management_over_ssh_and_iroh() {
             fixture.insert(name, value);
         }
     }
+    let credential_identity = "b".repeat(64);
+    let credential_key_file = ssh.env.dir.path().join("credential-client.key");
+    fs::write(&credential_key_file, &credential_identity).unwrap();
+    fs::set_permissions(&credential_key_file, fs::Permissions::from_mode(0o600)).unwrap();
+    fixture["credentialKeyFile"] = json!(credential_key_file);
+    fixture["credentialKeyDigest"] = json!(libzond::config::revision(&credential_identity));
+    let forbidden = fixture["forbiddenLogValues"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    fixture["forbiddenLogValues"] = json!(
+        forbidden
+            .into_iter()
+            .chain([
+                json!(credential_identity),
+                json!("test-user"),
+                json!("test-application-password")
+            ])
+            .collect::<Vec<_>>()
+    );
     let definitions = ssh.env.dir.path().join("android-defines.json");
     fs::write(
         &definitions,

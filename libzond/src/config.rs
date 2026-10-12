@@ -29,7 +29,7 @@ pub struct Config {
     #[serde(default)]
     pub operations: BTreeMap<String, Operation>,
     #[serde(default)]
-    pub credential_adapters: BTreeMap<String, crate::interaction::AdapterConfig>,
+    pub credential_recipients: BTreeMap<String, crate::credential::RecipientConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -167,12 +167,17 @@ impl Config {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.credential_adapters.len() <= 16,
-            "at most 16 credential adapters"
+            self.credential_recipients.len() <= 16,
+            "at most 16 credential recipients"
         );
-        for (name, adapter) in &self.credential_adapters {
-            ensure!(valid_name(name), "invalid credential adapter name");
-            adapter.validate()?;
+        let mut identities = std::collections::BTreeSet::new();
+        for (name, recipient) in &self.credential_recipients {
+            ensure!(valid_name(name), "invalid credential recipient name");
+            recipient.validate()?;
+            ensure!(
+                identities.insert(&recipient.key_sha256),
+                "credential recipients need distinct identities"
+            );
         }
         ensure!(
             self.runtime_dir.is_absolute(),
@@ -204,7 +209,10 @@ impl Config {
         );
         for (name, p) in &self.principals {
             ensure!(valid_name(name), "invalid principal name {name}");
-            ensure!(name != "admin", "admin is a reserved principal name");
+            ensure!(
+                !matches!(name.as_str(), "admin" | "askpass" | "credential"),
+                "reserved principal name {name}"
+            );
             ensure!(p.cwd.is_absolute(), "cwd must be absolute");
             for op in &p.operations {
                 ensure!(self.operations.contains_key(op), "unknown operation {op}");

@@ -1,50 +1,9 @@
 //! Application-neutral, transient human input. All answers are treated as secrets.
 
-use crate::{Command, SecretString, config};
+use crate::{SecretString, config};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf};
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AdapterConfig {
-    pub label: String,
-    pub program: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    pub cwd: PathBuf,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-}
-
-impl AdapterConfig {
-    pub fn command(&self) -> Command {
-        Command {
-            program: self.program.clone(),
-            args: self.args.clone(),
-        }
-    }
-
-    pub fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.label.trim().is_empty()
-                && self.label.len() <= 200
-                && !self.label.chars().any(char::is_control),
-            "invalid adapter label"
-        );
-        config::validate_command(&self.command())?;
-        config::validate_cwd(&self.cwd)?;
-        ensure!(
-            self.env.len() <= 32
-                && self
-                    .env
-                    .iter()
-                    .all(|(k, v)| !k.is_empty() && !k.contains(['=', '\0']) && !v.contains('\0')),
-            "invalid adapter environment"
-        );
-        Ok(())
-    }
-}
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Field {
@@ -65,11 +24,13 @@ fn required() -> bool {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Recipient {
-    pub adapter: String,
+    pub name: String,
     pub label: String,
     pub session_id: String,
-    pub command: Command,
-    pub cwd: PathBuf,
+    pub peer_uid: u32,
+    pub peer_pid: u32,
+    pub configuration_revision: String,
+    pub identity: String,
     pub origin: String,
 }
 
@@ -77,6 +38,7 @@ pub struct Recipient {
 pub struct Challenge {
     pub challenge_id: String,
     pub recipient: Recipient,
+    pub provider_origin: String,
     pub prompt: String,
     pub fields: Vec<Field>,
     pub context: serde_json::Value,
@@ -150,7 +112,7 @@ impl Challenge {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AdapterStatus {
+pub struct RecipientStatus {
     pub recipient: Recipient,
     pub state: String,
 }

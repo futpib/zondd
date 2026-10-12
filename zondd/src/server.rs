@@ -1,4 +1,4 @@
-mod adapters;
+mod credentials;
 
 use crate::{
     create_new, execution,
@@ -48,8 +48,8 @@ struct Active {
     jobs: BTreeMap<String, tokio::task::AbortHandle>,
     askpass_jobs: BTreeMap<String, AskpassJob>,
     credentials: BTreeMap<String, AwaitingCredential>,
-    interactions: BTreeMap<String, adapters::Waiting>,
-    adapters: BTreeMap<String, adapters::Session>,
+    interactions: BTreeMap<String, credentials::Waiting>,
+    recipients: BTreeMap<String, credentials::Session>,
     running: usize,
     connections: usize,
     history: History,
@@ -315,6 +315,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
         }
     }
     let admin_socket = runtime.listen(config.runtime_dir.join("admin.sock"))?;
+    let credential_socket = runtime.listen(config.runtime_dir.join("credential.sock"))?;
     let askpass_socket = runtime.listen(config.runtime_dir.join("askpass.sock"))?;
     let (control, mut control_rx) = mpsc::channel(16);
     let (changed, _) = watch::channel(());
@@ -333,7 +334,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
             askpass_jobs: BTreeMap::new(),
             credentials: BTreeMap::new(),
             interactions: BTreeMap::new(),
-            adapters: BTreeMap::new(),
+            recipients: BTreeMap::new(),
             running: 0,
             connections: 0,
         }),
@@ -344,7 +345,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
     let (_admin_stop, admin_shutdown) = watch::channel(false);
     listeners.spawn(accept(admin_socket, None, state.clone(), admin_shutdown));
     listeners.spawn(accept_askpass(askpass_socket, state.clone()));
-    listeners.spawn(adapters::supervise(state.clone()));
+    listeners.spawn(credentials::accept(credential_socket, state.clone()));
     let mut endpoints = Endpoints::new();
     let config = state.active.lock().unwrap().config.clone();
     for name in config.principals.keys() {
@@ -508,6 +509,7 @@ fn reload(
         }
         active.rules = rules;
         active.config = config.clone();
+        credentials::invalidate(&mut active);
         active.revision = revision.clone();
         active.pending = pending;
     }
@@ -1605,8 +1607,7 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
         Request::AnswerInteraction {
             challenge_id,
             values,
-        } => adapters::answer(state, challenge_id, values),
-        Request::RetryAdapter { adapter } => adapters::retry(state, adapter),
+        } => credentials::answer(state, challenge_id, values),
         Request::Rules => {
             let active = state.active.lock().unwrap();
             Ok(Event::Rules {
@@ -1643,11 +1644,10 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
                     .values()
                     .map(|w| w.challenge.clone())
                     .collect(),
-                adapters: active
-                    .adapters
-                    .iter()
-                    .filter(|(name, _)| active.config.credential_adapters.contains_key(*name))
-                    .map(|(_, s)| s.status.clone())
+                recipients: active
+                    .recipients
+                    .values()
+                    .map(|s| s.status.clone())
                     .collect(),
                 proposals: active.rules.proposals(),
                 requests: active

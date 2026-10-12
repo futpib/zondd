@@ -69,7 +69,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   List<dynamic> queue = [];
   List<dynamic> credentials = [];
   List<dynamic> interactions = [];
-  List<dynamic> adapters = [];
+  List<dynamic> recipients = [];
   List<dynamic> proposals = [];
   String? error, message;
   bool polling = false, acting = false;
@@ -124,7 +124,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
           queue = result['requests'] as List;
           credentials = result['credentials'] as List? ?? [];
           interactions = result['interactions'] as List? ?? [];
-          adapters = result['adapters'] as List? ?? [];
+          recipients = result['recipients'] as List? ?? [];
           proposals = result['proposals'] as List? ?? [];
           loaded = true;
           error = null;
@@ -586,26 +586,10 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
             enabled: !acting && !disconnected,
             resolve: (provide) => resolveInteraction(raw, provide),
           ),
-        for (final raw in adapters)
+        for (final raw in recipients)
           ListTile(
             title: Text(raw['recipient']['label'] as String),
-            subtitle: Text('Application status: ${raw['state']}'),
-            trailing: ['unavailable', 'failed'].contains(raw['state'])
-                ? TextButton(
-                    onPressed: acting || disconnected
-                        ? null
-                        : () async {
-                            await action(() async {
-                              await widget.api.request({
-                                'method': 'retry_adapter',
-                                'adapter': raw['recipient']['adapter'],
-                              });
-                            });
-                            await refresh();
-                          },
-                    child: const Text('Retry'),
-                  )
-                : null,
+            subtitle: Text('Credential request: ${raw['state']}'),
           ),
       ],
     ),

@@ -1,6 +1,7 @@
 mod authorize;
 mod connections;
 mod control;
+mod credential_adapter;
 
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -53,6 +54,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    /// Run a legacy credential adapter as part of an independently owned service.
+    CredentialAdapter(credential_adapter::Options),
     /// List saved receivers, or add/remove a named OpenSSH connection on this machine.
     Connections {
         #[command(subcommand)]
@@ -152,8 +155,6 @@ enum Action {
         #[arg(long)]
         reject: bool,
     },
-    /// Ask an unavailable application to retry authentication (admin only).
-    RetryAdapter { name: String },
     /// Review pending commands interactively on the local admin socket (admin only).
     Review,
     /// Show receiver-wide daemon state (admin only; callers can use permissions).
@@ -344,6 +345,13 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<u8> {
+    if let Action::CredentialAdapter(options) = &cli.command {
+        ensure!(
+            cli.host.is_none() && cli.socket.is_none() && cli.principal.is_none(),
+            "credential adapter requires local recipient authentication"
+        );
+        return credential_adapter::run(&cli.runtime_dir, options).await;
+    }
     if let Action::Connections { action } = &cli.command {
         match action {
             Some(connections::Action::Add { name }) => {
@@ -580,9 +588,6 @@ async fn run(cli: Cli) -> Result<u8> {
                 values,
             }
         }
-        Action::RetryAdapter { name } => Request::RetryAdapter {
-            adapter: name.clone(),
-        },
         Action::Status => Request::Status,
         Action::Reload => Request::Reload { revision: None },
         Action::History {
@@ -611,7 +616,8 @@ async fn run(cli: Cli) -> Result<u8> {
             limit: *limit,
             query: query.clone(),
         },
-        Action::Connections { .. }
+        Action::CredentialAdapter(..)
+        | Action::Connections { .. }
         | Action::Context
         | Action::Review
         | Action::Control { .. }
@@ -949,6 +955,10 @@ fn read_interaction(
     println!(
         "Configured recipient: {}",
         serde_json::to_string_pretty(&challenge.recipient)?
+    );
+    println!(
+        "Permitted provider origin: {}",
+        challenge.provider_origin.escape_default()
     );
     println!(
         "Application-supplied form: {}",

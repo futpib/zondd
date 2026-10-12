@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -30,6 +31,8 @@ void main() {
           profile,
           (_, fingerprint) async => fingerprint == fixture['fingerprint'],
         );
+        SSHClient? serviceConnection;
+        SSHSession? service;
         final original = await api.request({'method': 'read_config'});
         Future<void> waitFor(Finder finder) async {
           for (var i = 0; i < 400 && finder.evaluate().isEmpty; i++) {
@@ -45,12 +48,37 @@ void main() {
             'method': 'save_config',
             'revision': original['revision'],
             'content':
-                '${original['content']}\n[credential_adapters.testapp]\nlabel = "Configured test application"\nprogram = ${jsonEncode(fixture['probe'])}\nargs = ["interaction"]\ncwd = "/"\n',
+                '${original['content']}\n[credential_recipients.testapp]\nlabel = "Configured test application"\nkey_sha256 = ${jsonEncode(fixture['credentialKeyDigest'])}\nfield_ids = ["username", "password"]\norigins = ["https://example.test"]\n',
           });
           await api.request({
             'method': 'reload_config',
             'revision': saved['revision'],
           });
+          serviceConnection = SSHClient(
+            await SSHSocket.connect(fixture['host'], fixture['port']),
+            username: fixture['user'],
+            identities: SSHKeyPair.fromPem(fixture['key']),
+            onVerifyHostKey: (_, fingerprint) =>
+                utf8.decode(fingerprint) == fixture['fingerprint'],
+          );
+          String quote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+          service = await serviceConnection.execute(
+            [
+              fixture['executable'],
+              '--runtime-dir',
+              fixture['runtime'],
+              'credential-adapter',
+              '--recipient',
+              'testapp',
+              '--key-file',
+              fixture['credentialKeyFile'],
+              '--origin',
+              'https://example.test',
+              '--',
+              fixture['probe'],
+              'interaction',
+            ].cast<String>().map(quote).join(' '),
+          );
           await tester.pumpWidget(
             MaterialApp(
               home: Dashboard(api: api, name: profile.name),
@@ -82,7 +110,8 @@ void main() {
           await waitFor(
             find.text('Response sent to the configured application.'),
           );
-          await waitFor(find.text('Application status: ready'));
+          await waitFor(find.text('Credential request: idle'));
+          expect(find.text('Retry'), findsNothing);
           final audit = jsonEncode(
             await api.request({'method': 'actions', 'limit': 100}),
           );
@@ -91,6 +120,8 @@ void main() {
           expect(audit, isNot(contains('test-application-password')));
           expect(audit, isNot(contains('test-user')));
         } finally {
+          service?.close();
+          serviceConnection?.close();
           await tester.pumpWidget(const SizedBox.shrink());
           final latest = await api.request({'method': 'read_config'});
           final saved = await api.request({

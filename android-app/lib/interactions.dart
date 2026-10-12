@@ -76,6 +76,8 @@ class InteractionContext extends StatelessWidget {
         ),
         Text('$server · ${recipient['label']}'),
         Text('Origin: ${recipient['origin']}'),
+        if (challenge['provider_origin'] != null)
+          Text('Permitted provider origin: ${challenge['provider_origin']}'),
         ExpansionTile(
           title: const Text('Recipient details'),
           tilePadding: EdgeInsets.zero,

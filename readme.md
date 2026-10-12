@@ -708,18 +708,18 @@ avoid passing secrets in argv if those logs are retained.
 
 ## Application credentials
 
-Zondd can launch configured credential adapters for applications that need human
-input. Android renders their text, password, verification-code, choice, and
-confirmation fields, with complete YAML review for unfamiliar formats. Trusted
-server/recipient context is separate from the application's own prompt. Values
-are delivered privately to the configured process session and are excluded from
-history; requests, withdrawals, interruptions, and outcomes remain auditable.
+Independently running applications can request missing credentials over the private
+local credential API. Systemd owns their lifecycle, jobs and logs; zondd only
+brokers authenticated requests, review, private answers and reported outcomes.
+Restarting zondd cancels pending input without restarting applications or their
+workers. Android and `zondctl review` show configured recipient identity separately
+from application-supplied prompts. Answers, including usernames, are excluded
+from history and logs.
 
-See the [adapter protocol and configuration](adapters/readme.md) and the
-[IB Gateway integration](https://github.com/futpib/ibkr-tws-http/tree/master/adapters/ibgateway), which runs Gateway on an
-invisible display and collects credentials through Android without VNC. Future
-application or browser adapters use the same protocol. `zondctl pending`,
-`zondctl interaction ID`, and `zondctl review` also support these forms.
+See the [public protocol, schema, registration and migration guide](adapters/readme.md).
+The Rust reference client supports pending input and cancellation. Existing pipe
+adapters can use a service-side bridge; the former `credential_adapters` process
+supervision and application Retry controls have been removed.
 
 ## Request history and action log
 
@@ -877,6 +877,8 @@ cargo test -p zondctl --test integration -- --ignored --skip iroh_ssh --skip tru
 cargo test -p zondctl --test integration -- --ignored
 # Start and stop an isolated instance of the shipped systemd user service:
 cargo test -p zondd --test integration shipped_user_service -- --ignored
+# Independent credential services with systemd-provisioned identities:
+cargo test -p zondctl --test credential_api -- --ignored
 ```
 
 Fixtures create private temporary directories under the user's home (so SSH

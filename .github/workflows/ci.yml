@@ -52,6 +52,7 @@ jobs:
         run: |
           cargo test --locked -p zondd --test integration shipped_user_service -- --ignored
           cargo test --locked -p zondd --test service_rules -- --ignored
+          cargo test --locked -p zondctl --test credential_api -- --ignored
       - name: Build and inspect Linux distribution
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
