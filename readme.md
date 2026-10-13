@@ -759,11 +759,59 @@ so closing the controller does not cancel it. Requests that still need permissio
 appear in Approvals and can also be reviewed from their history details.
 
 The persistent action log covers lifecycle, requests, policy evaluations,
-reloads, reviews, execution and protocol errors. The management helper reports
-config/service actions when the daemon is reachable; ordinary external file
-edits and actions performed while it is stopped are outside daemon logging.
+reloads, reviews, execution and protocol errors. The management helper writes
+configuration and service intents and outcomes directly to the same database,
+including when the daemon is unavailable. Opening history for management does
+not recover or interrupt running jobs. Save records bind the previous and new
+file revisions and list changed configuration paths without copying values.
+Routine status, queue, history and integrity polling does not create events;
+other reads remain recorded and can be hidden with the Android **Include reads**
+filter. Ordinary external edits and actions outside these entry points remain
+outside this record.
 Actions are also emitted through tracing to stderr/the user service journal.
 History, retry and activity are available only on the admin endpoint.
+
+Each action has a SHA-256 chain over its exact stored payload, previous hash,
+sequence and receiver log ID. Android checks the complete prefix initially,
+then appended events, and stores checkpoints in the phone's secure storage,
+scoped to the receiver, verified SSH host key, account and configuration path.
+It rejects changed events, gaps, rollback, log replacement and a downgrade after
+an earlier verified observation. Failed checks preserve the earlier checkpoint
+and block signed mutations. Imported older history has an explicit boundary;
+the migration cannot establish that those events were intact beforehand.
+
+Android signs decision metadata and its observed checkpoint with a separate
+device Ed25519 key. Receipts are saved on the phone before transmission; the
+receiver checks the signature, exact intent and checkpoint and rejects replayed
+nonces before processing the decision. Credential receipts record whether input
+was provided, never its values. A signature proves possession of that audit key,
+without granting permission or identifying a human. Unix account and SSH key
+attribution are separate receiver reports. New `authorize-key` entries bind the
+caller key fingerprint into their forced command; management key attribution
+requires OpenSSH `ExposeAuthInfo yes`. Existing caller entries can be refreshed
+through `authorize-key`; missing attribution is shown explicitly.
+
+Android **Export audit history** saves the full verified range, checkpoint,
+migration boundary, signed events and local decision receipts as JSON. Verify
+the saved bytes independently:
+
+```sh
+zondctl verify-audit zond-audit-123.json
+zondctl verify-audit zond-audit-456.json --checkpoint zond-audit-123.json
+```
+
+The verifier reports unrecorded device receipts as unknown outcomes. Without a
+checkpoint obtained independently of the current export, verification establishes
+internal consistency and signature validity. A receiver account can rewrite an
+unobserved log, omit an action entirely, or lie about execution; a hash chain
+cannot prove otherwise. Phone checkpoints detect changes to previously observed
+prefixes, and device signatures bind the signed intent. Times and command output
+remain receiver reports. Application credential results are explicitly labeled
+**Application reported success/failure**; queueing a private response is a broker
+event and does not prove application acceptance or an external login. Losing the
+phone's saved checkpoints loses that independent history anchor. Keep earlier
+exports separately when retention matters. Answers are excluded, but ordinary
+argv, application prompts and retained command output can still contain secrets.
 
 ## Android management
 
@@ -790,8 +838,14 @@ without requiring stdin EOF. Methods:
 
 - `pending`, `status`, `resolve` (`approval_id`, `approve`): local admin requests.
 - `history` (`before`, `limit`, optional `query`), `request_detail` (`request_id`), `retry`
-  (`request_id`), `actions` (`before`, `limit`, optional `request_id` and `query`): history,
+  (`request_id`), `actions` (`before`, `limit`, optional `request_id`, `subject_id`,
+  `include_reads` and `query`): history,
   results, resubmission and the persistent action log.
+- `audit_snapshot`: receiver log ID, sequence/hash checkpoint, chain version and
+  migration boundary; the helper adds `daemon_online: false` when reading offline.
+- `audit_page` (`after`, `through`, optional `limit`): ascending events within a
+  fixed snapshot, with `next_after`; retain `through` across all pages. These two
+  methods remain available through the helper when the daemon is stopped.
 - `read_config`: returns `path`, `content`, SHA-256 `revision`.
 - `validate_config` (`content`): parse and validate without saving.
 - `save_config` (`content`, `revision`): validate, check the current revision,

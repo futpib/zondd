@@ -1,0 +1,197 @@
+{
+  "format": "zondd-audit-export",
+  "version": 1,
+  "receiver_scope": "test-scope",
+  "checkpoint": {
+    "log_id": "f998c023-60f5-43ea-88f3-74fbf45b5f06",
+    "sequence": 6,
+    "hash": "23a5fa4dc9bc84398ad8f030e62ce0101d4382e95cc09649ae2b7dd3c0748ecd"
+  },
+  "range": {
+    "after": 0,
+    "through": 6
+  },
+  "legacy_through_sequence": 0,
+  "exported_unix_ms": 1800000001000,
+  "evidence": "receiver_history_checked_against_phone_checkpoint",
+  "events": [
+    {
+      "sequence": 1,
+      "time_unix_ms": 1800000000000,
+      "request_id": "request-1",
+      "action": "request_received",
+      "detail": {
+        "input": {
+          "method": "run",
+          "command": {
+            "program": "/usr/bin/true",
+            "args": []
+          },
+          "cwd": null,
+          "detach": false
+        },
+        "principal": "exec",
+        "retry_of": null,
+        "actor": {
+          "unix_uid": 1000,
+          "peer_pid": 3000,
+          "transport": {
+            "evidence": "unix_account_only",
+            "ssh_key_fingerprint": null
+          },
+          "identity_scope": "receiver Unix account",
+          "device_key_evidence": "not_provided"
+        },
+        "policy_revision": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+      },
+      "category": "request",
+      "previous_hash": "dab274f93a94318396f7e5e0f4435743afa6216e449317c6e1ae127a89aebc7f",
+      "hash": "809b4bce872004c1992182d74ff9f6cc0ed6edbcdd7f4e89e6fe4c34e7a2c44e",
+      "hash_payload": "{\"action\":\"request_received\",\"category\":\"request\",\"detail\":{\"actor\":{\"device_key_evidence\":\"not_provided\",\"identity_scope\":\"receiver Unix account\",\"peer_pid\":3000,\"transport\":{\"evidence\":\"unix_account_only\",\"ssh_key_fingerprint\":null},\"unix_uid\":1000},\"input\":{\"command\":{\"args\":[],\"program\":\"/usr/bin/true\"},\"cwd\":null,\"detach\":false,\"method\":\"run\"},\"policy_revision\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"principal\":\"exec\",\"retry_of\":null},\"request_id\":\"request-1\",\"sequence\":1,\"time_unix_ms\":1800000000000}"
+    },
+    {
+      "sequence": 2,
+      "time_unix_ms": 1800000000001,
+      "request_id": "request-1",
+      "action": "policy_evaluated",
+      "detail": {
+        "decision": "ask",
+        "revision": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "approval_id": "approval-1",
+        "command": {
+          "program": "/usr/bin/true",
+          "args": []
+        },
+        "cwd": "/home/test",
+        "rule": null
+      },
+      "category": "request",
+      "previous_hash": "809b4bce872004c1992182d74ff9f6cc0ed6edbcdd7f4e89e6fe4c34e7a2c44e",
+      "hash": "03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3",
+      "hash_payload": "{\"action\":\"policy_evaluated\",\"category\":\"request\",\"detail\":{\"approval_id\":\"approval-1\",\"command\":{\"args\":[],\"program\":\"/usr/bin/true\"},\"cwd\":\"/home/test\",\"decision\":\"ask\",\"revision\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"rule\":null},\"request_id\":\"request-1\",\"sequence\":2,\"time_unix_ms\":1800000000001}"
+    },
+    {
+      "sequence": 3,
+      "time_unix_ms": 1800000000002,
+      "request_id": "request-1",
+      "action": "signed_decision",
+      "detail": {
+        "actor": {
+          "unix_uid": 1000,
+          "peer_pid": 3000,
+          "transport": {
+            "evidence": "unix_account_only",
+            "ssh_key_fingerprint": null
+          },
+          "identity_scope": "receiver Unix account",
+          "device_key_evidence": "signature_verified",
+          "device_signing_key": "ed25519:SHA256:Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw",
+          "receipt_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        },
+        "proof": {
+          "public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "checkpoint": {
+            "log_id": "f998c023-60f5-43ea-88f3-74fbf45b5f06",
+            "sequence": 2,
+            "hash": "03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3"
+          },
+          "payload": "{\"checkpoint\":{\"hash\":\"03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3\",\"log_id\":\"f998c023-60f5-43ea-88f3-74fbf45b5f06\",\"sequence\":2},\"log_id\":\"f998c023-60f5-43ea-88f3-74fbf45b5f06\",\"nonce\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"request\":{\"approval_id\":\"approval-1\",\"approve\":true,\"method\":\"resolve\"}}",
+          "signature": "5ae9d8277c2acbed76749dc8316f94679ec317fd7ac9440be20c0305119606bc4a44302f0cd642191b125d81dc11504aefc819c70b559e6183ce6af655b5c004"
+        },
+        "request": {
+          "method": "resolve",
+          "approval_id": "approval-1",
+          "approve": true
+        }
+      },
+      "category": "decision",
+      "previous_hash": "03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3",
+      "hash": "65d131dbd8c5b1a29a4560d5f27cf128bb6aa407e4edccdd6b7261623e6f2f8b",
+      "hash_payload": "{\"action\":\"signed_decision\",\"category\":\"decision\",\"detail\":{\"actor\":{\"device_key_evidence\":\"signature_verified\",\"device_signing_key\":\"ed25519:SHA256:Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw\",\"identity_scope\":\"receiver Unix account\",\"peer_pid\":3000,\"receipt_id\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"transport\":{\"evidence\":\"unix_account_only\",\"ssh_key_fingerprint\":null},\"unix_uid\":1000},\"proof\":{\"checkpoint\":{\"hash\":\"03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3\",\"log_id\":\"f998c023-60f5-43ea-88f3-74fbf45b5f06\",\"sequence\":2},\"nonce\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"payload\":\"{\\\"checkpoint\\\":{\\\"hash\\\":\\\"03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3\\\",\\\"log_id\\\":\\\"f998c023-60f5-43ea-88f3-74fbf45b5f06\\\",\\\"sequence\\\":2},\\\"log_id\\\":\\\"f998c023-60f5-43ea-88f3-74fbf45b5f06\\\",\\\"nonce\\\":\\\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\\\",\\\"request\\\":{\\\"approval_id\\\":\\\"approval-1\\\",\\\"approve\\\":true,\\\"method\\\":\\\"resolve\\\"}}\",\"public_key\":\"03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\",\"signature\":\"5ae9d8277c2acbed76749dc8316f94679ec317fd7ac9440be20c0305119606bc4a44302f0cd642191b125d81dc11504aefc819c70b559e6183ce6af655b5c004\"},\"request\":{\"approval_id\":\"approval-1\",\"approve\":true,\"method\":\"resolve\"}},\"request_id\":\"request-1\",\"sequence\":3,\"time_unix_ms\":1800000000002}"
+    },
+    {
+      "sequence": 4,
+      "time_unix_ms": 1800000000003,
+      "request_id": null,
+      "action": "admin_request",
+      "detail": {
+        "method": "resolve",
+        "approval_id": "approval-1",
+        "approve": true,
+        "actor": {
+          "unix_uid": 1000,
+          "peer_pid": 3000,
+          "transport": {
+            "evidence": "unix_account_only",
+            "ssh_key_fingerprint": null
+          },
+          "identity_scope": "receiver Unix account",
+          "device_key_evidence": "signature_verified",
+          "device_signing_key": "ed25519:SHA256:Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw",
+          "receipt_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      },
+      "category": "decision",
+      "previous_hash": "65d131dbd8c5b1a29a4560d5f27cf128bb6aa407e4edccdd6b7261623e6f2f8b",
+      "hash": "ae675c866e377cba5d65847e7c4c0f93655f1968d0231007d8548dbf60d19cb2",
+      "hash_payload": "{\"action\":\"admin_request\",\"category\":\"decision\",\"detail\":{\"actor\":{\"device_key_evidence\":\"signature_verified\",\"device_signing_key\":\"ed25519:SHA256:Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw\",\"identity_scope\":\"receiver Unix account\",\"peer_pid\":3000,\"receipt_id\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"transport\":{\"evidence\":\"unix_account_only\",\"ssh_key_fingerprint\":null},\"unix_uid\":1000},\"approval_id\":\"approval-1\",\"approve\":true,\"method\":\"resolve\"},\"request_id\":null,\"sequence\":4,\"time_unix_ms\":1800000000003}"
+    },
+    {
+      "sequence": 5,
+      "time_unix_ms": 1800000000004,
+      "request_id": "request-1",
+      "action": "approval_granted",
+      "detail": {
+        "approval_id": "approval-1",
+        "actor": {
+          "unix_uid": 1000,
+          "peer_pid": 3000,
+          "transport": {
+            "evidence": "unix_account_only",
+            "ssh_key_fingerprint": null
+          },
+          "identity_scope": "receiver Unix account",
+          "device_key_evidence": "signature_verified",
+          "device_signing_key": "ed25519:SHA256:Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw",
+          "receipt_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        }
+      },
+      "category": "decision",
+      "previous_hash": "ae675c866e377cba5d65847e7c4c0f93655f1968d0231007d8548dbf60d19cb2",
+      "hash": "4263a5a8c218f826a8e3f1a0331eca5073d792d3a091eaf493daf5c80b950bdb",
+      "hash_payload": "{\"action\":\"approval_granted\",\"category\":\"decision\",\"detail\":{\"actor\":{\"device_key_evidence\":\"signature_verified\",\"device_signing_key\":\"ed25519:SHA256:Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw\",\"identity_scope\":\"receiver Unix account\",\"peer_pid\":3000,\"receipt_id\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"transport\":{\"evidence\":\"unix_account_only\",\"ssh_key_fingerprint\":null},\"unix_uid\":1000},\"approval_id\":\"approval-1\"},\"request_id\":\"request-1\",\"sequence\":5,\"time_unix_ms\":1800000000004}"
+    },
+    {
+      "sequence": 6,
+      "time_unix_ms": 1800000000005,
+      "request_id": "request-1",
+      "action": "request_finished",
+      "detail": {
+        "status": "completed",
+        "reason": "Exited with status 0"
+      },
+      "category": "request",
+      "previous_hash": "4263a5a8c218f826a8e3f1a0331eca5073d792d3a091eaf493daf5c80b950bdb",
+      "hash": "23a5fa4dc9bc84398ad8f030e62ce0101d4382e95cc09649ae2b7dd3c0748ecd",
+      "hash_payload": "{\"action\":\"request_finished\",\"category\":\"request\",\"detail\":{\"reason\":\"Exited with status 0\",\"status\":\"completed\"},\"request_id\":\"request-1\",\"sequence\":6,\"time_unix_ms\":1800000000005}"
+    }
+  ],
+  "device_receipts": [
+    {
+      "proof": {
+        "public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "checkpoint": {
+          "log_id": "f998c023-60f5-43ea-88f3-74fbf45b5f06",
+          "sequence": 2,
+          "hash": "03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3"
+        },
+        "payload": "{\"checkpoint\":{\"hash\":\"03df9e4091f87c239fc30f182b2e30022d5b8c5b5feff6689191c5721a1471d3\",\"log_id\":\"f998c023-60f5-43ea-88f3-74fbf45b5f06\",\"sequence\":2},\"log_id\":\"f998c023-60f5-43ea-88f3-74fbf45b5f06\",\"nonce\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"request\":{\"approval_id\":\"approval-1\",\"approve\":true,\"method\":\"resolve\"}}",
+        "signature": "5ae9d8277c2acbed76749dc8316f94679ec317fd7ac9440be20c0305119606bc4a44302f0cd642191b125d81dc11504aefc819c70b559e6183ce6af655b5c004"
+      },
+      "created_unix_ms": 1800000000002,
+      "evidence": "device_signed_intent"
+    }
+  ]
+}

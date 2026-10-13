@@ -177,8 +177,33 @@ The **History** tab keeps every request outcome, including rejection, denial,
 expiry, cancellation and interruption. Details show command/context, output,
 exit status and approval events. **Run again** creates a new request through the
 current policy and never reuses an approval. It remains owned by the daemon if
-you close the app. **Activity** shows the persistent daemon action log. Both lists
-support loading earlier entries, and history survives service restarts.
+you close the app. **Activity** groups related events into linked timelines.
+**Group related events** switches to individual events; **Include reads** reveals
+recorded access events. Request details show recorded submitter/reviewer evidence
+and activity in chronological order. Configuration and service intents link to
+their outcomes; a management intent without a terminal event shows that its
+outcome has not been recorded. Credential events distinguish a response
+queued by the broker from an application's report of success or failure.
+Both lists support loading earlier entries, and history survives service restarts.
+
+Activity is checked against checkpoints held in this phone's secure storage.
+Changed events, missing events, rollback or replacement produce a visible error,
+preserve the previous checkpoint and block further signed decisions. Older
+receivers are labeled unverified; imported history displays its migration boundary.
+Management changes made through the helper are recorded even while the daemon is
+unavailable. Local device receipts are saved before sending, so a lost reply can
+leave an explicit decision with an unknown outcome.
+
+**Export audit history** opens Android's document saver and writes the complete
+verified range, checkpoint and signed receipts. `zondctl verify-audit FILE`
+checks the saved bytes and signatures; add `--checkpoint EARLIER_EXPORT` to check
+against a separately retained anchor. A device signature proves possession of
+its audit key, not who held the phone or whether an external action succeeded.
+The receiver still controls its own reports and can omit unobserved events.
+The first observation establishes a baseline. Removing app data loses the phone
+anchor; keep earlier exports separately when needed. See the main
+[audit documentation](../readme.md#request-history-and-action-log) for the exact
+trust boundary.
 
 ## Architecture
 

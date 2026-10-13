@@ -215,6 +215,14 @@ fn managed_entry_key(line: &str) -> Option<(&str, &str)> {
     let command = options
         .strip_prefix("restrict,command=\"")?
         .strip_suffix('"')?;
+    let command = if let Some((command, fingerprint)) = command.rsplit_once(" --key-fingerprint ") {
+        if !fingerprint.starts_with("SHA256:") || fingerprint.len() != 50 {
+            return None;
+        }
+        command
+    } else {
+        command
+    };
     let current = command
         .split_once(" bridge --runtime-dir '")
         .and_then(|(program, rest)| {
@@ -356,7 +364,12 @@ pub async fn run(options: &Options) -> Result<u8> {
                 quote(&options.principal)
             )
         });
-    let command = command.replace('"', "\\\"");
+    let fingerprint = public
+        .fingerprint
+        .split_whitespace()
+        .nth(1)
+        .context("missing public key fingerprint")?;
+    let command = format!("{command} --key-fingerprint {fingerprint}").replace('"', "\\\"");
     let entry = format!("restrict,command=\"{command}\" {}\n", public.text);
     let path = std::path::absolute(&options.authorized_keys)?;
     let before = snapshot(&path)?;

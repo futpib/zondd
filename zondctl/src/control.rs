@@ -6,7 +6,7 @@ use libzond::{
     config::{Config, revision},
 };
 use libzondctl::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::{self, OpenOptions},
@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 enum Control {
     Pending {},
@@ -59,6 +59,16 @@ enum Control {
         before: Option<u64>,
         limit: Option<usize>,
         query: Option<String>,
+        #[serde(default)]
+        subject_id: Option<String>,
+        #[serde(default = "include_reads")]
+        include_reads: bool,
+    },
+    AuditSnapshot {},
+    AuditPage {
+        after: u64,
+        through: u64,
+        limit: Option<usize>,
     },
     ReadConfig {},
     ValidateConfig {
@@ -76,13 +86,17 @@ enum Control {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ServiceAction {
     Status,
     Start,
     Stop,
     Restart,
+}
+
+fn include_reads() -> bool {
+    true
 }
 
 /// One bounded request per process. Errors are JSON too; no TTY or root needed.
@@ -104,6 +118,8 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
         #[derive(Deserialize)]
         struct Envelope {
             version: u32,
+            #[serde(default)]
+            actor: Option<libzond::audit::ActorProof>,
             #[serde(flatten)]
             request: Control,
         }
@@ -113,7 +129,7 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
             envelope.version == 1,
             "unsupported control protocol version"
         );
-        dispatch(envelope.request, runtime, config).await
+        dispatch(envelope.request, runtime, config, envelope.actor).await
     }
     .await;
     let (response, code) = match result {
@@ -127,7 +143,13 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
     Ok(code)
 }
 
-async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Value> {
+async fn dispatch(
+    request: Control,
+    runtime: &Path,
+    config: &Path,
+    proof: Option<libzond::audit::ActorProof>,
+) -> Result<Value> {
+    let transport = libzond::audit::ssh_actor(None);
     let request = match request {
         Control::AnswerInteraction {
             challenge_id,
@@ -181,45 +203,147 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
             before,
             limit,
             query,
+            subject_id,
+            include_reads,
         } => Request::Actions {
             request_id,
             before,
             limit,
             query,
+            subject_id,
+            include_reads,
         },
+        Control::AuditSnapshot {} => {
+            if let Ok(mut client) = Client::local(&runtime.join("admin.sock")).await {
+                return Ok(serde_json::to_value(
+                    client.request(Request::AuditSnapshot).await?,
+                )?);
+            }
+            let history = libzond::history::History::open(config)?;
+            return Ok(
+                json!({"type":"audit_snapshot","checkpoint":history.checkpoint()?,"legacy_through_sequence":history.legacy_through_sequence()?,"chain_version":libzond::audit::VERSION,"daemon_online":false}),
+            );
+        }
+        Control::AuditPage {
+            after,
+            through,
+            limit,
+        } => {
+            if let Ok(mut client) = Client::local(&runtime.join("admin.sock")).await {
+                return Ok(serde_json::to_value(
+                    client
+                        .request(Request::AuditPage {
+                            after,
+                            through,
+                            limit,
+                        })
+                        .await?,
+                )?);
+            }
+            let history = libzond::history::History::open(config)?;
+            let mut actions =
+                history.audit_page(after, through, limit.unwrap_or(100).clamp(1, 100))?;
+            while serde_json::to_vec(&actions)?.len() + 1024 > libzond::MAX_RESPONSE_BYTES {
+                ensure!(
+                    actions.len() > 1,
+                    "audit event exceeds protocol response limit"
+                );
+                actions.pop();
+            }
+            let last = actions.last().map_or(after, |v| v.sequence);
+            ensure!(
+                last == through || !actions.is_empty(),
+                "audit snapshot is missing events"
+            );
+            return Ok(
+                json!({"type":"audit_page","actions":actions,"next_after":(last < through).then_some(last),"through":through}),
+            );
+        }
         Control::ReloadConfig { revision } => Request::Reload {
             revision: Some(revision),
         },
         Control::ReadConfig {} => {
+            let history = libzond::history::History::open(config)?;
             let result = read_config(config);
-            audit_control(runtime, "read_config", &result).await;
+            audit_control(
+                &history,
+                "read_config",
+                &result,
+                json!({"transport":transport,"unix_uid":libzond::paths::current_uid(),"peer_pid":std::process::id(),"device_key_evidence":"not_provided"}),
+            )?;
             return result;
         }
         Control::ValidateConfig { content } => {
+            let history = libzond::history::History::open(config)?;
             let result = Config::parse(&content).map(|_| json!({"valid":true}));
-            audit_control(runtime, "validate_config", &result).await;
+            audit_control(
+                &history,
+                "validate_config",
+                &result,
+                json!({"transport":transport,"unix_uid":libzond::paths::current_uid(),"peer_pid":std::process::id(),"device_key_evidence":"not_provided"}),
+            )?;
             return result;
         }
         Control::SaveConfig { content, revision } => {
+            let history = libzond::history::History::open(config)?;
+            let metadata = json!({"method":"save_config","revision":revision,"new_revision":libzond::config::revision(&content)});
+            let actor = history.actor(
+                proof.as_ref(),
+                &transport,
+                &metadata,
+                None,
+                Some(std::process::id()),
+            )?;
+            let before = read_config(config)?["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            let changed_paths = changed_paths(&before, &content)?;
+            history.audit(None, "control.save_config_requested", json!({"revision":revision,"new_revision":metadata["new_revision"],"changed_paths":changed_paths,"actor":actor}))?;
             let result = save_config(config, &content, &revision);
-            audit_control(runtime, "save_config", &result).await;
+            audit_control(&history, "save_config", &result, actor)?;
             return result;
         }
         Control::Service { action } => {
+            let history = libzond::history::History::open(config)?;
+            let metadata = serde_json::to_value(Control::Service {
+                action: action.clone(),
+            })?;
+            let actor = history.actor(
+                proof.as_ref(),
+                &transport,
+                &metadata,
+                None,
+                Some(std::process::id()),
+            )?;
+            let name = if matches!(action, ServiceAction::Status) {
+                "service_status"
+            } else {
+                "service_requested"
+            };
             audit_control(
-                runtime,
-                "service_requested",
+                &history,
+                name,
                 &Ok(json!({"action":format!("{action:?}")})),
-            )
-            .await;
+                actor.clone(),
+            )?;
             let result = service(action).await;
-            audit_control(runtime, "service_finished", &result).await;
+            audit_control(
+                &history,
+                if name == "service_status" {
+                    "service_status"
+                } else {
+                    "service_finished"
+                },
+                &result,
+                actor,
+            )?;
             return result;
         }
     };
     let event = Client::local(&runtime.join("admin.sock"))
         .await?
-        .request(request)
+        .request_as(request, proof, Some(transport))
         .await?;
     if let libzond::Event::Error { message } = event {
         bail!("{message}");
@@ -227,27 +351,66 @@ async fn dispatch(request: Control, runtime: &Path, config: &Path) -> Result<Val
     Ok(serde_json::to_value(event)?)
 }
 
-async fn audit_control(runtime: &Path, action: &str, result: &Result<Value>) {
+fn audit_control(
+    history: &libzond::history::History,
+    action: &str,
+    result: &Result<Value>,
+    actor: Value,
+) -> Result<()> {
     let detail = match result {
         Ok(value) => {
-            json!({"ok":true,"revision":value.get("revision"),"action":value.get("action")})
+            json!({"ok":true,"revision":value.get("revision"),"action":value.get("action"),"actor":actor})
         }
-        Err(error) => json!({"ok":false,"error":error.to_string()}),
+        // TOML diagnostics can quote configuration values. Keep the outcome,
+        // while returning the full diagnostic only to the management caller.
+        Err(_) => json!({"ok":false,"error_kind":"operation_failed","actor":actor}),
     };
-    // File editing also works while the daemon is stopped; no daemon action exists to log then.
-    if let Ok(mut client) = Client::local(&runtime.join("admin.sock")).await {
-        match client
-            .request(Request::Audit {
-                action: action.into(),
-                detail,
-            })
-            .await
-        {
-            Ok(libzond::Event::Audited) => {}
-            Ok(event) => eprintln!("Could not record management action: {event:?}"),
-            Err(error) => eprintln!("Could not record management action: {error}"),
+    history.audit(None, &format!("control.{action}"), detail)
+}
+
+fn changed_paths(before: &str, after: &str) -> Result<Vec<String>> {
+    fn walk(path: &str, before: &Value, after: &Value, changes: &mut Vec<String>) {
+        if before == after {
+            return;
+        }
+        if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
+            let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+            for key in keys {
+                walk(
+                    &if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    },
+                    before.get(key).unwrap_or(&Value::Null),
+                    after.get(key).unwrap_or(&Value::Null),
+                    changes,
+                );
+            }
+        } else {
+            changes.push(if path.is_empty() {
+                "configuration".into()
+            } else {
+                path.to_owned()
+            });
         }
     }
+    let parse = |text: &str| -> Value {
+        match libzond::config::Config::parse(text) {
+            Ok(config) => {
+                json!({"principals":config.principals,"operations":config.operations,"credential_recipients":config.credential_recipients,"runtime_dir":config.runtime_dir,"approvals":config.approvals,"limits":config.limits})
+            }
+            Err(_) => Value::Null,
+        }
+    };
+    // Principal/operation/recipient values are intentionally absent from audit.
+    // Whole-file revisions bind the exact edit; changed sections aid review.
+    let mut changes = Vec::new();
+    walk("", &parse(before), &parse(after), &mut changes);
+    if libzond::config::revision(before) != libzond::config::revision(after) && changes.is_empty() {
+        changes.push("configuration".into());
+    }
+    Ok(changes)
 }
 
 fn content(path: &Path) -> Result<String> {

@@ -59,7 +59,7 @@ fn close(active: &mut Active, recipient: &Recipient, reason: &str) {
             let _ = active.history.audit(
                 None,
                 "interaction_result",
-                json!({"challenge_id":id,"outcome":"interrupted"}),
+                json!({"challenge_id":id,"outcome":"interrupted","evidence":"broker_observation"}),
             );
         }
         let _ = active.history.audit(
@@ -379,7 +379,7 @@ fn handle(
                 if session.delivered.as_deref() != Some(&challenge_id) {
                     return Err("unknown_challenge");
                 }
-                active.history.audit(None, "interaction_result", json!({"challenge_id":challenge_id,"outcome":outcome,"recipient":recipient.name})).map_err(|_| "unavailable")?;
+                active.history.audit(None, "interaction_result", json!({"challenge_id":challenge_id,"outcome":outcome,"recipient":recipient.name,"session_id":recipient.session_id,"evidence":"recipient_report"})).map_err(|_| "unavailable")?;
                 let session = active.recipients.get_mut(&recipient.name).unwrap();
                 session.delivered = None;
                 session.status.state = "idle".into();
@@ -404,7 +404,7 @@ fn finish(
     active.history.audit(
         None,
         "interaction_ended",
-        json!({"challenge_id":id,"recipient":pending.challenge.recipient.name,"status":status}),
+        json!({"challenge_id":id,"recipient":pending.challenge.recipient.name,"session_id":pending.challenge.recipient.session_id,"status":status,"evidence":"broker_observation"}),
     )?;
     let pending = active.interactions.remove(id).unwrap();
     let recipient = &pending.challenge.recipient;
@@ -421,6 +421,7 @@ fn finish(
             session.delivered = Some(id.into());
         }
     }
+    let provided = values.is_some();
     if pending
         .send
         .try_send(Envelope::new(
@@ -436,7 +437,11 @@ fn finish(
         if let Some(session) = active.recipients.get(&recipient.name) {
             session.revoked.send_replace(true);
         }
+        active.history.audit(None, "interaction_delivery_failed", json!({"challenge_id":id,"recipient":recipient.name,"session_id":recipient.session_id,"evidence":"broker_observation"}))?;
         anyhow::bail!("credential session unavailable");
+    }
+    if provided {
+        active.history.audit(None, "interaction_response_queued", json!({"challenge_id":id,"recipient":recipient.name,"session_id":recipient.session_id,"evidence":"broker_queue"}))?;
     }
     Ok(())
 }

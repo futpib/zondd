@@ -228,6 +228,7 @@ enum Control {
     Retry {
         request_id: String,
         reply: oneshot::Sender<Result<Event>>,
+        actor: serde_json::Value,
     },
 }
 struct State {
@@ -320,6 +321,7 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
     let (control, mut control_rx) = mpsc::channel(16);
     let (changed, _) = watch::channel(());
     let mut history = History::open(&config_path)?;
+    history.daemon_started(&config_path)?;
     let mut rules = Rules::load(&mut history)?;
     rules.refresh(&config, &revision, &mut history)?;
     let state = Arc::new(State {
@@ -378,11 +380,11 @@ pub async fn serve(config: Config, config_path: PathBuf, revision: String) -> Re
                     if let Err(error) = &result { let _ = state.active.lock().unwrap().history.audit(None, "reload_failed", json!({"error":error.to_string()})); }
                     let _ = reply.send(result);
                 }
-                Control::Retry { request_id, reply } => {
+                Control::Retry { request_id, reply, actor } => {
                     let record = (|| {
                         let old = state.active.lock().unwrap().history.get(&request_id)?;
                         ensure!(old.is_terminal(), "request is still active");
-                        submit(&state, old.principal, old.input, Some(request_id))
+                        submit(&state, old.principal, old.input, Some(request_id), actor)
                     })();
                     let result = record.map(|record| {
                         spawn_job(&state, record)
@@ -592,6 +594,10 @@ async fn accept(
     Ok(())
 }
 async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>) -> Result<()> {
+    let peer_pid = socket
+        .peer_cred()?
+        .pid()
+        .and_then(|pid| u32::try_from(pid).ok());
     let (read, mut write) = socket.into_split();
     let mut read = BufReader::new(read);
     let envelope: Envelope<Request> = tokio::time::timeout(
@@ -603,8 +609,48 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
     .context("no request")?;
     ensure!(envelope.version == VERSION, "unsupported protocol version");
     let id = envelope.id;
+    let actor = {
+        let active = state.active.lock().unwrap();
+        let subject = match &envelope.body {
+            Request::Resolve { approval_id, .. } => active
+                .pending
+                .values()
+                .find(|e| &e.request.approval_id == approval_id)
+                .map(|e| e.record.request_id.as_str()),
+            Request::Retry { request_id } | Request::Cancel { request_id } => {
+                Some(request_id.as_str())
+            }
+            Request::Credential { challenge_id, .. } => active
+                .credentials
+                .get(challenge_id)
+                .map(|entry| entry.challenge.request_id.as_str()),
+            _ => None,
+        };
+        active.history.actor(
+            envelope.actor.as_ref(),
+            &envelope.transport.unwrap_or_default(),
+            &audit_request(&envelope.body),
+            subject,
+            peer_pid,
+        )
+    };
+    let actor = match actor {
+        Ok(actor) => actor,
+        Err(error) => {
+            return wire::write(
+                &mut write,
+                &Envelope::new(
+                    id,
+                    Event::Error {
+                        message: format!("{error:#}"),
+                    },
+                ),
+            )
+            .await;
+        }
+    };
     let result = {
-        let task = dispatch(state, principal, envelope.body, id, &mut write);
+        let task = dispatch(state, principal, envelope.body, id, &mut write, actor);
         tokio::pin!(task);
         let mut extra = [0u8; 1];
         tokio::select! {
@@ -779,6 +825,7 @@ fn submit(
     principal: String,
     input: Request,
     retry_of: Option<String>,
+    actor: serde_json::Value,
 ) -> Result<RequestRecord> {
     ensure!(
         matches!(input, Request::Run { .. } | Request::Invoke { .. }),
@@ -802,14 +849,13 @@ fn submit(
         reason: String::new(),
         created_unix_ms: now(),
         updated_unix_ms: now(),
+        submitted_by: Some(actor.clone()),
+        reviewed_by: None,
         result: None,
     };
-    let input_detail =
-        json!({"input":record.input,"principal":record.principal,"retry_of":record.retry_of});
-    state
-        .active
-        .lock()
-        .unwrap()
+    let mut active = state.active.lock().unwrap();
+    let input_detail = json!({"input":record.input,"principal":record.principal,"retry_of":record.retry_of,"actor":actor,"policy_revision":active.revision});
+    active
         .history
         .record(&mut record, "request_received", input_detail)?;
     Ok(record)
@@ -1050,6 +1096,7 @@ async fn dispatch(
     request: Request,
     id: u64,
     write: &mut tokio::net::unix::OwnedWriteHalf,
+    actor: serde_json::Value,
 ) -> Result<Event> {
     if let Request::Follow { request_id, after } = &request {
         return follow_job(&state, principal.as_deref(), request_id, *after, id, write).await;
@@ -1066,15 +1113,15 @@ async fn dispatch(
         return cancel_job(&state, principal.as_deref(), request_id);
     }
     let Some(name) = principal else {
-        return admin(&state, request).await;
+        return admin(&state, request, actor).await;
     };
     if matches!(request, Request::Run { .. } | Request::Invoke { .. }) {
-        let record = submit(&state, name, request, None)?;
+        let record = submit(&state, name, request, None, actor)?;
         let request_id = record.request_id.clone();
         spawn_job(&state, record);
         return wait_attached(state, request_id, id, write).await;
     }
-    let mut event = caller_query(&state, name, request)?;
+    let mut event = caller_query(&state, name, request, actor)?;
     if let Event::Checked { check } = &mut event
         && let Some(rule) = &check.rule
     {
@@ -1097,13 +1144,18 @@ async fn dispatch(
     Ok(event)
 }
 
-fn caller_query(state: &State, name: String, request: Request) -> Result<Event> {
+fn caller_query(
+    state: &State,
+    name: String,
+    request: Request,
+    actor: serde_json::Value,
+) -> Result<Event> {
     let mut active = state.active.lock().unwrap();
     refresh_rules(&mut active)?;
     active.history.audit(
         None,
         "caller_request",
-        json!({"principal":name,"request":audit_request(&request)}),
+        json!({"principal":name,"request":audit_request(&request),"actor":actor}),
     )?;
     let Some(p) = active.config.principals.get(&name) else {
         return Ok(reject("principal is no longer configured"));
@@ -1576,15 +1628,30 @@ async fn execute_request(state: Arc<State>, mut record: RequestRecord) -> Result
     Ok(event)
 }
 
-async fn admin(state: &State, request: Request) -> Result<Event> {
+async fn admin(state: &State, request: Request, actor: serde_json::Value) -> Result<Event> {
     // Audit management intent before performing its side effects. Policy contents are never duplicated here.
-    state
-        .active
-        .lock()
-        .unwrap()
-        .history
-        .audit(None, "admin_request", audit_request(&request))?;
-    let result = admin_request(state, request).await;
+    if !libzond::audit::routine_read(&request) {
+        let mut detail = audit_request(&request);
+        detail["actor"] = actor.clone();
+        let active = state.active.lock().unwrap();
+        let subject = match &request {
+            Request::Resolve { approval_id, .. } => active
+                .pending
+                .values()
+                .find(|entry| &entry.request.approval_id == approval_id)
+                .map(|entry| entry.record.request_id.as_str()),
+            Request::RequestDetail { request_id }
+            | Request::Retry { request_id }
+            | Request::Cancel { request_id } => Some(request_id.as_str()),
+            Request::Credential { challenge_id, .. } => active
+                .credentials
+                .get(challenge_id)
+                .map(|entry| entry.challenge.request_id.as_str()),
+            _ => None,
+        };
+        active.history.audit(subject, "admin_request", detail)?;
+    }
+    let result = admin_request(state, request, actor).await;
     if let Err(error) = &result {
         state.active.lock().unwrap().history.audit(
             None,
@@ -1601,13 +1668,16 @@ fn refresh_rules(active: &mut Active) -> Result<()> {
         .refresh(&active.config, &active.revision, &mut active.history)
 }
 
-async fn admin_request(state: &State, request: Request) -> Result<Event> {
+async fn admin_request(state: &State, request: Request, actor: serde_json::Value) -> Result<Event> {
     refresh_rules(&mut state.active.lock().unwrap())?;
     match request {
         Request::AnswerInteraction {
             challenge_id,
             values,
-        } => credentials::answer(state, challenge_id, values),
+        } => {
+            state.active.lock().unwrap().history.audit(None, "interaction_decision", json!({"challenge_id":challenge_id,"provided":values.is_some(),"actor":actor,"evidence":"signed_decision_or_unix_account"}))?;
+            credentials::answer(state, challenge_id, values)
+        }
         Request::Rules => {
             let active = state.active.lock().unwrap();
             Ok(Event::Rules {
@@ -1696,7 +1766,7 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
             active.history.audit(
                 Some(&request_id),
                 "credential_answered",
-                json!({"challenge_id":challenge_id,"provided":provided}),
+                json!({"challenge_id":challenge_id,"provided":provided,"actor":actor,"evidence":"broker_submission"}),
             )?;
             state.changed.send_replace(());
             Ok(Event::CredentialAnswered { challenge_id })
@@ -1725,6 +1795,7 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
                 anyhow::bail!("approval expired");
             }
             entry.approved = approve;
+            entry.record.reviewed_by = Some(actor.clone());
             entry.record.status = if approve { "approved" } else { "denied" }.into();
             entry.record.reason = if approve {
                 "approved once"
@@ -1739,7 +1810,7 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
                 } else {
                     "approval_denied"
                 },
-                json!({"approval_id":approval_id}),
+                json!({"approval_id":approval_id,"actor":actor}),
             );
             if let Err(error) = result {
                 entry.approved = false;
@@ -1775,7 +1846,11 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
             let (reply, receive) = oneshot::channel();
             state
                 .control
-                .send(Control::Retry { request_id, reply })
+                .send(Control::Retry {
+                    request_id,
+                    reply,
+                    actor,
+                })
                 .await
                 .context("daemon shutting down")?;
             receive.await.context("daemon shutting down")?
@@ -1807,13 +1882,17 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
             before,
             limit,
             query,
+            subject_id,
+            include_reads,
         } => {
             let limit = limit.unwrap_or(50).clamp(1, 100);
-            let mut actions = state.active.lock().unwrap().history.actions(
+            let mut actions = state.active.lock().unwrap().history.filtered_actions(
                 request_id.as_deref(),
                 before,
                 limit,
                 query.as_deref(),
+                subject_id.as_deref(),
+                include_reads,
             )?;
             let full = actions.len() == limit;
             let trimmed = trim_page(&mut actions, serde_json::to_vec)?;
@@ -1821,6 +1900,40 @@ async fn admin_request(state: &State, request: Request) -> Result<Event> {
             Ok(Event::Actions {
                 actions,
                 next_before,
+            })
+        }
+        Request::AuditSnapshot => {
+            let active = state.active.lock().unwrap();
+            Ok(Event::AuditSnapshot {
+                checkpoint: active.history.checkpoint()?,
+                legacy_through_sequence: active.history.legacy_through_sequence()?,
+                chain_version: libzond::audit::VERSION,
+            })
+        }
+        Request::AuditPage {
+            after,
+            through,
+            limit,
+        } => {
+            let limit = limit.unwrap_or(100).clamp(1, 100);
+            let mut actions = state
+                .active
+                .lock()
+                .unwrap()
+                .history
+                .audit_page(after, through, limit)?;
+            let full = actions.len() == limit;
+            let trimmed = trim_page(&mut actions, serde_json::to_vec)?;
+            let last = actions.last().map_or(after, |v| v.sequence);
+            ensure!(
+                last == through || full || trimmed,
+                "audit snapshot is missing events"
+            );
+            let next_after = (last < through).then_some(last);
+            Ok(Event::AuditPage {
+                actions,
+                next_after,
+                through,
             })
         }
         Request::Audit { action, detail } => {

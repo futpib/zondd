@@ -174,6 +174,21 @@ fn android_management_over_ssh_and_iroh() {
         wrapper.to_str().unwrap().to_owned()
     });
     let log = fs::File::create(ssh.env.dir.path().join("android.log")).unwrap();
+    let run_exports = std::env::var("ZONDD_ANDROID_TEST")
+        .map_or(external_public_key.is_none(), |target| {
+            target == "integration_test/audit_test.dart"
+        });
+    let mut export_driver = run_exports.then(|| {
+        Process::spawn(
+            Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".into()))
+                .arg(app.join("scripts/audit-export-driver.py"))
+                .arg(
+                    std::env::var("ZONDD_ANDROID_DEVICE")
+                        .unwrap_or_else(|_| "emulator-5554".into()),
+                )
+                .arg(&ssh.env.ctl),
+        )
+    });
     let mut process = Process::spawn(
         Command::new(std::env::var("FLUTTER").unwrap_or_else(|_| "flutter".into()))
             .current_dir(app)
@@ -184,6 +199,7 @@ fn android_management_over_ssh_and_iroh() {
                 vec!["integration_test/external_key_test.dart".into()]
             } else {
                 vec![
+                    "integration_test/audit_test.dart".into(),
                     "integration_test/authentication_test.dart".into(),
                     "integration_test/control_test.dart".into(),
                     "integration_test/credential_test.dart".into(),
@@ -201,10 +217,21 @@ fn android_management_over_ssh_and_iroh() {
             .stdout(log.try_clone().unwrap())
             .stderr(log),
     );
+    let status = process.wait(Duration::from_secs(1800));
+    let transcript = fs::read_to_string(ssh.env.dir.path().join("android.log")).unwrap();
     assert!(
-        process.wait(Duration::from_secs(1200)).success(),
-        "Android integration failed"
+        status.success()
+            && transcript.contains("All tests passed!")
+            && !transcript.contains("EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK")
+            && !transcript.contains("This test failed after it had already completed"),
+        "Android integration failed or reported a late framework exception"
     );
+    if let Some(driver) = &mut export_driver {
+        assert!(
+            driver.wait(Duration::from_secs(60)).success(),
+            "Native Android export verification failed"
+        );
+    }
     assert!(ssh.env.queue().is_empty());
     if let Some(secrets) = fixture["forbiddenLogValues"].as_array() {
         let mut logs = vec![ssh.env.dir.path().join("daemon.log")];

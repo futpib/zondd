@@ -128,8 +128,19 @@ impl Client {
     }
 
     pub async fn send(&mut self, request: Request) -> Result<()> {
+        self.send_as(request, None, None).await
+    }
+
+    pub async fn send_as(
+        &mut self,
+        request: Request,
+        actor: Option<libzond::audit::ActorProof>,
+        transport: Option<libzond::audit::TransportActor>,
+    ) -> Result<()> {
         ensure!(!self.used, "one request is supported per connection");
-        let envelope = Envelope::new(1, request);
+        let mut envelope = Envelope::new(1, request);
+        envelope.actor = actor;
+        envelope.transport = transport;
         let frame = zeroize::Zeroizing::new(serde_json::to_vec(&envelope)?);
         ensure!(
             frame.len() < libzond::MAX_REQUEST_BYTES,
@@ -157,6 +168,21 @@ impl Client {
 
     pub async fn request(&mut self, request: Request) -> Result<Event> {
         self.send(request).await?;
+        loop {
+            let event = self.next().await?;
+            if event.is_terminal() {
+                return Ok(event);
+            }
+        }
+    }
+
+    pub async fn request_as(
+        &mut self,
+        request: Request,
+        actor: Option<libzond::audit::ActorProof>,
+        transport: Option<libzond::audit::TransportActor>,
+    ) -> Result<Event> {
+        self.send_as(request, actor, transport).await?;
         loop {
             let event = self.next().await?;
             if event.is_terminal() {

@@ -1,5 +1,7 @@
+pub mod audit;
 pub mod config;
 pub mod credential;
+pub mod history;
 pub mod interaction;
 pub mod paths;
 pub mod rules;
@@ -99,11 +101,25 @@ pub enum Request {
         limit: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject_id: Option<String>,
+        #[serde(default = "default_true")]
+        include_reads: bool,
+    },
+    AuditSnapshot,
+    AuditPage {
+        after: u64,
+        through: u64,
+        limit: Option<usize>,
     },
     Audit {
         action: String,
         detail: serde_json::Value,
     },
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -164,6 +180,10 @@ pub struct Envelope<T> {
     pub version: u32,
     pub id: u64,
     pub body: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<audit::ActorProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<audit::TransportActor>,
 }
 
 impl<T> Envelope<T> {
@@ -172,6 +192,8 @@ impl<T> Envelope<T> {
             version: VERSION,
             id,
             body,
+            actor: None,
+            transport: None,
         }
     }
 }
@@ -255,6 +277,10 @@ pub struct RequestRecord {
     pub reason: String,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_by: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_by: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
 }
@@ -275,6 +301,14 @@ pub struct ActionRecord {
     pub request_id: Option<String>,
     pub action: String,
     pub detail: serde_json::Value,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub previous_hash: String,
+    #[serde(default)]
+    pub hash: String,
+    #[serde(default)]
+    pub hash_payload: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -385,6 +419,16 @@ pub enum Event {
     Actions {
         actions: Vec<ActionRecord>,
         next_before: Option<u64>,
+    },
+    AuditSnapshot {
+        checkpoint: audit::Checkpoint,
+        legacy_through_sequence: u64,
+        chain_version: u32,
+    },
+    AuditPage {
+        actions: Vec<ActionRecord>,
+        next_after: Option<u64>,
+        through: u64,
     },
     Audited,
 }

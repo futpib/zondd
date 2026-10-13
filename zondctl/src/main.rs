@@ -192,6 +192,13 @@ enum Action {
         #[arg(long, default_value_os_t = libzond::paths::config_path())]
         config: PathBuf,
     },
+    /// Verify an Android audit export locally, optionally against an independent checkpoint.
+    VerifyAudit {
+        file: PathBuf,
+        /// A checkpoint JSON object, saved phone checkpoint, or an earlier audit export.
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -345,6 +352,21 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<u8> {
+    if let Action::VerifyAudit { file, checkpoint } = &cli.command {
+        let bundle: serde_json::Value = serde_json::from_slice(&std::fs::read(file)?)?;
+        let anchor = checkpoint
+            .as_ref()
+            .map(|path| -> Result<libzond::audit::Checkpoint> {
+                let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+                Ok(serde_json::from_value(
+                    value.get("checkpoint").unwrap_or(&value).clone(),
+                )?)
+            })
+            .transpose()?;
+        let result = libzond::audit::verify_export(&bundle, anchor.as_ref())?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(0);
+    }
     if let Action::CredentialAdapter(options) = &cli.command {
         ensure!(
             cli.host.is_none() && cli.socket.is_none() && cli.principal.is_none(),
@@ -615,12 +637,15 @@ async fn run(cli: Cli) -> Result<u8> {
             before: *before,
             limit: *limit,
             query: query.clone(),
+            subject_id: None,
+            include_reads: true,
         },
         Action::CredentialAdapter(..)
         | Action::Connections { .. }
         | Action::Context
         | Action::Review
         | Action::Control { .. }
+        | Action::VerifyAudit { .. }
         | Action::AuthorizeKey(_)
         | Action::RevokeKey(_) => {
             unreachable!()

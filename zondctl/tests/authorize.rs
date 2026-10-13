@@ -115,8 +115,9 @@ fn default_runtime_entry_omits_redundant_bridge_arguments() {
     let preview = read_until(&mut terminal, b"[y/N] ");
     let public = fs::read_to_string(&key).unwrap();
     let entry = format!(
-        "restrict,command=\"{} bridge\" {}",
+        "restrict,command=\"{} bridge --key-fingerprint {}\" {}",
         env.daemon.display(),
+        fingerprint(&key),
         public
     );
     assert!(String::from_utf8_lossy(&preview).contains(entry.trim()));
@@ -149,9 +150,10 @@ fn existing_managed_entry_is_shortened_and_remains_revocable() {
     assert_eq!(
         updated,
         format!(
-            "restrict,command=\"{} bridge --runtime-dir {}\" {}",
+            "restrict,command=\"{} bridge --runtime-dir {} --key-fingerprint {}\" {}",
             env.daemon.display(),
             env.runtime.display(),
+            fingerprint(&key),
             public
         )
     );
@@ -164,6 +166,16 @@ fn existing_managed_entry_is_shortened_and_remains_revocable() {
 
 fn key(env: &TestEnv) -> std::path::PathBuf {
     key_named(env, "caller")
+}
+
+fn fingerprint(key: &Path) -> String {
+    let output = checked(Command::new("ssh-keygen").arg("-lf").arg(key), 0);
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_owned()
 }
 
 fn key_named(env: &TestEnv, name: &str) -> std::path::PathBuf {

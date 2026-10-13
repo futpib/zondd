@@ -170,10 +170,12 @@ void main() {
           expect(find.text('Load earlier'), findsNothing);
           await capture('03-search-older-requests');
           await tester.tap(find.text('Activity'));
-          await visible(find.text('request received'));
+          await visible(find.text('Group related events'));
+          await tester.tap(find.text('Group related events'));
+          await visible(find.text('Request submitted'));
           expect(find.byType(SelectableText), findsNothing);
           await capture('04-search-activity');
-          await tester.tap(find.text('request received'));
+          await tester.tap(find.text('Request submitted'));
           await visible(find.textContaining(marker));
           await search('Search activity', 'no-such-history');
           await visible(find.text('No history matches your search.'));

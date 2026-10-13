@@ -9,6 +9,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'transport.dart';
 import 'identities.dart';
+import 'audit.dart';
 
 class Profile {
   Profile({
@@ -169,13 +170,19 @@ abstract interface class ConnectionEvents {
 /// Requests are never retried: a lost response may hide a completed mutation.
 class ControlConnection extends ChangeNotifier
     with WidgetsBindingObserver
-    implements ControlApi {
+    implements ControlApi, AuditPeer {
   ControlConnection(this._api, this._connect, {this.onClose}) {
     WidgetsBinding.instance.addObserver(this);
     _foreground = _isForeground(WidgetsBinding.instance.lifecycleState);
     _watch(_api!);
   }
   ControlApi? _api;
+  @override
+  String? get auditScope =>
+      _api is AuditPeer ? (_api as AuditPeer).auditScope : null;
+  @override
+  AuditVerifier? get historyVerifier =>
+      _api is AuditPeer ? (_api as AuditPeer).historyVerifier : null;
   final Future<ControlApi> Function() _connect;
   final VoidCallback? onClose;
   Future<void>? _reconnection;
@@ -373,9 +380,16 @@ class AuthenticationCancelled implements Exception {
   String toString() => 'Authentication cancelled';
 }
 
-class SshControl implements ControlApi, ConnectionEvents {
-  SshControl._(this._ssh, this.profile, this._tunnel);
+class SshControl implements ControlApi, ConnectionEvents, AuditPeer {
+  SshControl._(this._ssh, this.profile, this._tunnel, this.auditScope);
   final SSHClient _ssh;
+  static final auditDevice = AuditDevice(const SecureAuditStorage());
+  @override
+  final String auditScope;
+  AuditVerifier? _verifier;
+  @override
+  AuditVerifier get historyVerifier =>
+      _verifier ??= AuditVerifier(this, auditScope);
   final Profile profile;
   final int? _tunnel;
   bool _closed = false;
@@ -420,6 +434,7 @@ class SshControl implements ControlApi, ConnectionEvents {
     SSHClient? client;
     SSHSocket? socket;
     (Object, StackTrace)? verificationFailure;
+    String hostFingerprint = '';
     var cancelled = false, active = true, savedPasswordUsed = retry;
     Future<List<String>?> ask(SSHUserInfoRequest request) async {
       if (!active) return null;
@@ -482,7 +497,9 @@ class SshControl implements ControlApi, ConnectionEvents {
         },
         onVerifyHostKey: (type, fingerprint) async {
           try {
-            return await verify(type, utf8.decode(fingerprint));
+            final accepted = await verify(type, utf8.decode(fingerprint));
+            if (accepted) hostFingerprint = utf8.decode(fingerprint);
+            return accepted;
           } catch (error, stack) {
             verificationFailure = (error, stack);
             return false;
@@ -497,7 +514,12 @@ class SshControl implements ControlApi, ConnectionEvents {
             throw const AuthenticationCancelled();
           }),
       ]).timeout(const Duration(minutes: 2));
-      return SshControl._(client, profile, tunnel);
+      return SshControl._(
+        client,
+        profile,
+        tunnel,
+        auditScopeFor(profile, hostFingerprint),
+      );
     } catch (_) {
       client?.close();
       if (client == null) socket?.close();
@@ -524,7 +546,9 @@ class SshControl implements ControlApi, ConnectionEvents {
   @override
   Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
     try {
-      return await _request(body);
+      return await _request(
+        await prepareAuditedRequest(historyVerifier, auditDevice, body),
+      );
     } on TimeoutException {
       _ssh.close();
       throw const ConnectionLost();

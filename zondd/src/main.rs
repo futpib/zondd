@@ -6,7 +6,7 @@ mod rules;
 mod security;
 mod server;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use libzond::config::{Config, valid_name};
 use std::{
@@ -42,6 +42,9 @@ enum Action {
         runtime_dir: PathBuf,
         #[arg(long, default_value = "default")]
         principal: String,
+        /// SSH key bound to this forced command by authorize-key.
+        #[arg(long)]
+        key_fingerprint: Option<String>,
     },
 }
 
@@ -81,8 +84,9 @@ async fn main() -> Result<()> {
         Action::Bridge {
             runtime_dir,
             principal,
+            key_fingerprint,
         } => {
-            let result = bridge(runtime_dir, principal).await;
+            let result = bridge(runtime_dir, principal, key_fingerprint).await;
             if let Err(error) = &result {
                 eprintln!("zondd bridge: {error:#}");
             }
@@ -124,8 +128,12 @@ async fn askpass(path: &Path, token: &str) -> Result<()> {
     Ok(())
 }
 
-async fn bridge(runtime_dir: PathBuf, principal: String) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
+async fn bridge(
+    runtime_dir: PathBuf,
+    principal: String,
+    key_fingerprint: Option<String>,
+) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
     ensure!(valid_name(&principal), "invalid principal");
     ensure!(
         std::env::var_os("SSH_ORIGINAL_COMMAND").is_none_or(|s| s.is_empty()),
@@ -134,10 +142,18 @@ async fn bridge(runtime_dir: PathBuf, principal: String) -> Result<()> {
     let socket =
         tokio::net::UnixStream::connect(runtime_dir.join(format!("{principal}.sock"))).await?;
     let (mut read, mut write) = socket.into_split();
-    let mut stdin = tokio::io::stdin();
+    let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
+    let mut envelope: libzond::Envelope<libzond::Request> =
+        libzond::wire::read(&mut stdin, libzond::MAX_REQUEST_BYTES)
+            .await?
+            .context("no request")?;
+    // The account-side bridge overwrites caller-supplied transport metadata.
+    envelope.transport = Some(libzond::audit::ssh_actor(key_fingerprint.as_deref()));
+    libzond::wire::write(&mut write, &envelope).await?;
+    let mut extra = [0u8; 1];
     tokio::select! {
-        r = tokio::io::copy(&mut stdin, &mut write) => { r?; }
+        r = stdin.read(&mut extra) => { r?; }
         r = tokio::io::copy(&mut read, &mut stdout) => { r?; }
     }
     stdout.flush().await?;

@@ -435,8 +435,16 @@ impl SshEnv {
         for principal in ["exec", "ops"] {
             let key =
                 fs::read_to_string(env.dir.path().join(format!("{principal}-key.pub"))).unwrap();
+            let fingerprint = checked(
+                Command::new("ssh-keygen")
+                    .arg("-lf")
+                    .arg(env.dir.path().join(format!("{principal}-key.pub"))),
+                0,
+            );
+            let fingerprint = String::from_utf8(fingerprint.stdout).unwrap();
+            let fingerprint = fingerprint.split_whitespace().nth(1).unwrap();
             authorized.push_str(&format!(
-                "restrict,command=\"{} bridge --runtime-dir {} --principal {principal}\" {key}",
+                "restrict,command=\"{} bridge --runtime-dir {} --principal {principal} --key-fingerprint {fingerprint}\" {key}",
                 env.daemon.display(),
                 env.runtime.display()
             ));
@@ -452,7 +460,7 @@ impl SshEnv {
             .unwrap()
             .port();
         let sshd_config = env.dir.path().join("sshd_config");
-        fs::write(&sshd_config, format!("Port {port}\nListenAddress 127.0.0.1\nHostKey {}/host\nPidFile {}/sshd.pid\nAuthorizedKeysFile {}\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitRootLogin no\nStrictModes yes\nAllowUsers {}\nLogLevel VERBOSE\n", env.dir.path().display(), env.dir.path().display(), keys.display(), env.user.name)).unwrap();
+        fs::write(&sshd_config, format!("Port {port}\nListenAddress 127.0.0.1\nHostKey {}/host\nPidFile {}/sshd.pid\nAuthorizedKeysFile {}\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nExposeAuthInfo yes\nUsePAM no\nPermitRootLogin no\nStrictModes yes\nAllowUsers {}\nLogLevel VERBOSE\n", env.dir.path().display(), env.dir.path().display(), keys.display(), env.user.name)).unwrap();
         let sshd = ["/usr/sbin/sshd", "/usr/bin/sshd"]
             .into_iter()
             .find(|p| Path::new(p).exists())

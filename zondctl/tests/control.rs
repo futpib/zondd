@@ -23,6 +23,113 @@ fn control(env: &TestEnv, request: Value) -> Value {
 }
 
 #[test]
+fn audit_polls_do_not_create_events_and_offline_edits_remain_exportable() {
+    let env = TestEnv::new();
+    let before = control(&env, json!({"version":1,"method":"audit_snapshot"}));
+    assert_eq!(before["ok"], true, "{before}");
+    for method in ["pending", "status", "actions", "history", "audit_snapshot"] {
+        assert_eq!(
+            control(&env, json!({"version":1,"method":method}))["ok"],
+            true
+        );
+    }
+    let after = control(&env, json!({"version":1,"method":"audit_snapshot"}));
+    assert_eq!(
+        before["result"]["checkpoint"],
+        after["result"]["checkpoint"]
+    );
+    env.stop_daemon();
+    let offline = control(&env, json!({"version":1,"method":"audit_snapshot"}));
+    assert_eq!(offline["result"]["daemon_online"], false);
+    let original = control(&env, json!({"version":1,"method":"read_config"}));
+    let changed = format!("{}\n# offline edit\n", env.policy);
+    assert_eq!(
+        control(
+            &env,
+            json!({"version":1,"method":"save_config","content":changed,"revision":original["result"]["revision"]})
+        )["ok"],
+        true
+    );
+    let invalid = "runtime_dir = \"DO-NOT-LOG-POLICY-VALUE";
+    assert_eq!(
+        control(
+            &env,
+            json!({"version":1,"method":"validate_config","content":invalid})
+        )["ok"],
+        false
+    );
+    let snapshot = control(&env, json!({"version":1,"method":"audit_snapshot"}));
+    assert_eq!(snapshot["result"]["daemon_online"], false);
+    let through = &snapshot["result"]["checkpoint"]["sequence"];
+    let page = control(
+        &env,
+        json!({"version":1,"method":"audit_page","after":0,"through":through,"limit":100}),
+    );
+    assert_eq!(page["ok"], true, "{page}");
+    let text = page.to_string();
+    assert!(text.contains("control.save_config_requested") && text.contains("control.save_config"));
+    assert!(text.contains("control.validate_config") && text.contains("operation_failed"));
+    assert!(!text.contains("DO-NOT-LOG-POLICY-VALUE"));
+    let saved = page["result"]["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["action"] == "control.save_config")
+        .unwrap();
+    let operation = saved["detail"]["actor"]["operation_id"].as_str().unwrap();
+    let history = libzond::history::History::open(&env.config).unwrap();
+    let linked = history
+        .filtered_actions(None, None, 100, None, Some(operation), false)
+        .unwrap();
+    assert_eq!(linked.len(), 2);
+    assert_eq!(linked[0].action, "control.save_config");
+    assert_eq!(linked[1].action, "control.save_config_requested");
+    let bundle = json!({"format":"zondd-audit-export","version":1,"checkpoint":snapshot["result"]["checkpoint"],"legacy_through_sequence":snapshot["result"]["legacy_through_sequence"],"range":{"after":0,"through":through},"events":page["result"]["actions"],"device_receipts":[]});
+    libzond::audit::verify_export(&bundle, None).unwrap();
+    env.start_daemon();
+    assert!(
+        control(
+            &env,
+            json!({"version":1,"method":"actions","query":"offline edit"})
+        )["result"]["actions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn exported_audit_is_verified_locally_and_rejects_altered_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("audit.json");
+    let checkpoint = dir.path().join("checkpoint.json");
+    let fixture = include_str!("../../testdata/audit-v1.json");
+    std::fs::write(&file, fixture).unwrap();
+    let mut value: Value = serde_json::from_str(fixture).unwrap();
+    std::fs::write(&checkpoint, value["checkpoint"].to_string()).unwrap();
+    let output = libzondtest::checked(
+        std::process::Command::new(env!("CARGO_BIN_EXE_zondctl"))
+            .arg("--socket")
+            .arg(dir.path().join("no-daemon.sock"))
+            .arg("verify-audit")
+            .arg(&file)
+            .arg("--checkpoint")
+            .arg(&checkpoint),
+        0,
+    );
+    let verified: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(verified["external_checkpoint_matched"], true);
+    value["events"][0]["detail"]["principal"] = json!("forged");
+    std::fs::write(&file, value.to_string()).unwrap();
+    libzondtest::checked(
+        std::process::Command::new(env!("CARGO_BIN_EXE_zondctl"))
+            .arg("verify-audit")
+            .arg(&file),
+        125,
+    );
+}
+
+#[test]
 fn management_resolves_requests_and_rejects_stale_or_invalid_configuration() {
     let env = TestEnv::new();
     for approve in [true, false] {

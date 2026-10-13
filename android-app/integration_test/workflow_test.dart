@@ -124,6 +124,7 @@ void main() {
           ),
         );
         expect(await events.moveNext(), isTrue);
+        expect(jsonDecode(events.current)['body']['type'], 'pending');
         await waitFor(find.text('Approve once'));
         if (approve) {
           await capture('14-pending-approval');
@@ -131,6 +132,11 @@ void main() {
           await capture('15-request-details');
           await tap(find.text('Request details'));
         }
+        await tester.scrollUntilVisible(
+          find.text(approve ? 'Approve once' : 'Reject'),
+          -200,
+          scrollable: find.byType(Scrollable).last,
+        );
         await tap(find.text(approve ? 'Approve once' : 'Reject'));
         expect(await events.moveNext(), isTrue);
         expect(
@@ -275,11 +281,22 @@ void main() {
       await waitFor(find.text('Approve once'));
       await capture('34-rerun-pending');
       await tap(find.text('Approve once'));
+      await waitFor(find.text('Exited with status 0'));
+      await tester.scrollUntilVisible(
+        find.text('Finished'),
+        -300,
+        scrollable: find.byType(Scrollable).last,
+      );
       await waitFor(find.text('Finished'));
+      await tester.scrollUntilVisible(
+        find.text('Hello from zondd'),
+        300,
+        scrollable: find.byType(Scrollable).last,
+      );
       expect(find.text('Hello from zondd'), findsOneWidget);
       await capture('35-rerun-completed');
       await tester.scrollUntilVisible(
-        find.text('approval granted'),
+        find.text('Approved once'),
         300,
         scrollable: find.byType(Scrollable).last,
       );
@@ -293,6 +310,8 @@ void main() {
         scrollable: find.byType(Scrollable).first,
       );
       await tap(find.text('Activity'));
+      await waitFor(find.text('Group related events'));
+      await tap(find.text('Group related events'));
       await waitFor(find.text('admin request'));
       await capture('37-daemon-activity');
       await tap(find.text('Policy'));
