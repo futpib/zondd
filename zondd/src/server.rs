@@ -1027,6 +1027,56 @@ fn cancel_job_locked(
     })
 }
 
+async fn wait_rule(
+    state: &State,
+    principal: Option<&str>,
+    proposal_id: &str,
+    wire_id: u64,
+    write: &mut (impl AsyncWrite + Unpin),
+    actor: serde_json::Value,
+) -> Result<Event> {
+    let mut changed = state.changed.subscribe();
+    {
+        let active = state.active.lock().unwrap();
+        active.history.audit(
+            None,
+            if principal.is_some() { "caller_request" } else { "admin_request" },
+            json!({"principal":principal,"request":{"method":"wait_rule","proposal_id":proposal_id},"actor":actor}),
+        )?;
+    }
+    let mut notified = false;
+    loop {
+        let rule = {
+            let mut active = state.active.lock().unwrap();
+            refresh_rules(&mut active)?;
+            active.history.rule_state(principal, proposal_id)?
+        };
+        if rule.status != "pending" {
+            return Ok(Event::RuleResolved {
+                rule: Box::new(rule),
+            });
+        }
+        let remaining = rule.proposal.expires_unix_ms.saturating_sub(now());
+        if !notified {
+            wire::write(
+                write,
+                &Envelope::new(
+                    wire_id,
+                    Event::RulePending {
+                        proposal: Box::new(rule.proposal),
+                    },
+                ),
+            )
+            .await?;
+            notified = true;
+        }
+        tokio::select! {
+            result = changed.changed() => result?,
+            _ = tokio::time::sleep(Duration::from_millis(remaining)) => {},
+        }
+    }
+}
+
 async fn follow_job(
     state: &State,
     principal: Option<&str>,
@@ -1098,6 +1148,9 @@ async fn dispatch(
     write: &mut tokio::net::unix::OwnedWriteHalf,
     actor: serde_json::Value,
 ) -> Result<Event> {
+    if let Request::WaitRule { proposal_id } = &request {
+        return wait_rule(&state, principal.as_deref(), proposal_id, id, write, actor).await;
+    }
     if let Request::Follow { request_id, after } = &request {
         return follow_job(&state, principal.as_deref(), request_id, *after, id, write).await;
     }

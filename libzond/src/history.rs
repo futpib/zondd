@@ -362,6 +362,20 @@ impl History {
         rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
     }
 
+    pub fn rule_state(&self, principal: Option<&str>, id: &str) -> Result<crate::rules::RuleState> {
+        let record: Option<String> = self
+            .0
+            .query_row(
+                "SELECT record FROM rule_states WHERE id=?1 AND (?2 IS NULL OR principal=?2)",
+                params![id, principal],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(serde_json::from_str(
+            &record.context("unknown rule proposal")?,
+        )?)
+    }
+
     pub fn save_rule_states(
         &mut self,
         rules: &[crate::rules::RuleState],

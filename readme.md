@@ -400,9 +400,33 @@ zondctl --principal default propose-rule 'rule echo-repo(x: repo-name) { run pri
 ```
 
 `propose-rule` returns the immutable proposal ID, digest, original source, and
-resolved definition, then disconnects. Nothing executes or becomes allowed until
-the administrator approves. `rules` and `permissions` expose the authenticated
-principal's definitions, parameter types, checks, destination templates, status,
+resolved definition, then waits for administrator approval without polling.
+Lifecycle notices go to stderr with the principal, approval expiry, and exact
+commands to inspect, resume waiting, or withdraw the proposal. Approval exits
+with zero once that exact proposal becomes active; denial, expiry, withdrawal,
+revocation, or invalidation exits with 126. Approval grants permission for future
+invocations and does not execute anything. Use `--quiet` to suppress notices or
+`--json` for newline-delimited `rule_proposed`, `rule_pending`, and `rule_resolved`
+events. Already resolved proposals return just `rule_resolved` when waited on.
+
+Use `propose-rule --no-wait` to return immediately after submission. Its zero
+exit status acknowledges submission, not approval. Existing scripts that inspect
+or resolve proposals after submission should add `--no-wait`. Ctrl-C exits a wait
+with status 130 and leaves the proposal pending. Disconnecting also leaves it
+pending; `wait-rule PROPOSAL_ID` resumes waiting without resubmitting, including
+after a daemon restart. Only `withdraw PROPOSAL_ID` retracts it.
+Waiting requires updating both `zondctl` and the receiving `zondd`; `--no-wait`
+also works with receivers that support submission without waiting.
+
+```sh
+zondctl --host alice@server --identity ~/.ssh/caller propose-rule --file clone-futpib.zond &&
+  zondctl --host alice@server --identity ~/.ssh/caller invoke clone-futpib zondd
+zondctl --host alice@server --identity ~/.ssh/caller propose-rule --no-wait --file clone-futpib.zond
+zondctl --host alice@server --identity ~/.ssh/caller wait-rule PROPOSAL_ID
+```
+
+`rules` and `permissions` expose the authenticated principal's definitions,
+parameter types, checks, destination templates, status,
 reason, and expiry. They include every live rule plus recent terminal proposals,
 up to 256 records, with live rules first. Other principals' proposals and rules
 are hidden. `check invoke` shows the resolved argv and destination and checks
@@ -1003,7 +1027,8 @@ the version and ID. An optional `pending` event precedes one terminal event:
 survive JSON transport; `code` or `signal` describes termination.
 
 Principal methods: `run`, `invoke`, `follow`, `job`, `request_detail`, `cancel`,
-`list_operations`, `permissions`, `check`. A `run` or `invoke` that exceeds the
+`withdraw`, `propose_rule`, `wait_rule`, `rules`, `list_operations`, `permissions`,
+`check`. A `run` or `invoke` that exceeds the
 execution deadline returns `submitted` with a request ID. `follow` emits
 base64 `output` events with per-job sequence numbers, optional
 `output_truncated`, then a terminal `job` event. `job` returns one status
@@ -1016,6 +1041,13 @@ The `check` body wraps a `run` or `invoke` as `input`, for example:
 ```json
 {"version":1,"id":1,"body":{"method":"check","input":{"method":"run","command":{"program":"/usr/bin/uptime","args":[]}}}}
 ```
+
+`propose_rule` (`source`) returns a terminal `rule_proposed` acknowledgement;
+waiting is a separate request. `wait_rule` (`proposal_id`) emits `rule_pending`
+if the proposal is still awaiting approval, then a terminal `rule_resolved`
+containing its current outcome. An already resolved proposal returns immediately.
+Callers can wait only on their own proposals; unknown and other principals' IDs
+both return `unknown rule proposal`. Disconnecting a wait never withdraws it.
 
 Neither introspection method accepts a principal selector. Local admin methods:
 `pending`, `resolve` (`approval_id`, boolean `approve`), `credential`

@@ -99,13 +99,18 @@ enum Action {
     Cancel { id: String },
     /// Withdraw your request or rule proposal by ID, preserving its audit history.
     Withdraw { id: String },
-    /// Submit a reusable rule for admin approval; quote inline source to preserve $variables.
+    /// Submit a reusable rule and wait for admin approval; quote source to preserve $variables.
     ProposeRule {
+        /// Return after submission without waiting for approval.
+        #[arg(long)]
+        no_wait: bool,
         #[arg(required_unless_present = "file", conflicts_with = "file")]
         source: Option<String>,
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// Wait for your existing rule proposal to be approved or reach a final outcome.
+    WaitRule { id: String },
     /// Observe your rule definitions and pending, active, denied, expired or revoked state.
     Rules,
     /// Approve the exact reviewed rule for a chosen lifetime (admin only).
@@ -253,6 +258,10 @@ impl Cli {
     }
 
     fn inspect_command(&self, id: &str) -> String {
+        self.caller_command(&["job", id])
+    }
+
+    fn caller_command(&self, command: &[&str]) -> String {
         let mut args = vec!["zondctl".to_owned()];
         if let Some(host) = &self.host {
             args.extend(["--host".into(), host.clone()]);
@@ -271,7 +280,7 @@ impl Cli {
         } else {
             args.extend(["--socket".into(), self.local_socket().display().to_string()]);
         }
-        args.extend(["job".into(), id.into()]);
+        args.extend(command.iter().map(|arg| (*arg).to_owned()));
         args.iter()
             .map(|s| connections::quote(s))
             .collect::<Vec<_>>()
@@ -504,7 +513,7 @@ async fn run(cli: Cli) -> Result<u8> {
             request_id: id.clone(),
         },
         Action::Withdraw { id } => Request::Withdraw { id: id.clone() },
-        Action::ProposeRule { source, file } => {
+        Action::ProposeRule { source, file, .. } => {
             let source = if let Some(path) = file {
                 use std::io::Read;
                 let mut text = String::new();
@@ -517,6 +526,9 @@ async fn run(cli: Cli) -> Result<u8> {
             };
             Request::ProposeRule { source }
         }
+        Action::WaitRule { id } => Request::WaitRule {
+            proposal_id: id.clone(),
+        },
         Action::Rules => Request::Rules,
         Action::ApproveRule {
             id,
@@ -656,10 +668,18 @@ async fn run(cli: Cli) -> Result<u8> {
         Action::Exec { detach: false, .. } | Action::Invoke { detach: false, .. }
     );
     let mut following = None;
+    let mut waiting_rule = match &cli.command {
+        Action::WaitRule { id } => Some(id.clone()),
+        _ => None,
+    };
     if cli.notices()
         && matches!(
             cli.command,
-            Action::Exec { .. } | Action::Invoke { .. } | Action::Follow { .. }
+            Action::Exec { .. }
+                | Action::Invoke { .. }
+                | Action::Follow { .. }
+                | Action::ProposeRule { .. }
+                | Action::WaitRule { .. }
         )
     {
         eprintln!("Receiver: {}", cli.receiver());
@@ -668,9 +688,14 @@ async fn run(cli: Cli) -> Result<u8> {
     client.send(request).await?;
     loop {
         let event = tokio::select! {
-            r = client.next() => match &following {
-                Some(id) => r.with_context(|| format!("following job {id}; resume with follow {id}"))?,
-                None => r?,
+            r = client.next() => {
+                if let Some(id) = &waiting_rule {
+                    r.with_context(|| format!("waiting for rule {id}; resume with {}", cli.caller_command(&["wait-rule", id])))?
+                } else if let Some(id) = &following {
+                    r.with_context(|| format!("following job {id}; resume with follow {id}"))?
+                } else {
+                    r?
+                }
             },
             _ = tokio::signal::ctrl_c() => return Ok(130),
         };
@@ -678,6 +703,69 @@ async fn run(cli: Cli) -> Result<u8> {
             println!("{}", serde_json::to_string(&event)?);
         }
         match event {
+            Event::RuleProposed { proposal } => {
+                if !cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&Event::RuleProposed {
+                            proposal: proposal.clone(),
+                        })?
+                    );
+                }
+                if matches!(cli.command, Action::ProposeRule { no_wait: true, .. }) {
+                    return Ok(0);
+                }
+                let id = proposal.id.clone();
+                waiting_rule = Some(id.clone());
+                drop(client);
+                let connect = async {
+                    let mut next = cli.connect().await?;
+                    next.send(Request::WaitRule {
+                        proposal_id: id.clone(),
+                    })
+                    .await?;
+                    Ok::<_, anyhow::Error>(next)
+                };
+                client = tokio::select! {
+                    result = connect => result.with_context(|| format!(
+                        "waiting for rule {id}; resume with {}", cli.caller_command(&["wait-rule", &id])
+                    ))?,
+                    _ = tokio::signal::ctrl_c() => return Ok(130),
+                };
+            }
+            Event::RulePending { proposal } => {
+                if cli.notices() {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_millis() as u64;
+                    let seconds = proposal.expires_unix_ms.saturating_sub(now).div_ceil(1000);
+                    eprintln!(
+                        "Proposal: {} (principal {})\nWaiting for approval in Zond. Expires in {seconds} seconds.\nDigest: {}\nInspect: {}\nCtrl-C stops waiting and leaves the proposal pending.\nResume: {}\nWithdraw: {}",
+                        proposal.id,
+                        proposal.principal,
+                        proposal.digest,
+                        cli.caller_command(&["rules"]),
+                        cli.caller_command(&["wait-rule", &proposal.id]),
+                        cli.caller_command(&["withdraw", &proposal.id]),
+                    );
+                }
+            }
+            Event::RuleResolved { rule } if waiting_rule.is_some() => {
+                let active = rule.status == "active";
+                if !cli.json {
+                    if cli.notices() || !active {
+                        eprintln!(
+                            "Rule {}: {} ({})",
+                            rule.proposal.id, rule.status, rule.reason
+                        );
+                    }
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&Event::RuleResolved { rule })?
+                    );
+                }
+                return Ok(if active { 0 } else { 126 });
+            }
             Event::Pending { request } => {
                 if cli.notices() {
                     let now = std::time::SystemTime::now()

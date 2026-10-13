@@ -36,6 +36,9 @@ pub enum Request {
     ProposeRule {
         source: String,
     },
+    WaitRule {
+        proposal_id: String,
+    },
     Rules,
     ResolveRule {
         proposal_id: String,
@@ -350,6 +353,9 @@ pub enum Event {
     RuleProposed {
         proposal: Box<rules::Proposal>,
     },
+    RulePending {
+        proposal: Box<rules::Proposal>,
+    },
     Rules {
         rules: Vec<rules::RuleState>,
         revision: String,
@@ -437,7 +443,10 @@ impl Event {
     pub fn is_terminal(&self) -> bool {
         !matches!(
             self,
-            Self::Pending { .. } | Self::Output { .. } | Self::OutputTruncated { .. }
+            Self::Pending { .. }
+                | Self::RulePending { .. }
+                | Self::Output { .. }
+                | Self::OutputTruncated { .. }
         )
     }
 }

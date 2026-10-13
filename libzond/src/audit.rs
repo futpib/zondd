@@ -205,6 +205,7 @@ pub fn category(action: &str, detail: &Value) -> &'static str {
             "status"
                 | "pending"
                 | "rules"
+                | "wait_rule"
                 | "permissions"
                 | "list_operations"
                 | "history"

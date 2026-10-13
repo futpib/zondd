@@ -47,6 +47,82 @@ fn no_staging(root: &Path) -> bool {
 }
 
 #[test]
+fn rule_wait_is_scoped_and_observes_approval_before_or_after_attachment() {
+    let env = TestEnv::new();
+    let proposal = propose(&env, "rule waited() { run true }");
+    let request = json!({"method":"wait_rule","proposal_id":proposal["id"]});
+    let hidden = env.request("ops", request.clone());
+    let missing = env.request("ops", json!({"method":"wait_rule","proposal_id":"unknown"}));
+    assert_eq!(hidden, missing);
+    assert_eq!(hidden["type"], "error");
+    let mut waiter = env.session("exec", request.clone());
+    let pending = waiter.event();
+    assert_eq!(pending["type"], "rule_pending");
+    assert_eq!(pending["proposal"], proposal);
+    let approved = resolve(&env, &proposal, true, Some(3600));
+    assert_eq!(approved["rule"]["status"], "active");
+    assert_eq!(waiter.event(), approved);
+    assert_eq!(env.request("exec", request.clone()), approved);
+    assert_eq!(env.request("admin", request), approved);
+}
+
+#[test]
+fn disconnecting_a_rule_wait_preserves_the_proposal_and_audit() {
+    let env = TestEnv::new();
+    let proposal = propose(&env, "rule disconnected() { run true }");
+    let mut waiter = env.session(
+        "exec",
+        json!({"method":"wait_rule","proposal_id":proposal["id"]}),
+    );
+    assert_eq!(waiter.event()["type"], "rule_pending");
+    drop(waiter);
+    let state = &states(&env, "exec")[0];
+    assert_eq!(state["status"], "pending");
+    assert_eq!(state["proposal"], proposal);
+    assert_eq!(
+        resolve(&env, &proposal, true, None)["rule"]["status"],
+        "active"
+    );
+    let actions = env.request("admin", json!({"method":"actions","limit":100}));
+    assert!(
+        actions["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["action"] == "caller_request"
+                && a["category"] == "read"
+                && a["detail"]["request"]["method"] == "wait_rule"
+                && a["detail"]["request"]["proposal_id"] == proposal["id"])
+    );
+}
+
+#[test]
+fn rule_wait_can_retrieve_an_outcome_outside_the_recent_rules_page() {
+    let env = TestEnv::new();
+    let first = propose(&env, "rule old() { run true }");
+    let denied = resolve(&env, &first, false, None);
+    for i in 0..256 {
+        let proposal = propose(&env, &format!("rule recent{i}() {{ run true }}"));
+        assert_eq!(
+            resolve(&env, &proposal, false, None)["rule"]["status"],
+            "denied"
+        );
+    }
+    assert!(
+        !states(&env, "exec")
+            .iter()
+            .any(|s| s["proposal"]["id"] == first["id"])
+    );
+    assert_eq!(
+        env.request(
+            "exec",
+            json!({"method":"wait_rule","proposal_id":first["id"]})
+        ),
+        denied
+    );
+}
+
+#[test]
 fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
     let env = TestEnv::new();
     let source = r#"rule reviewed(x: repo-name) {
