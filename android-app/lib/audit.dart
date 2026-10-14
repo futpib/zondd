@@ -436,6 +436,7 @@ class AuditVerifier {
   int unrecordedReceipts = 0;
   bool online = true, firstObservation = false;
   bool _includesLegacy = false;
+  bool _checkingImportedHistory = false;
   static final _scopeTails = <String, Future<void>>{};
   static final _invalidatedScopes = <String>{};
   static final _legacyInvalidatedScopes = <String>{};
@@ -448,11 +449,19 @@ class AuditVerifier {
     final gate = Completer<void>();
     _scopeTails[scope] = gate.future;
     await previous;
+    _checkingImportedHistory = false;
     try {
       await _sync(includeLegacy: includeLegacy);
     } catch (_) {
       _invalidatedScopes.add(scope);
-      if (includeLegacy) _legacyInvalidatedScopes.add(scope);
+      if (_checkingImportedHistory) {
+        _legacyInvalidatedScopes.add(scope);
+        try {
+          await storage.write('audit:legacy-failure:$scope', 'failed');
+        } catch (_) {
+          // The in-memory block remains when secure storage is unavailable.
+        }
+      }
       rethrow;
     } finally {
       gate.complete();
@@ -487,14 +496,18 @@ class AuditVerifier {
     }
     // Imported events predate integrity tracking. Decisions check the chain
     // from its migration boundary; browsing and exporting still check all rows.
+    final legacyFailure =
+        await storage.read('audit:legacy-failure:$scope') == 'failed';
     final checkLegacy =
         includeLegacy ||
+        legacyFailure ||
         _legacyInvalidatedScopes.contains(scope) ||
         (old != null && old['sequence'] != 0 && old['sequence'] < legacy);
     final full =
         checkpoint == null ||
         _invalidatedScopes.contains(scope) ||
         (checkLegacy && !_includesLegacy);
+    _checkingImportedHistory = checkLegacy && legacy > 0;
     var sequence = full
         ? (checkLegacy ? 0 : legacy)
         : checkpoint!['sequence'] as int;
@@ -568,12 +581,7 @@ class AuditVerifier {
           if (!hashes.containsKey(observed['sequence']) &&
               (observed['sequence'] as int) < legacy) {
             // An older signed checkpoint needs the imported prefix too.
-            try {
-              await _sync(includeLegacy: true);
-            } catch (_) {
-              _legacyInvalidatedScopes.add(scope);
-              rethrow;
-            }
+            await _sync(includeLegacy: true);
             return;
           }
         }
@@ -609,6 +617,9 @@ class AuditVerifier {
     }
     // A storage failure cannot replace an earlier checkpoint or claim that a
     // fresh observation was preserved independently.
+    if (_checkingImportedHistory && legacyFailure) {
+      await storage.write('audit:legacy-failure:$scope', '');
+    }
     await storage.write(
       'audit:checkpoint:$scope',
       jsonEncode({

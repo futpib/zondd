@@ -429,6 +429,21 @@ void main() {
         api.historyVerifier.export(AuditDevice(storage)),
         throwsStateError,
       );
+      expect(
+        storage.values['audit:legacy-failure:legacy-corruption'],
+        'failed',
+      );
+      storage.values['audit:checkpoint:legacy-corruption-restart'] = anchor!;
+      storage.values['audit:legacy-failure:legacy-corruption-restart'] =
+          'failed';
+      await expectLater(
+        AuditVerifier(
+          api,
+          'legacy-corruption-restart',
+          storage: storage,
+        ).sync(includeLegacy: false),
+        throwsStateError,
+      );
       await expectLater(
         prepareAuditedRequest(api.historyVerifier, AuditDevice(storage), {
           'method': 'resolve_rule',
@@ -442,6 +457,7 @@ void main() {
       expect(await AuditDevice(storage).receipts('legacy-corruption'), isEmpty);
       api.bundle['events'][0] = original;
       await api.historyVerifier.sync();
+      expect(storage.values['audit:legacy-failure:legacy-corruption'], '');
     },
   );
 
