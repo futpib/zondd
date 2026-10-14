@@ -686,6 +686,8 @@ async fn run(cli: Cli) -> Result<u8> {
     }
     let mut client = cli.connect().await?;
     client.send(request).await?;
+    // Keep the subscription alive while handling events and reconnecting.
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     loop {
         let event = tokio::select! {
             r = client.next() => {
@@ -697,7 +699,7 @@ async fn run(cli: Cli) -> Result<u8> {
                     r?
                 }
             },
-            _ = tokio::signal::ctrl_c() => return Ok(130),
+            _ = interrupt.recv() => return Ok(130),
         };
         if cli.json {
             println!("{}", serde_json::to_string(&event)?);
@@ -730,7 +732,7 @@ async fn run(cli: Cli) -> Result<u8> {
                     result = connect => result.with_context(|| format!(
                         "waiting for rule {id}; resume with {}", cli.caller_command(&["wait-rule", &id])
                     ))?,
-                    _ = tokio::signal::ctrl_c() => return Ok(130),
+                    _ = interrupt.recv() => return Ok(130),
                 };
             }
             Event::RulePending { proposal } => {
@@ -867,7 +869,7 @@ async fn run(cli: Cli) -> Result<u8> {
                         result = connect => result.with_context(|| format!(
                             "following job {request_id}; resume with follow {request_id}"
                         ))?,
-                        _ = tokio::signal::ctrl_c() => return Ok(130),
+                        _ = interrupt.recv() => return Ok(130),
                     };
                     continue;
                 }
