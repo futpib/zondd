@@ -99,30 +99,52 @@ bool auditableChange(Map<String, dynamic> body) =>
     }.contains(body['method']) ||
     (body['method'] == 'service' && body['action'] != 'status');
 
+class AuditPreparationTimeout implements Exception {
+  const AuditPreparationTimeout();
+  @override
+  String toString() =>
+      'Preparing your action timed out. It was not sent. Try again.';
+}
+
 Future<Map<String, dynamic>> prepareAuditedRequest(
   AuditVerifier verifier,
   AuditDevice device,
-  Map<String, dynamic> body,
-) async {
+  Map<String, dynamic> body, {
+  Duration timeout = const Duration(minutes: 1),
+}) async {
   if (!auditableChange(body)) return body;
-  // Recheck every mutation: a receiver can change versions within one session.
-  try {
-    await verifier.sync();
-  } on StateError catch (e) {
-    if (e.message != 'invalid control request') rethrow;
-    if (await verifier.hasSavedCheckpoint()) {
-      throw StateError(
-        'Receiver stopped supporting audit verification. The phone checkpoint is preserved.',
-      );
+  var active = true;
+  Future<Map<String, dynamic>> prepare() async {
+    // Recheck every mutation: a receiver can change versions within one session.
+    try {
+      await verifier.sync(includeLegacy: false);
+    } on StateError catch (e) {
+      if (e.message != 'invalid control request') rethrow;
+      if (await verifier.hasSavedCheckpoint()) {
+        throw StateError(
+          'Receiver stopped supporting audit verification. The phone checkpoint is preserved.',
+        );
+      }
+      if (!active) throw const AuditPreparationTimeout();
+      return body;
     }
-    return body;
+    if (!active) throw const AuditPreparationTimeout();
+    final proof = await device.sign(
+      verifier.scope,
+      Map<String, dynamic>.from(verifier.checkpoint!),
+      body,
+    );
+    if (!active) throw const AuditPreparationTimeout();
+    return {...body, 'actor': proof};
   }
-  final proof = await device.sign(
-    verifier.scope,
-    Map<String, dynamic>.from(verifier.checkpoint!),
-    body,
+
+  return prepare().timeout(
+    timeout,
+    onTimeout: () {
+      active = false;
+      throw const AuditPreparationTimeout();
+    },
   );
-  return {...body, 'actor': proof};
 }
 
 class AuditDevice {
@@ -221,6 +243,8 @@ String auditEventHash(String logId, String previous, String payload) => sha256
     .convert(utf8.encode('zondd-audit-event-v1\n$logId\n$previous\n$payload'))
     .toString();
 
+final _verifiedAuditSignatures = <String>{};
+
 void verifyAuditSignature(
   Uint8List publicKey,
   Uint8List signature,
@@ -244,6 +268,15 @@ void verifyAuditSignature(
       littleEndian(signature.sublist(32)) >= order) {
     throw StateError('Invalid audit signature scalar.');
   }
+  final cacheKey = sha256.convert([
+    ...publicKey,
+    ...signature,
+    ...message,
+  ]).toString();
+  if (_verifiedAuditSignatures.remove(cacheKey)) {
+    _verifiedAuditSignatures.add(cacheKey);
+    return;
+  }
   final prime = (BigInt.one << 255) - BigInt.from(19);
   for (final point in [publicKey, signature.sublist(0, 32)]) {
     final y = Uint8List.fromList(point)..[31] &= 0x7f;
@@ -266,6 +299,10 @@ void verifyAuditSignature(
   ed25519.VerifyKey(
     publicKey,
   ).verify(signature: ed25519.Signature(signature), message: message);
+  _verifiedAuditSignatures.add(cacheKey);
+  if (_verifiedAuditSignatures.length > 4096) {
+    _verifiedAuditSignatures.remove(_verifiedAuditSignatures.first);
+  }
 }
 
 void verifyAuditEvent(String logId, Map<String, dynamic> event) {
@@ -398,11 +435,13 @@ class AuditVerifier {
   int legacyThrough = 0;
   int unrecordedReceipts = 0;
   bool online = true, firstObservation = false;
+  bool _includesLegacy = false;
   static final _scopeTails = <String, Future<void>>{};
   static final _invalidatedScopes = <String>{};
+  static final _legacyInvalidatedScopes = <String>{};
   Future<bool> hasSavedCheckpoint() async =>
       await storage.read('audit:checkpoint:$scope') != null;
-  Future<void> sync() async {
+  Future<void> sync({bool includeLegacy = true}) async {
     // Gates only complete successfully. Verification errors belong to each
     // caller, even when UI work and a decision use different Dart error zones.
     final previous = _scopeTails[scope] ?? Future<void>.value();
@@ -410,9 +449,10 @@ class AuditVerifier {
     _scopeTails[scope] = gate.future;
     await previous;
     try {
-      await _sync();
+      await _sync(includeLegacy: includeLegacy);
     } catch (_) {
       _invalidatedScopes.add(scope);
+      if (includeLegacy) _legacyInvalidatedScopes.add(scope);
       rethrow;
     } finally {
       gate.complete();
@@ -420,7 +460,7 @@ class AuditVerifier {
     }
   }
 
-  Future<void> _sync() async {
+  Future<void> _sync({required bool includeLegacy}) async {
     final snapshot = await api.request({'method': 'audit_snapshot'});
     if (snapshot['chain_version'] != 1) {
       throw StateError('This receiver does not support history verification.');
@@ -445,8 +485,19 @@ class AuditVerifier {
         'History was replaced or rolled back. The phone checkpoint is preserved.',
       );
     }
-    final full = checkpoint == null || _invalidatedScopes.contains(scope);
-    var sequence = full ? 0 : checkpoint!['sequence'] as int;
+    // Imported events predate integrity tracking. Decisions check the chain
+    // from its migration boundary; browsing and exporting still check all rows.
+    final checkLegacy =
+        includeLegacy ||
+        _legacyInvalidatedScopes.contains(scope) ||
+        (old != null && old['sequence'] != 0 && old['sequence'] < legacy);
+    final full =
+        checkpoint == null ||
+        _invalidatedScopes.contains(scope) ||
+        (checkLegacy && !_includesLegacy);
+    var sequence = full
+        ? (checkLegacy ? 0 : legacy)
+        : checkpoint!['sequence'] as int;
     var previous = full ? auditGenesis(logId) : checkpoint!['hash'] as String;
     if (checkpoint != null &&
         (checkpoint!['log_id'] != logId || through < sequence)) {
@@ -462,6 +513,26 @@ class AuditVerifier {
         for (final event in events.values)
           event['sequence'] as int: event['hash'] as String,
     };
+    if (full && sequence > 0) {
+      final boundary = await api.request({
+        'method': 'audit_page',
+        'after': legacy - 1,
+        'through': legacy,
+        'limit': 1,
+      });
+      final rows = (boundary['actions'] as List).cast<Map<String, dynamic>>();
+      if (boundary['through'] != legacy ||
+          rows.length != 1 ||
+          rows.single['sequence'] != legacy ||
+          boundary['next_after'] != null) {
+        throw StateError('History has a missing migration boundary.');
+      }
+      final event = rows.single;
+      verifyAuditEvent(logId, event);
+      previous = event['hash'] as String;
+      hashes[legacy] = previous;
+      additions[legacy] = Map<String, dynamic>.from(event);
+    }
     var foundOld =
         old == null ||
         (old['sequence'] == 0 && old['hash'] == auditGenesis(logId));
@@ -492,6 +563,20 @@ class AuditVerifier {
           throw StateError('History has a gap at event $next.');
         }
         verifyAuditEvent(logId, event);
+        if (!checkLegacy && event['action'] == 'signed_decision') {
+          final observed = event['detail']['proof']['checkpoint'] as Map;
+          if (!hashes.containsKey(observed['sequence']) &&
+              (observed['sequence'] as int) < legacy) {
+            // An older signed checkpoint needs the imported prefix too.
+            try {
+              await _sync(includeLegacy: true);
+            } catch (_) {
+              _legacyInvalidatedScopes.add(scope);
+              rethrow;
+            }
+            return;
+          }
+        }
         verifyAuditBinding(event, hashes, receipts);
         previous = event['hash'] as String;
         sequence = next;
@@ -502,6 +587,9 @@ class AuditVerifier {
             throw StateError('History no longer matches the phone checkpoint.');
           }
           foundOld = true;
+        }
+        if (event['action'] == 'signed_decision' || sequence % 16 == 0) {
+          await Future<void>.delayed(Duration.zero);
         }
       }
       if (page['next_after'] != null && page['next_after'] != sequence) {
@@ -536,7 +624,9 @@ class AuditVerifier {
     online = snapshot['daemon_online'] != false;
     if (full) {
       events.clear();
+      _includesLegacy = checkLegacy || legacy == 0;
       _invalidatedScopes.remove(scope);
+      _legacyInvalidatedScopes.remove(scope);
     }
     events.addAll(additions);
     _receipts

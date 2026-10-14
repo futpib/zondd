@@ -521,9 +521,15 @@ void main() {
                 find.text(approve ? 'Approve once' : 'Reject'),
               );
               await tester.tap(find.text(approve ? 'Approve once' : 'Reject'));
-              for (var i = 0; i < 30; i++) {
+              final confirmation = find.text(
+                approve
+                    ? 'Approved once. The caller can now run this command.'
+                    : 'Rejected. The caller has been notified.',
+              );
+              for (var i = 0; i < 600 && confirmation.evaluate().isEmpty; i++) {
                 await tester.pump(const Duration(milliseconds: 100));
               }
+              expect(confirmation, findsOneWidget);
               expect(
                 await events.moveNext().timeout(const Duration(seconds: 10)),
                 isTrue,

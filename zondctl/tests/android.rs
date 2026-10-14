@@ -46,7 +46,7 @@ fn android_management_over_ssh_and_iroh() {
     )
     .unwrap();
     ssh.env.start_daemon();
-    let start_iroh = |port: u16, name: &str| {
+    let start_iroh = |ssh: &SshEnv, port: u16, name: &str| {
         ssh.env.start(
             Command::new(target.join("debug/examples/test-server")).arg(port.to_string()),
             name,
@@ -61,7 +61,7 @@ fn android_management_over_ssh_and_iroh() {
         });
         endpoint.unwrap()
     };
-    let endpoint = start_iroh(ssh.port, "iroh");
+    let endpoint = start_iroh(&ssh, ssh.port, "iroh");
     ssh.env.start(
         Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".into()))
             .arg(app.join("scripts/test-auth-server.py"))
@@ -84,7 +84,7 @@ fn android_management_over_ssh_and_iroh() {
         auth_port.is_some()
     });
     let auth_port = auth_port.unwrap();
-    let auth_endpoint = start_iroh(auth_port, "authentication-iroh");
+    let auth_endpoint = start_iroh(&ssh, auth_port, "authentication-iroh");
     let fingerprint = checked(
         Command::new("ssh-keygen")
             .arg("-lf")
@@ -106,6 +106,50 @@ fn android_management_over_ssh_and_iroh() {
         "key":fs::read_to_string(ssh.env.dir.path().join("management-key")).unwrap(),
         "callerKey":fs::read_to_string(ssh.env.dir.path().join("exec-key")).unwrap(),
     });
+    let legacy_ssh = std::env::var("ZONDD_ANDROID_TEST")
+        .map_or(external_public_key.is_none(), |test| {
+            test == "integration_test/legacy_rules_test.dart"
+        })
+        .then(|| {
+            let legacy = SshEnv::new();
+            legacy.env.stop_daemon();
+            checked(
+                Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".into()))
+                    .args([
+                        "-c",
+                        "import sqlite3,sys\nwith sqlite3.connect(sys.argv[1]) as db:\n db.executescript('DELETE FROM actions; DELETE FROM audit_meta; DELETE FROM audit_receipts; DELETE FROM sqlite_sequence WHERE name=\"actions\";')\n db.executemany('INSERT INTO actions(time,request_id,action,detail) VALUES (0,NULL,\"daemon_stopped\",\"{}\")', [()] * 207493)\n",
+                    ])
+                    .arg(legacy.env.config.with_extension("history.sqlite3")),
+                0,
+            );
+            let history = libzond::history::History::open(&legacy.env.config).unwrap();
+            assert_eq!(history.legacy_through_sequence().unwrap(), 207493);
+            drop(history);
+            fs::write(
+                &legacy.env.config,
+                legacy.env.policy.replace("timeout_secs = 4", "timeout_secs = 120"),
+            )
+            .unwrap();
+            legacy.env.start_daemon();
+            let endpoint = start_iroh(&legacy, legacy.port, "legacy-iroh");
+            let fingerprint = checked(
+                Command::new("ssh-keygen")
+                    .arg("-lf")
+                    .arg(legacy.env.dir.path().join("host.pub")),
+                0,
+            );
+            let fingerprint = String::from_utf8(fingerprint.stdout).unwrap();
+            let fingerprint = fingerprint.split_whitespace().nth(1).unwrap();
+            fixture["legacy"] = json!({
+                "host":"10.0.2.2", "port":legacy.port, "endpoint":endpoint,
+                "user":legacy.env.user.name, "runtime":legacy.env.runtime,
+                "config":legacy.env.config, "executable":legacy.env.ctl,
+                "fingerprint":fingerprint,
+                "key":fs::read_to_string(legacy.env.dir.path().join("management-key")).unwrap(),
+                "callerKey":fs::read_to_string(legacy.env.dir.path().join("exec-key")).unwrap(),
+            });
+            legacy
+        });
     if let Ok(path) = std::env::var("ZONDD_ANDROID_EXTRA_FIXTURE") {
         let extra: serde_json::Map<String, serde_json::Value> =
             serde_json::from_slice(&fs::read(path).expect("read external test fixture"))
@@ -199,6 +243,7 @@ fn android_management_over_ssh_and_iroh() {
                 vec!["integration_test/external_key_test.dart".into()]
             } else {
                 vec![
+                    "integration_test/legacy_rules_test.dart".into(),
                     "integration_test/audit_test.dart".into(),
                     "integration_test/authentication_test.dart".into(),
                     "integration_test/control_test.dart".into(),
@@ -217,7 +262,7 @@ fn android_management_over_ssh_and_iroh() {
             .stdout(log.try_clone().unwrap())
             .stderr(log),
     );
-    let status = process.wait(Duration::from_secs(1800));
+    let status = process.wait(Duration::from_secs(2700));
     let transcript = fs::read_to_string(ssh.env.dir.path().join("android.log")).unwrap();
     assert!(
         status.success()
@@ -233,6 +278,9 @@ fn android_management_over_ssh_and_iroh() {
         );
     }
     assert!(ssh.env.queue().is_empty());
+    if let Some(legacy) = &legacy_ssh {
+        assert!(legacy.env.queue().is_empty());
+    }
     if let Some(secrets) = fixture["forbiddenLogValues"].as_array() {
         let mut logs = vec![ssh.env.dir.path().join("daemon.log")];
         for file in fs::read_dir(ssh.env.config.parent().unwrap()).unwrap() {

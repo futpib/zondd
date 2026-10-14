@@ -870,13 +870,18 @@ Actions are also emitted through tracing to stderr/the user service journal.
 History, retry and activity are available only on the admin endpoint.
 
 Each action has a SHA-256 chain over its exact stored payload, previous hash,
-sequence and receiver log ID. Android checks the complete prefix initially,
-then appended events, and stores checkpoints in the phone's secure storage,
-scoped to the receiver, verified SSH host key, account and configuration path.
-It rejects changed events, gaps, rollback, log replacement and a downgrade after
-an earlier verified observation. Failed checks preserve the earlier checkpoint
-and block signed mutations. Imported older history has an explicit boundary;
+sequence and receiver log ID. Before a decision, Android checks the chain from
+the imported-history boundary, then appended events. Browsing and exporting
+check the complete prefix, including imported rows. Checkpoints stay in the
+phone's secure storage, scoped to the receiver, verified SSH host key, account
+and configuration path.
+It rejects changed events within the checked range, gaps, rollback, log
+replacement and a downgrade after an earlier verified observation. Failed
+checks preserve the earlier checkpoint and block signed mutations. Imported
+older history has an explicit boundary;
 the migration cannot establish that those events were intact beforehand.
+Decision preparation times out after one minute without sending the action;
+retrying requires an explicit tap.
 
 Android signs decision metadata and its observed checkpoint with a separate
 device Ed25519 key. Receipts are saved on the phone before transmission; the

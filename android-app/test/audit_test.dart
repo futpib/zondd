@@ -38,7 +38,7 @@ void appendEvent(
     'time_unix_ms': 1800000001001,
     'request_id': null,
     'action': action,
-    'detail': detail,
+    'detail': Map<String, dynamic>.from(detail),
     'category': 'management',
   };
   final payload = jsonEncode(row);
@@ -80,6 +80,23 @@ void rehash(Map<String, dynamic> bundle) {
     row['hash'] = previous;
   }
   bundle['checkpoint']['hash'] = previous;
+}
+
+Map<String, dynamic> migratedFixture() {
+  final logId = auditFixture()['checkpoint']['log_id'] as String;
+  final bundle = <String, dynamic>{
+    'checkpoint': {'log_id': logId, 'sequence': 0, 'hash': auditGenesis(logId)},
+    'range': {'after': 0, 'through': 0},
+    'legacy_through_sequence': 207493,
+    'events': <Map<String, dynamic>>[],
+  };
+  appendEvent(bundle);
+  appendEvent(bundle);
+  bundle['events'][1]['sequence'] = 207493;
+  bundle['checkpoint']['sequence'] = 207493;
+  bundle['range']['through'] = 207493;
+  rehash(bundle);
+  return bundle;
 }
 
 class AuditControl implements ControlApi, AuditPeer {
@@ -229,6 +246,255 @@ void main() {
     expect(exported['events'], api.bundle['events']);
     expect(api.calls.where((c) => c['method'] == 'audit_page').length, 3);
   });
+
+  test('cached signature verification remains bound to all signed bytes', () {
+    final proof = auditFixture()['events'][2]['detail']['proof'] as Map;
+    final key = auditUnhex(proof['public_key'] as String, 32);
+    final signature = auditUnhex(proof['signature'] as String, 64);
+    final message = Uint8List.fromList(
+      utf8.encode('zondd-audit-decision-v1\n${proof['payload']}'),
+    );
+    verifyAuditSignature(key, signature, message);
+    verifyAuditSignature(key, signature, message);
+    for (final changed in [key, signature, message]) {
+      final altered = Uint8List.fromList(changed)..[0] ^= 1;
+      expect(
+        () => verifyAuditSignature(
+          identical(changed, key) ? altered : key,
+          identical(changed, signature) ? altered : signature,
+          identical(changed, message) ? altered : message,
+        ),
+        throwsA(anything),
+      );
+    }
+  });
+
+  test('cached signatures cannot authorize a replayed decision', () async {
+    final storage = MemoryAuditStorage();
+    final api = AuditControl(auditFixture(), storage, 'cached-replay');
+    await api.historyVerifier.sync();
+    final anchor = storage.values['audit:checkpoint:cached-replay'];
+    appendEvent(
+      api.bundle,
+      action: 'signed_decision',
+      detail: copy(api.bundle['events'][2]['detail'] as Map<String, dynamic>),
+    );
+    await expectLater(
+      AuditVerifier(api, 'cached-replay', storage: storage).sync(),
+      throwsStateError,
+    );
+    expect(storage.values['audit:checkpoint:cached-replay'], anchor);
+  });
+
+  test('timed-out preparation cannot send or sign a late decision', () async {
+    final storage = MemoryAuditStorage();
+    final api = AuditControl(auditFixture(), storage, 'preparation-timeout');
+    final device = AuditDevice(storage);
+    final held = Completer<void>();
+    api.holdSnapshot = held;
+    final body = {
+      'method': 'resolve_rule',
+      'proposal_id': 'proposal-1',
+      'digest': 'digest-1',
+      'approve': true,
+      'expires_in_secs': 3600,
+    };
+    await expectLater(
+      prepareAuditedRequest(
+        api.historyVerifier,
+        device,
+        body,
+        timeout: const Duration(milliseconds: 10),
+      ),
+      throwsA(isA<AuditPreparationTimeout>()),
+    );
+    held.complete();
+    await api.historyVerifier.sync();
+    expect(await device.receipts('preparation-timeout'), isEmpty);
+    expect(api.calls.every((call) => call['method'] != 'resolve_rule'), isTrue);
+    final prepared = await prepareAuditedRequest(
+      api.historyVerifier,
+      device,
+      body,
+    );
+    expect(prepared['actor'], isA<Map>());
+    expect(await device.receipts('preparation-timeout'), hasLength(1));
+  });
+
+  test(
+    'approval checks the migration tail and export checks the full range',
+    () async {
+      final storage = MemoryAuditStorage();
+      final bundle = migratedFixture();
+      for (var i = 0; i < 51; i++) {
+        appendEvent(bundle);
+      }
+      final api = AuditControl(bundle, storage, 'large-legacy')..pageSize = 100;
+      final device = AuditDevice(storage);
+      final prepared =
+          await prepareAuditedRequest(api.historyVerifier, device, {
+            'method': 'resolve_rule',
+            'proposal_id': 'proposal-1',
+            'digest': 'digest-1',
+            'approve': true,
+          });
+      expect(prepared['actor']['checkpoint']['sequence'], 207544);
+      expect(
+        api.calls
+            .where((call) => call['method'] == 'audit_page')
+            .map((call) => call['after']),
+        [207492, 207493],
+      );
+      expect(api.historyVerifier.events.length, 52);
+      final exported = await api.historyVerifier.export(device);
+      expect(exported['range'], {'after': 0, 'through': 207544});
+      expect(exported['events'], bundle['events']);
+      expect(
+        api.calls.any(
+          (call) => call['method'] == 'audit_page' && call['after'] == 0,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'migration-tail decisions verify signatures and receipt binding',
+    () async {
+      final storage = MemoryAuditStorage();
+      final api = AuditControl(migratedFixture(), storage, 'legacy-signatures');
+      final device = AuditDevice(storage);
+      final body = {
+        'method': 'resolve',
+        'approval_id': 'approval-1',
+        'approve': true,
+      };
+      final prepared = await prepareAuditedRequest(
+        api.historyVerifier,
+        device,
+        body,
+      );
+      final proof = prepared['actor'] as Map;
+      final fingerprint =
+          'ed25519:SHA256:${base64Encode(sha256.convert(auditUnhex(proof['public_key'] as String, 32)).bytes).replaceAll('=', '')}';
+      final actor = {
+        'device_signing_key': fingerprint,
+        'device_key_evidence': 'signature_verified',
+        'receipt_id': proof['nonce'],
+      };
+      appendEvent(
+        api.bundle,
+        action: 'signed_decision',
+        detail: {'proof': proof, 'request': body, 'actor': actor},
+      );
+      appendEvent(
+        api.bundle,
+        action: 'approval_granted',
+        detail: {'approval_id': 'approval-1', 'actor': actor},
+      );
+      await api.historyVerifier.sync(includeLegacy: false);
+      expect(api.historyVerifier.unrecordedReceipts, 0);
+      final reopened = AuditVerifier(
+        api,
+        'legacy-signatures',
+        storage: storage,
+      );
+      await reopened.sync(includeLegacy: false);
+      expect(reopened.checkpoint!['sequence'], 207495);
+      final anchor = storage.values['audit:checkpoint:legacy-signatures'];
+      api.bundle['events'].last['detail']['approval_id'] = 'another-approval';
+      rehash(api.bundle);
+      await expectLater(
+        AuditVerifier(
+          api,
+          'legacy-signatures',
+          storage: storage,
+        ).sync(includeLegacy: false),
+        throwsStateError,
+      );
+      expect(storage.values['audit:checkpoint:legacy-signatures'], anchor);
+    },
+  );
+
+  test(
+    'an imported-history verification failure still blocks decisions',
+    () async {
+      final storage = MemoryAuditStorage();
+      final api = AuditControl(migratedFixture(), storage, 'legacy-corruption');
+      final original = copy(api.bundle['events'][0] as Map<String, dynamic>);
+      await api.historyVerifier.sync(includeLegacy: false);
+      final anchor = storage.values['audit:checkpoint:legacy-corruption'];
+      api.bundle['events'][0]['detail']['reason'] = 'altered imported event';
+      await expectLater(
+        api.historyVerifier.export(AuditDevice(storage)),
+        throwsStateError,
+      );
+      await expectLater(
+        prepareAuditedRequest(api.historyVerifier, AuditDevice(storage), {
+          'method': 'resolve_rule',
+          'proposal_id': 'proposal-1',
+          'digest': 'digest-1',
+          'approve': true,
+        }),
+        throwsStateError,
+      );
+      expect(storage.values['audit:checkpoint:legacy-corruption'], anchor);
+      expect(await AuditDevice(storage).receipts('legacy-corruption'), isEmpty);
+      api.bundle['events'][0] = original;
+      await api.historyVerifier.sync();
+    },
+  );
+
+  test(
+    'migration-tail checks preserve anchors on replacement, gaps and rewrites',
+    () async {
+      for (final change in [
+        'boundary',
+        'bytes',
+        'recomputed',
+        'missing',
+        'gap',
+        'rollback',
+        'migration',
+        'replacement',
+      ]) {
+        final storage = MemoryAuditStorage();
+        final api = AuditControl(migratedFixture(), storage, 'legacy-$change');
+        await api.historyVerifier.sync(includeLegacy: false);
+        appendEvent(api.bundle);
+        await api.historyVerifier.sync(includeLegacy: false);
+        final anchor = storage.values['audit:checkpoint:legacy-$change'];
+        switch (change) {
+          case 'boundary':
+            (api.bundle['events'] as List).removeAt(1);
+          case 'bytes':
+            api.bundle['events'].last['detail']['reason'] = 'changed';
+          case 'recomputed':
+            api.bundle['events'].last['detail']['reason'] = 'changed';
+            rehash(api.bundle);
+          case 'missing':
+            api.missingPage = true;
+          case 'gap':
+            (api.bundle['events'] as List).removeLast();
+          case 'rollback':
+            api.bundle['checkpoint']['sequence'] = 207493;
+          case 'migration':
+            api.bundle['legacy_through_sequence'] = 207492;
+          case 'replacement':
+            api.bundle['checkpoint']['log_id'] = 'different-log';
+        }
+        await expectLater(
+          AuditVerifier(
+            api,
+            'legacy-$change',
+            storage: storage,
+          ).sync(includeLegacy: false),
+          throwsA(anything),
+        );
+        expect(storage.values['audit:checkpoint:legacy-$change'], anchor);
+      }
+    },
+  );
 
   test(
     'a legacy session discovers an upgrade and cannot bypass a later downgrade',
@@ -553,7 +819,7 @@ void main() {
     (tester) async {
       final storage = MemoryAuditStorage();
       final api = AuditControl(auditFixture(), storage, 'downgrade');
-      await api.historyVerifier.sync();
+      await tester.runAsync(api.historyVerifier.sync);
       final anchor = storage.values['audit:checkpoint:downgrade'];
       api.legacy = true;
       await tester.pumpWidget(

@@ -38,8 +38,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
     }
 
-    Future<void> waitFor(Finder finder) async {
-      for (var i = 0; i < 200 && finder.evaluate().isEmpty; i++) {
+    Future<void> waitFor(Finder finder, {int attempts = 200}) async {
+      for (var i = 0; i < attempts && finder.evaluate().isEmpty; i++) {
         await tester.pump(const Duration(milliseconds: 100));
       }
       if (finder.evaluate().isEmpty) {
@@ -123,7 +123,10 @@ void main() {
             ),
           ),
         );
-        expect(await events.moveNext(), isTrue);
+        expect(
+          await events.moveNext().timeout(const Duration(seconds: 10)),
+          isTrue,
+        );
         expect(jsonDecode(events.current)['body']['type'], 'pending');
         await waitFor(find.text('Approve once'));
         if (approve) {
@@ -138,7 +141,18 @@ void main() {
           scrollable: find.byType(Scrollable).last,
         );
         await tap(find.text(approve ? 'Approve once' : 'Reject'));
-        expect(await events.moveNext(), isTrue);
+        await waitFor(
+          find.text(
+            approve
+                ? 'Approved once. The caller can now run this command.'
+                : 'Rejected. The caller has been notified.',
+          ),
+          attempts: 600,
+        );
+        expect(
+          await events.moveNext().timeout(const Duration(seconds: 10)),
+          isTrue,
+        );
         expect(
           jsonDecode(events.current)['body']['type'],
           approve ? 'completed' : 'rejected',
