@@ -1,0 +1,9 @@
+type live-view = choice(resource, market) {
+  balances = ("balances", "portfolio")
+  accounts = ("accounts", "portfolio")
+  positions = ("positions", "usdm")
+}
+
+rule binance-live(view: live-view) {
+  run uv run --no-sync --frozen --directory "~/code/folio" folio read binance "${view.resource}" --live --market "${view.market}" --account-mode portfolio --verbose
+}

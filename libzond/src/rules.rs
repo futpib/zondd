@@ -6,6 +6,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 pub const MAX_SOURCE_BYTES: usize = 16 * 1024;
 
+mod types;
+pub use types::{TypeDefinition, TypeKind};
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Parameter {
     pub name: String,
@@ -56,7 +59,7 @@ impl Word {
             _ => None,
         })
     }
-    fn expand(&self, bindings: &BTreeMap<&str, &str>) -> Result<String> {
+    fn expand(&self, bindings: &BTreeMap<String, &str>) -> Result<String> {
         let mut value = String::new();
         for part in &self.0 {
             match part {
@@ -90,6 +93,13 @@ pub struct CreateNew {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Rule {
     pub name: String,
+    #[serde(
+        default = "legacy_language",
+        skip_serializing_if = "is_legacy_language"
+    )]
+    pub language_version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<TypeDefinition>,
     pub parameters: Vec<Parameter>,
     pub requirements: Vec<Requirement>,
     pub create_new: Option<CreateNew>,
@@ -101,6 +111,13 @@ pub struct Rule {
 
 fn is_false(value: &bool) -> bool {
     !value
+}
+
+fn legacy_language() -> u32 {
+    1
+}
+fn is_legacy_language(version: &u32) -> bool {
+    *version == 1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +144,49 @@ pub struct Invocation {
 }
 
 impl BoundRule {
+    pub fn validate_template(&self) -> Result<()> {
+        let mut bindings = BTreeMap::from([("HOME".into(), self.home.as_str())]);
+        for word in self
+            .rule
+            .requirements
+            .iter()
+            .map(|r| &r.path)
+            .chain(self.rule.create_new.iter().map(|n| &n.path))
+        {
+            for variable in word.variables() {
+                bindings.entry(variable.into()).or_insert("example");
+            }
+        }
+        for (word, service, destination) in self
+            .rule
+            .requirements
+            .iter()
+            .map(|r| (&r.path, r.kind == "user-service-active-or-enabled", false))
+            .chain(self.rule.create_new.iter().map(|n| (&n.path, false, true)))
+        {
+            // A caller value may supply an absolute path or complete service name.
+            // Every instantiated value is checked again before it can be used.
+            if matches!(word.0.first(), Some(Part::Variable(name)) if name != "HOME") {
+                continue;
+            }
+            let target = word.expand(&bindings)?;
+            if service {
+                ensure!(
+                    valid_service_unit(&target),
+                    "invalid service name in rule template"
+                );
+            } else {
+                let path = PathBuf::from(target);
+                validate_cwd(&path)?;
+                ensure!(
+                    !destination || path.file_name().is_some(),
+                    "create-new-dir needs a child path"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn instantiate(
         &self,
         grant_id: &str,
@@ -137,14 +197,21 @@ impl BoundRule {
             args.len() == self.rule.parameters.len(),
             "wrong argument count"
         );
-        let mut bindings = BTreeMap::from([("HOME", self.home.as_str())]);
+        let mut bindings = BTreeMap::from([("HOME".into(), self.home.as_str())]);
         for (parameter, value) in self.rule.parameters.iter().zip(args) {
-            ensure!(
-                parameter.kind == "repo-name" && valid_repo_name(value),
-                "invalid {}: expected repo-name [A-Za-z0-9][A-Za-z0-9._-]{{0,99}}",
-                parameter.name
-            );
-            bindings.insert(parameter.name.as_str(), value.as_str());
+            let fields = self
+                .rule
+                .validate_argument(&parameter.kind, value)
+                .with_context(|| {
+                    format!(
+                        "invalid parameter '{}': expected {}",
+                        parameter.name, parameter.kind
+                    )
+                })?;
+            bindings.insert(parameter.name.clone(), value.as_str());
+            for (field, value) in fields {
+                bindings.insert(format!("{}.{field}", parameter.name), value);
+            }
         }
         let requirements = self
             .rule
@@ -183,7 +250,7 @@ impl BoundRule {
             .transpose()?;
         if let Some(new) = &self.rule.create_new {
             bindings.insert(
-                &new.variable,
+                new.variable.clone(),
                 staging.unwrap_or(
                     destination
                         .as_ref()
@@ -282,7 +349,7 @@ fn flush_literal(parts: &mut Vec<Part>, text: &mut String) {
     }
 }
 
-fn lex(source: &str) -> Result<Vec<Token>> {
+fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
     ensure!(source.len() <= MAX_SOURCE_BYTES, "rule exceeds 16 KiB");
     ensure!(
         source
@@ -314,6 +381,7 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                 let mut parts = Vec::new();
                 let mut text = String::new();
                 let mut quote = None;
+                let mut leading_home_variable = false;
                 while let Some(&c) = chars.peek() {
                     if quote.is_none() && (c.is_ascii_whitespace() || "(){}:,".contains(c)) {
                         break;
@@ -334,7 +402,7 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                     } else if c == '\\' {
                         let escaped = chars.next().context("unfinished escape")?;
                         ensure!(
-                            matches!(escaped, '\\' | '"' | '$' | '\'' | ' '),
+                            matches!(escaped, '\\' | '"' | '$' | '\'' | ' ' | '~' | '`'),
                             "unsupported escape"
                         );
                         text.push(escaped);
@@ -355,13 +423,38 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                             identifier(&name),
                             "expected a variable name after $; shell expansion is unsupported"
                         );
+                        if braced && chars.peek() == Some(&'.') {
+                            chars.next();
+                            let mut field = String::new();
+                            while chars
+                                .peek()
+                                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+                            {
+                                field.push(chars.next().unwrap());
+                            }
+                            ensure!(identifier(&field), "expected a choice field name");
+                            name.push('.');
+                            name.push_str(&field);
+                        }
                         if braced {
                             ensure!(chars.next() == Some('}'), "expected closing variable brace");
                         }
+                        leading_home_variable |= name == "HOME" && parts.is_empty();
                         parts.push(Part::Variable(name));
+                    } else if !stored && c == '~' && parts.is_empty() && text.is_empty() {
+                        ensure!(
+                            chars.peek().is_none_or(|c| *c == '/'
+                                || *c == '"'
+                                || c.is_ascii_whitespace()
+                                || "(){}:,".contains(*c)),
+                            "only ~ and ~/path are supported; named-user or embedded tilde expansion is unsupported"
+                        );
+                        parts.push(Part::Variable("HOME".into()));
                     } else {
                         ensure!(
-                            c != '`' && (quote.is_some() || !";|&<>*?[]~".contains(c)),
+                            c != '`'
+                                && (quote.is_some()
+                                    || (!";|&<>*?[]".contains(c) && (!stored || c != '~'))),
                             "shell operators, globbing and substitution are unsupported"
                         );
                         ensure!(c != '\n' && c != '\r', "newline inside argument");
@@ -373,6 +466,13 @@ fn lex(source: &str) -> Result<Vec<Token>> {
                 if parts.is_empty() {
                     parts.push(Part::Literal(String::new()));
                 }
+                ensure!(
+                    stored
+                        || !leading_home_variable
+                        || !(parts.len() == 1
+                            || matches!(parts.get(1), Some(Part::Literal(value)) if value.starts_with('/'))),
+                    "use ~ or ~/path instead of $HOME or a braced HOME variable at the start of a word"
+                );
                 tokens.push(Token::Word(Word(parts)));
             }
         }
@@ -384,6 +484,132 @@ struct Parser {
     tokens: std::collections::VecDeque<Token>,
 }
 impl Parser {
+    fn executable(&mut self) -> Result<String> {
+        let word = self.word()?;
+        if let Some(text) = word.literal() {
+            return Ok(text.into());
+        }
+        if word.0.first() == Some(&Part::Variable("HOME".into())) {
+            let mut text = String::from("~");
+            for part in word.0.iter().skip(1) {
+                let Part::Literal(value) = part else {
+                    bail!("executable cannot use a parameter")
+                };
+                text.push_str(value);
+            }
+            ensure!(
+                text == "~" || text.starts_with("~/"),
+                "invalid home-relative executable"
+            );
+            return Ok(text);
+        }
+        bail!("executable must be literal; parameters cannot select a program")
+    }
+
+    fn type_definition(&mut self) -> Result<TypeDefinition> {
+        self.keyword("type")?;
+        let name = self.literal()?;
+        self.keyword("=")?;
+        let kind = self.literal()?;
+        let definition = match kind.as_str() {
+            "enum" => {
+                self.symbol('{')?;
+                self.lines();
+                let mut values = Vec::new();
+                loop {
+                    values.push(self.literal()?);
+                    ensure!(values.len() <= types::MAX_CHOICES, "too many enum values");
+                    self.lines();
+                    if self.tokens.front() != Some(&Token::Symbol(',')) {
+                        break;
+                    }
+                    self.symbol(',')?;
+                    self.lines();
+                    if self.tokens.front() == Some(&Token::Symbol('}')) {
+                        break;
+                    }
+                }
+                self.symbol('}')?;
+                TypeKind::Enum { values }
+            }
+            "uint" | "int" => {
+                self.symbol('(')?;
+                let min = self.literal()?;
+                self.symbol(',')?;
+                let max = self.literal()?;
+                self.symbol(')')?;
+                if kind == "uint" {
+                    TypeKind::Uint {
+                        min: min.parse().context("invalid uint minimum")?,
+                        max: max.parse().context("invalid uint maximum")?,
+                    }
+                } else {
+                    TypeKind::Int {
+                        min: min.parse().context("invalid int minimum")?,
+                        max: max.parse().context("invalid int maximum")?,
+                    }
+                }
+            }
+            "text" => {
+                self.symbol('(')?;
+                let pattern = self.literal()?;
+                self.symbol(',')?;
+                let min = self
+                    .literal()?
+                    .parse()
+                    .context("invalid text minimum length")?;
+                self.symbol(',')?;
+                let max = self
+                    .literal()?
+                    .parse()
+                    .context("invalid text maximum length")?;
+                self.symbol(')')?;
+                TypeKind::Text { pattern, min, max }
+            }
+            "choice" => {
+                self.symbol('(')?;
+                let mut fields = Vec::new();
+                loop {
+                    fields.push(self.literal()?);
+                    ensure!(fields.len() <= types::MAX_FIELDS, "too many choice fields");
+                    if self.tokens.front() != Some(&Token::Symbol(',')) {
+                        break;
+                    }
+                    self.symbol(',')?;
+                }
+                self.symbol(')')?;
+                self.symbol('{')?;
+                self.lines();
+                let mut cases = BTreeMap::new();
+                while self.tokens.front() != Some(&Token::Symbol('}')) {
+                    let label = self.literal()?;
+                    self.keyword("=")?;
+                    self.symbol('(')?;
+                    let mut values = Vec::new();
+                    loop {
+                        values.push(self.literal()?);
+                        ensure!(values.len() <= types::MAX_FIELDS, "too many choice values");
+                        if self.tokens.front() != Some(&Token::Symbol(',')) {
+                            break;
+                        }
+                        self.symbol(',')?;
+                    }
+                    self.symbol(')')?;
+                    ensure!(
+                        cases.insert(label, values).is_none(),
+                        "duplicate choice case"
+                    );
+                    ensure!(cases.len() <= types::MAX_CHOICES, "too many choice cases");
+                    self.end_line()?;
+                }
+                self.symbol('}')?;
+                TypeKind::Choice { fields, cases }
+            }
+            _ => TypeKind::Alias { target: kind },
+        };
+        Ok(TypeDefinition { name, definition })
+    }
+
     fn lines(&mut self) {
         while self.tokens.front() == Some(&Token::Newline) {
             self.tokens.pop_front();
@@ -427,10 +653,29 @@ impl Parser {
 }
 
 pub fn parse(source: &str) -> Result<Rule> {
+    parse_source(source, false)
+}
+
+// Existing approvals retain their exact source and digest when syntax changes.
+pub fn parse_stored(source: &str) -> Result<Rule> {
+    parse_source(source, true)
+}
+
+fn parse_source(source: &str, stored: bool) -> Result<Rule> {
     let mut p = Parser {
-        tokens: lex(source)?.into(),
+        tokens: lex(source, stored)?.into(),
     };
     p.lines();
+    let mut types = Vec::new();
+    while p
+        .tokens
+        .front()
+        .is_some_and(|t| matches!(t, Token::Word(w) if w.literal() == Some("type")))
+    {
+        types.push(p.type_definition()?);
+        ensure!(types.len() <= types::MAX_TYPES, "too many local types");
+        p.end_line()?;
+    }
     p.keyword("rule")?;
     let name = p.literal()?;
     ensure!(crate::config::valid_name(&name), "invalid rule name");
@@ -445,10 +690,6 @@ pub fn parse(source: &str) -> Result<Rule> {
             );
             p.symbol(':')?;
             let kind = p.literal()?;
-            ensure!(
-                kind == "repo-name",
-                "unknown type '{kind}'; supported type: repo-name"
-            );
             parameters.push(Parameter { name, kind });
             ensure!(parameters.len() <= 16, "too many parameters");
             if p.tokens.front() != Some(&Token::Symbol(',')) {
@@ -504,9 +745,13 @@ pub fn parse(source: &str) -> Result<Rule> {
         None
     };
     p.keyword("run")?;
-    let program = p.literal()?;
+    let program = p.executable()?;
     let sudo_password = program == "--sudo";
-    let program = if sudo_password { p.literal()? } else { program };
+    let program = if sudo_password {
+        p.executable()?
+    } else {
+        program
+    };
     ensure!(
         !program.is_empty() && !program.starts_with('-'),
         "invalid executable"
@@ -524,36 +769,43 @@ pub fn parse(source: &str) -> Result<Rule> {
         p.lines();
     }
     ensure!(p.tokens.is_empty(), "unexpected content after rule");
-    let known = |name: &str| name == "HOME" || parameters.iter().any(|p| p.name == name);
-    for word in requirements
-        .iter()
-        .map(|r| &r.path)
-        .chain(create_new.iter().map(|n| &n.path))
-    {
-        ensure!(word.variables().all(&known), "unknown variable in path");
-    }
-    for word in &args {
-        ensure!(
-            word.variables()
-                .all(|name| known(name) || create_new.as_ref().is_some_and(|n| n.variable == name)),
-            "unknown variable in command"
-        );
-    }
-    if let Some(new) = &create_new {
-        ensure!(
-            args.iter()
-                .any(|w| w.variables().any(|v| v == new.variable)),
-            "command must use output variable ${}",
-            new.variable
-        );
-    }
-    Ok(Rule {
+    let rule = Rule {
         name,
+        language_version: if stored { 1 } else { 2 },
+        types,
         parameters,
         requirements,
         create_new,
         program,
         args,
         sudo_password,
-    })
+    };
+    rule.validate_types()?;
+    let known = |name: &str| rule.known_binding(name);
+    for word in rule
+        .requirements
+        .iter()
+        .map(|r| &r.path)
+        .chain(rule.create_new.iter().map(|n| &n.path))
+    {
+        ensure!(word.variables().all(&known), "unknown variable in path");
+    }
+    for word in &rule.args {
+        ensure!(
+            word.variables()
+                .all(|name| known(name)
+                    || rule.create_new.as_ref().is_some_and(|n| n.variable == name)),
+            "unknown variable in command"
+        );
+    }
+    if let Some(new) = &rule.create_new {
+        ensure!(
+            rule.args
+                .iter()
+                .any(|w| w.variables().any(|v| v == new.variable)),
+            "command must use output variable ${}",
+            new.variable
+        );
+    }
+    Ok(rule)
 }

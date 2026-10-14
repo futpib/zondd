@@ -1,0 +1,7 @@
+type owner = repo-name
+type repository = repo-name
+type job-id = uint(1, 18446744073709551615)
+
+rule read-github-failure(owner: owner, repo: repository, job: job-id) {
+  run gh run view "--repo=github.com/$owner/$repo" "--job=$job" --log-failed
+}

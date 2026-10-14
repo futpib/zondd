@@ -47,6 +47,190 @@ fn no_staging(root: &Path) -> bool {
 }
 
 #[test]
+fn local_types_are_reviewed_bound_to_the_digest_and_enforced_after_restart() {
+    let env = TestEnv::new();
+    let source = r#"type view = choice(resource, market) {
+ balances = ("balances", "portfolio")
+ accounts = ("accounts", "portfolio")
+ positions = ("positions", "usdm")
+}
+type selected = view
+type count = uint(0, 1000)
+rule typed(v: selected, n: count) {
+ run printf "%s:%s:%s" "${v.resource}" "${v.market}" "$n"
+}"#;
+    let proposal = propose(&env, source);
+    assert_eq!(proposal["bound"]["rule"]["language_version"], 2);
+    let review = proposal["review"].to_string();
+    assert!(
+        review.contains("Local type definitions")
+            && review.contains("positions")
+            && review.contains("usdm")
+            && review.contains("No other combinations")
+    );
+    let mut unsigned: libzond::rules::Proposal = serde_json::from_value(proposal.clone()).unwrap();
+    let digest = std::mem::take(&mut unsigned.digest);
+    assert_eq!(
+        libzond::config::revision(&serde_json::to_string(&unsigned).unwrap()),
+        digest
+    );
+    unsigned.bound.rule.types[0].definition = libzond::rules::TypeKind::Choice {
+        fields: vec!["resource".into(), "market".into()],
+        cases: std::collections::BTreeMap::from([(
+            "positions".into(),
+            vec!["positions".into(), "portfolio".into()],
+        )]),
+    };
+    assert_ne!(
+        libzond::config::revision(&serde_json::to_string(&unsigned).unwrap()),
+        digest
+    );
+    assert_eq!(
+        resolve(&env, &proposal, true, None)["rule"]["status"],
+        "active"
+    );
+    for (selector, market) in [
+        ("balances", "portfolio"),
+        ("accounts", "portfolio"),
+        ("positions", "usdm"),
+    ] {
+        let result = invoke(&env, "typed", &[selector, "1000"]);
+        assert_eq!(result["type"], "completed", "{result}");
+        assert_eq!(
+            decoded(&result, "stdout"),
+            format!("{selector}:{market}:1000").as_bytes()
+        );
+    }
+    for args in [
+        vec!["positions", "1001"],
+        vec!["positions", "01"],
+        vec!["unknown", "1"],
+        vec!["positions", "1", "portfolio"],
+        vec!["positions,portfolio", "1"],
+    ] {
+        let result = invoke(&env, "typed", &args);
+        assert_eq!(result["type"], "error", "{result}");
+        let check = env.request(
+            "exec",
+            json!({"method":"check","input":{"method":"invoke","operation":"typed","args":args}}),
+        );
+        assert_ne!(check["check"]["decision"], "allow", "{check}");
+    }
+    env.stop_daemon();
+    env.start_daemon();
+    let state = &states(&env, "exec")[0];
+    assert_eq!(state["status"], "active", "{state}");
+    assert_eq!(state["proposal"], proposal);
+    assert_eq!(
+        decoded(&invoke(&env, "typed", &["positions", "0"]), "stdout"),
+        b"positions:usdm:0"
+    );
+}
+
+#[test]
+fn home_paths_expand_on_the_receiver_and_new_home_spellings_are_rejected() {
+    let env = TestEnv::new();
+    let before = states(&env, "exec");
+    for word in ["$HOME/code", "\"${HOME}/code\""] {
+        let result = env.request(
+            "exec",
+            json!({"method":"propose_rule","source":format!("rule old() {{ run printf {word} }}")}),
+        );
+        assert_eq!(result["type"], "error");
+        assert!(
+            result["message"].as_str().unwrap().contains("use ~"),
+            "{result}"
+        );
+    }
+    assert_eq!(states(&env, "exec"), before);
+    let proposal = approve(&env, "rule home() { run printf '%s' \"~/code\" }");
+    let expected = libzond::paths::home_dir().join("code");
+    assert_eq!(
+        decoded(&invoke(&env, "home", &[]), "stdout"),
+        expected.to_str().unwrap().as_bytes()
+    );
+    env.stop_daemon();
+    env.start_daemon();
+    assert_eq!(states(&env, "exec")[0]["proposal"], proposal);
+}
+
+#[test]
+fn upgrading_preserves_legacy_home_grants_digests_and_literal_tildes() {
+    let env = TestEnv::new();
+    let source = "rule legacy() { run printf '%s:%s' \"~/code\" '~' }";
+    let proposal = approve(&env, source);
+    let mut state: libzond::rules::RuleState =
+        serde_json::from_value(states(&env, "exec")[0].clone()).unwrap();
+    state.proposal.source = source.replace("~/code", "$HOME/code");
+    let mut old_rule = libzond::rules::parse_stored(&state.proposal.source).unwrap();
+    old_rule.program = state.proposal.bound.rule.program.clone();
+    state.proposal.bound.rule = old_rule;
+    let review = state.proposal.review.as_mut().unwrap();
+    let normalized = review["sections"][0]["fields"][0]["value"]
+        .as_str()
+        .unwrap()
+        .replace("\"~/code\"", "\"${HOME}/code\"")
+        .replace("\"\\~\"", "\"~\"");
+    review["sections"][0]["fields"][0]["value"] = normalized.into();
+    state.proposal.digest.clear();
+    state.proposal.digest =
+        libzond::config::revision(&serde_json::to_string(&state.proposal).unwrap());
+    let expected = serde_json::to_value(&state.proposal).unwrap();
+    assert!(expected["bound"]["rule"].get("language_version").is_none());
+    assert!(expected["bound"]["rule"].get("types").is_none());
+    env.stop_daemon();
+    let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+    db.execute(
+        "UPDATE rule_states SET record=?1 WHERE id=?2",
+        rusqlite::params![
+            serde_json::to_string(&state).unwrap(),
+            proposal["id"].as_str().unwrap()
+        ],
+    )
+    .unwrap();
+    drop(db);
+    env.start_daemon();
+    let restored = &states(&env, "exec")[0];
+    assert_eq!(restored["status"], "active", "{restored}");
+    assert_eq!(restored["proposal"], expected);
+    let output = format!("{}:~", libzond::paths::home_dir().join("code").display());
+    assert_eq!(
+        decoded(&invoke(&env, "legacy", &[]), "stdout"),
+        output.as_bytes()
+    );
+}
+
+#[test]
+fn home_relative_executables_resolve_once_and_remain_bound_after_restart() {
+    let env = TestEnv::new();
+    let executable = env.dir.path().join("home-printf");
+    fs::copy("/usr/bin/printf", &executable).unwrap();
+    let relative = executable
+        .strip_prefix(libzond::paths::home_dir())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let source =
+        format!("rule home-program() {{ run \"~/{relative}\" '%s' 'home-program-output' }}");
+    let proposal = approve(&env, &source);
+    assert_eq!(
+        proposal["bound"]["rule"]["program"],
+        executable.to_str().unwrap()
+    );
+    assert_eq!(
+        decoded(&invoke(&env, "home-program", &[]), "stdout"),
+        b"home-program-output"
+    );
+    env.stop_daemon();
+    env.start_daemon();
+    assert_eq!(states(&env, "exec")[0]["proposal"], proposal);
+    assert_eq!(
+        decoded(&invoke(&env, "home-program", &[]), "stdout"),
+        b"home-program-output"
+    );
+}
+
+#[test]
 fn rule_wait_is_scoped_and_observes_approval_before_or_after_attachment() {
     let env = TestEnv::new();
     let proposal = propose(&env, "rule waited() { run true }");
@@ -126,9 +310,9 @@ fn rule_wait_can_retrieve_an_outcome_outside_the_recent_rules_page() {
 fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
     let env = TestEnv::new();
     let source = r#"rule reviewed(x: repo-name) {
-  require is-dir "$HOME/code"
-  require absent "$HOME/code/$x"
-  create-new-dir "$HOME/code/$x" as dest {
+  require is-dir "~/code"
+  require absent "~/code/$x"
+  create-new-dir "~/code/$x" as dest {
     run mkdir "$dest" '$x'
   }
 }"#;

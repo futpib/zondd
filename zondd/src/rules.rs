@@ -20,8 +20,19 @@ fn principal_revision(config: &Config, principal: &str) -> Result<String> {
     )?))
 }
 
-fn compile(source: &str) -> Result<libzond::rules::Rule> {
-    let mut rule = libzond::rules::parse(source)?;
+fn compile(source: &str, stored: bool) -> Result<libzond::rules::Rule> {
+    let mut rule = if stored {
+        libzond::rules::parse_stored(source)?
+    } else {
+        libzond::rules::parse(source)?
+    };
+    if rule.program == "~" || rule.program.starts_with("~/") {
+        rule.program = libzond::paths::home_dir()
+            .join(rule.program.strip_prefix("~/").unwrap_or(""))
+            .to_str()
+            .context("non-UTF8 home executable")?
+            .into();
+    }
     let program = if rule.program.contains('/') {
         let path = PathBuf::from(&rule.program);
         ensure!(path.is_absolute(), "executable paths must be absolute");
@@ -42,7 +53,8 @@ fn compile(source: &str) -> Result<libzond::rules::Rule> {
 
 fn check_stored(proposal: &Proposal) -> Result<()> {
     ensure!(
-        compile(&proposal.source)? == proposal.bound.rule,
+        compile(&proposal.source, proposal.bound.rule.language_version == 1)?
+            == proposal.bound.rule,
         "rule source and compiled definition disagree"
     );
     ensure!(
@@ -201,7 +213,7 @@ impl Rules {
             "approval queue full"
         );
         ensure!(self.0.len() < 192, "rule capacity exhausted");
-        let rule = compile(&source)?;
+        let rule = compile(&source, false)?;
         ensure!(
             !config.operations.contains_key(&rule.name),
             "rule name conflicts with configured operation"
@@ -227,12 +239,7 @@ impl Rules {
                 .cwd
                 .clone(),
         };
-        // Resolve a representative value to reject malformed paths before they enter review.
-        bound.instantiate(
-            "",
-            &vec!["example".into(); bound.rule.parameters.len()],
-            None,
-        )?;
+        bound.validate_template()?;
         let mut proposal = Proposal {
             id: uuid::Uuid::new_v4().to_string(),
             principal: principal.into(),

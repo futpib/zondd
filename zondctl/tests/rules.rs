@@ -42,6 +42,74 @@ fn cli_leaves_rule_language_validation_to_the_receiver() {
 }
 
 #[test]
+fn cli_forwards_local_definitions_and_invokes_correlated_choices_with_exact_bounds() {
+    let env = TestEnv::new();
+    let source = r#"type view = choice(resource, market) {
+ balances = ("balances", "portfolio")
+ positions = ("positions", "usdm")
+}
+type cursor = uint(0, 18446744073709551615)
+rule typed(v: view, n: cursor) {
+ run printf "%s:%s:%s" "${v.resource}" "${v.market}" "$n"
+}"#;
+    let path = env.dir.path().join("typed.zond");
+    std::fs::write(&path, source).unwrap();
+    let event = parse(checked(
+        env.cli()
+            .args([
+                "--principal",
+                "exec",
+                "--json",
+                "propose-rule",
+                "--no-wait",
+                "--file",
+            ])
+            .arg(path),
+        0,
+    ));
+    let proposal = &event["proposal"];
+    assert_eq!(proposal["source"], source);
+    assert_eq!(
+        proposal["bound"]["rule"]["types"][1]["definition"]["max"],
+        "18446744073709551615"
+    );
+    checked(
+        env.cli().args([
+            "approve-rule",
+            proposal["id"].as_str().unwrap(),
+            "--digest",
+            proposal["digest"].as_str().unwrap(),
+            "--permanent",
+        ]),
+        0,
+    );
+    let result = checked(
+        env.cli().args([
+            "--principal",
+            "exec",
+            "invoke",
+            "typed",
+            "positions",
+            "18446744073709551615",
+        ]),
+        0,
+    );
+    assert_eq!(result.stdout, b"positions:usdm:18446744073709551615");
+    for args in [
+        vec!["positions", "18446744073709551616"],
+        vec!["other", "1"],
+        vec!["positions", "1", "portfolio"],
+    ] {
+        checked(
+            env.cli()
+                .args(["--principal", "exec", "invoke", "typed"])
+                .args(args),
+            125,
+        );
+    }
+}
+
+#[test]
 fn cli_proposes_observes_approves_invokes_and_revokes_rules() {
     let env = TestEnv::new();
     let path = env.dir.path().join("echo.zond");

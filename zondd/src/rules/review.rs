@@ -34,7 +34,7 @@ fn word(word: &Word) -> String {
         .join(" + ")
 }
 
-fn source_word(word: &Word) -> String {
+fn source_word_mode(word: &Word, home: bool) -> String {
     if let [Part::Literal(value)] = word.0.as_slice()
         && !value.is_empty()
         && value
@@ -44,12 +44,21 @@ fn source_word(word: &Word) -> String {
         return value.clone();
     }
     let mut value = String::from("\"");
-    for part in &word.0 {
+    for (index, part) in word.0.iter().enumerate() {
         match part {
+            Part::Variable(name)
+                if home
+                    && index == 0
+                    && name == "HOME"
+                    && (word.0.len() == 1
+                        || matches!(word.0.get(1), Some(Part::Literal(value)) if value.starts_with('/'))) =>
+            {
+                value.push('~')
+            }
             Part::Variable(name) => value.push_str(&format!("${{{name}}}")),
             Part::Literal(text) => {
                 for c in text.chars() {
-                    if matches!(c, '\\' | '"' | '$') {
+                    if matches!(c, '\\' | '"' | '$') || (home && matches!(c, '~' | '`')) {
                         value.push('\\');
                     }
                     value.push(c);
@@ -62,25 +71,35 @@ fn source_word(word: &Word) -> String {
 }
 
 fn normalized_source(bound: &BoundRule) -> String {
+    normalized_source_mode(bound, true)
+}
+
+fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
     let rule = &bound.rule;
+    let home = home && rule.language_version >= 2;
     let parameters = rule
         .parameters
         .iter()
         .map(|p| format!("{}: {}", p.name, p.kind))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut source = format!("rule {}({parameters}) {{\n", rule.name);
+    let mut source = rule
+        .types
+        .iter()
+        .map(|ty| format!("{}\n", ty.source()))
+        .collect::<String>();
+    source.push_str(&format!("rule {}({parameters}) {{\n", rule.name));
     for requirement in &rule.requirements {
         source.push_str(&format!(
             "  require {} {}\n",
             requirement.kind,
-            source_word(&requirement.path)
+            source_word_mode(&requirement.path, home)
         ));
     }
     let indent = if let Some(new) = &rule.create_new {
         source.push_str(&format!(
             "  create-new-dir {} as {} {{\n",
-            source_word(&new.path),
+            source_word_mode(&new.path, home),
             new.variable
         ));
         "    "
@@ -90,11 +109,11 @@ fn normalized_source(bound: &BoundRule) -> String {
     source.push_str(&format!(
         "{indent}run {}{}",
         if rule.sudo_password { "--sudo " } else { "" },
-        source_word(&Word(vec![Part::Literal(rule.program.clone())]))
+        source_word_mode(&Word(vec![Part::Literal(rule.program.clone())]), home)
     ));
     for arg in &rule.args {
         source.push(' ');
-        source.push_str(&source_word(arg));
+        source.push_str(&source_word_mode(arg, home));
     }
     source.push('\n');
     if rule.create_new.is_some() {
@@ -105,32 +124,42 @@ fn normalized_source(bound: &BoundRule) -> String {
 }
 
 pub(super) fn is_current(bound: &BoundRule, review: Option<&serde_json::Value>) -> bool {
-    let Ok(mut current) = describe(bound) else {
+    let Ok(current) = describe(bound) else {
         return false;
     };
-    if review == Some(&current) {
-        return true;
-    }
-    // Earlier reviews contain the same execution details without the normalized source.
-    if !review.is_some_and(|r| {
-        r["sections"]
-            .as_array()
-            .is_some_and(|sections| sections.iter().any(|s| s["title"] == "Normalized rule"))
-    }) {
-        current["sections"].as_array_mut().unwrap().remove(0);
-    }
-    if review == Some(&current) {
-        return true;
-    }
-    // The directory effect's spelling changed, but previously reviewed semantics did not.
-    if bound.rule.create_new.is_some() {
-        for section in current["sections"].as_array_mut().unwrap() {
-            if section["title"] == "Effects" {
-                section["fields"][0]["label"] = "create-new".into();
+    for legacy_home in [false, true] {
+        let mut candidate = current.clone();
+        if legacy_home {
+            if !bound.rule.types.is_empty() {
+                continue;
+            }
+            candidate["sections"][0]["fields"][0]["value"] =
+                normalized_source_mode(bound, false).into();
+        }
+        // Earlier reviews contain the same execution details without normalized source.
+        if !review.is_some_and(|r| {
+            r["sections"]
+                .as_array()
+                .is_some_and(|sections| sections.iter().any(|s| s["title"] == "Normalized rule"))
+        }) {
+            candidate["sections"].as_array_mut().unwrap().remove(0);
+        }
+        if review == Some(&candidate) {
+            return true;
+        }
+        // The directory effect's spelling changed without changing its semantics.
+        if bound.rule.create_new.is_some() {
+            for section in candidate["sections"].as_array_mut().unwrap() {
+                if section["title"] == "Effects" {
+                    section["fields"][0]["label"] = "create-new".into();
+                }
             }
         }
+        if review == Some(&candidate) {
+            return true;
+        }
     }
-    review == Some(&current)
+    false
 }
 
 pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
@@ -183,18 +212,27 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
     if !rule.parameters.is_empty() {
         let mut fields = Vec::new();
         for parameter in &rule.parameters {
-            let description = match parameter.kind.as_str() {
-                "repo-name" => {
-                    "1–100 ASCII letters, digits, dots, underscores or hyphens; starts with a letter or digit. Full match: [A-Za-z0-9][A-Za-z0-9._-]{0,99}. Validated on every invocation; does not check repository existence."
-                }
-                _ => bail!("missing review description for parameter type"),
-            };
+            let description = rule.type_description(&parameter.kind)?;
             fields.push(field(
                 format!("{}: {}", parameter.name, parameter.kind),
                 description,
             ));
         }
         sections.push(section("Parameters (positional order)", fields));
+    }
+    if !rule.types.is_empty() {
+        sections.push(section(
+            "Local type definitions",
+            rule.types
+                .iter()
+                .map(|ty| {
+                    Ok(field(
+                        &ty.name,
+                        format!("{}\n{}", ty.source(), rule.type_description(&ty.name)?),
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        ));
     }
     if !rule.requirements.is_empty() {
         let mut fields = vec![field(
@@ -257,7 +295,11 @@ mod tests {
     #[test]
     fn normalized_rule_round_trips_literal_text_variables_and_effects() {
         for source in [
-            "# caller says this is harmless\nrule clone(x: repo-name) {\n require is-dir \"$HOME/code\"\n create-new \"$HOME/code/$x\" as dest {\n run /usr/bin/git clone -- \"git@github.com:futpib/$x.git\" \"$dest\"\n }\n}",
+            include_str!("../../../examples/rules/binance-live.zond"),
+            include_str!("../../../examples/rules/binance-history.zond"),
+            include_str!("../../../examples/rules/read-github-failure.zond"),
+            "type literal = enum { '$HOME', '~/path', '`id`', '' }\nrule typed(x: literal) { run printf '`id`' \"$x\" }",
+            "# caller says this is harmless\nrule clone(x: repo-name) {\n require is-dir \"~/code\"\n create-new \"~/code/$x\" as dest {\n run /usr/bin/git clone -- \"git@github.com:futpib/$x.git\" \"$dest\"\n }\n}",
             r##"rule literals(x: repo-name) { run printf "" '$x' '${x}' '$(whoami)' "a\"b" "a\\b" "$x.txt" "a'x" "# comment" }"##,
             "rule whitespace() { run printf \"a\tb\" }",
             "rule privileged() { run --sudo /usr/bin/paru -Syu --noconfirm }",
@@ -281,6 +323,24 @@ mod tests {
                 normalized
             );
         }
+    }
+
+    #[test]
+    fn legacy_home_reviews_preserve_literal_tildes_and_empty_type_serialization() {
+        let bound = BoundRule {
+            rule: libzond::rules::parse_stored(
+                "rule old() { run /usr/bin/printf '%s' \"$HOME/code\" \"~\" }",
+            )
+            .unwrap(),
+            home: "/home/old".into(),
+            cwd: "/tmp".into(),
+        };
+        let source = normalized_source(&bound);
+        assert!(source.contains("${HOME}/code") && source.contains("\"~\""));
+        assert_eq!(libzond::rules::parse_stored(&source).unwrap(), bound.rule);
+        assert!(is_current(&bound, Some(&describe(&bound).unwrap())));
+        let serialized = serde_json::to_value(&bound.rule).unwrap();
+        assert!(serialized.get("language_version").is_none() && serialized.get("types").is_none());
     }
 
     #[test]
@@ -319,7 +379,7 @@ mod tests {
         let bound = BoundRule {
             rule: libzond::rules::parse(
                 r#"rule directory(x: repo-name) {
-  create-new-dir "$HOME/$x" as dest { run mkdir "$dest" }
+  create-new-dir "~/$x" as dest { run mkdir "$dest" }
 }"#,
             )
             .unwrap(),

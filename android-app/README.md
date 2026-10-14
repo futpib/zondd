@@ -205,6 +205,13 @@ anchor; keep earlier exports separately when needed. See the main
 [audit documentation](../readme.md#request-history-and-action-log) for the exact
 trust boundary.
 
+Local rule types are receiver-defined. Approval cards show aliases, enum values,
+integer and text constraints, and every correlated choice row; the app submits
+only the reviewed proposal ID and digest. Integer bounds remain exact decimal
+strings in YAML and audit data. The app does not parse rule source or choose
+values on the caller's behalf. See the main [rule language documentation](../readme.md#propose-reusable-typed-rules)
+for local types, choice projections and home expansion.
+
 ## Architecture
 
 The local `vendor/dartssh2` dependency retains version 4.1.0 with one documented

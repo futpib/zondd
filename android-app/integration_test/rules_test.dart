@@ -16,14 +16,20 @@ void main() {
       jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
           as Map<String, dynamic>;
   for (final scenario in [
-    (iroh: false, service: false),
-    (iroh: true, service: false),
-    (iroh: false, service: true),
-    (iroh: true, service: true),
+    (iroh: false, service: false, typed: false),
+    (iroh: true, service: false, typed: false),
+    (iroh: false, service: true, typed: false),
+    (iroh: true, service: true, typed: false),
+    (iroh: false, service: false, typed: true),
+    (iroh: true, service: false, typed: true),
   ]) {
     final iroh = scenario.iroh;
     testWidgets(
-      'review and revoke a ${scenario.service ? 'service' : 'directory'} rule over ${iroh ? 'Iroh' : 'SSH'}',
+      'review and revoke a ${scenario.typed
+          ? 'typed'
+          : scenario.service
+          ? 'service'
+          : 'directory'} rule over ${iroh ? 'Iroh' : 'SSH'}',
       (tester) async {
         final api = await SshControl.connect(
           Profile(
@@ -80,8 +86,27 @@ void main() {
         }
 
         final name =
-            'android-${scenario.service ? 'service' : 'rule'}-${iroh ? 'iroh' : 'ssh'}';
-        final source = scenario.service
+            'android-${scenario.typed
+                ? 'typed'
+                : scenario.service
+                ? 'service'
+                : 'rule'}-${iroh ? 'iroh' : 'ssh'}';
+        final source = scenario.typed
+            ? r'''type view = choice(resource, market) {
+  balances = ("balances", "portfolio")
+  accounts = ("accounts", "portfolio")
+  positions = ("positions", "usdm")
+}
+type selected = view
+type number = uint(1, 10)
+type big-count = uint(0, 18446744073709551615)
+type category = enum { daily, weekly }
+type symbol = text('[A-Z]+', 2, 10)
+rule RULE_NAME(v: selected, n: number, c: category, s: symbol) {
+  run printf "%s:%s:%s:%s:%s" "${v.resource}" "${v.market}" "$n" "$c" "$s"
+}'''
+                  .replaceAll('RULE_NAME', name)
+            : scenario.service
             ? 'rule $name(x: repo-name) {\n  require user-service-active-or-enabled "zond-test-\$x.service"\n  run systemctl --user restart -- "zond-test-\$x.service"\n}'
             : 'rule $name(x: repo-name) {\n  create-new-dir "${fixture['runtime']}/\$x" as dest {\n    run mkdir "\$dest"\n  }\n}';
         String? proposalId;
@@ -122,7 +147,18 @@ void main() {
           final definition =
               'Definition: ${proposal['review']['sections'][0]['fields'][0]['value']}';
           expect(find.text(definition), findsOneWidget);
-          expect(find.textContaining('repo-name: 1–100 ASCII'), findsOneWidget);
+          if (scenario.typed) {
+            expect(find.text('Local type definitions'), findsOneWidget);
+            expect(
+              find.textContaining('No other combinations are permitted.'),
+              findsWidgets,
+            );
+          } else {
+            expect(
+              find.textContaining('repo-name: 1–100 ASCII'),
+              findsOneWidget,
+            );
+          }
           for (final section in proposal['review']['sections'] as List) {
             expect(find.text(section['title'] as String), findsOneWidget);
             for (final field in section['fields'] as List) {
@@ -165,7 +201,9 @@ void main() {
           final invoked = await request({
             'method': 'invoke',
             'operation': name,
-            'args': [name],
+            'args': scenario.typed
+                ? ['positions', '2', 'daily', 'ETHUSDT']
+                : [name],
           });
           if (scenario.service) {
             expect(invoked['type'], 'error');
@@ -176,14 +214,37 @@ void main() {
           } else {
             expect(invoked['code'], 0);
           }
-          expect(
-            (await request({
-              'method': 'invoke',
-              'operation': name,
-              'args': [name],
-            }))['type'],
-            'error',
-          );
+          if (scenario.typed) {
+            expect(
+              utf8.decode(base64Decode(invoked['stdout'] as String)),
+              'positions:usdm:2:daily:ETHUSDT',
+            );
+            for (final args in [
+              ['positions', '11', 'daily', 'ETHUSDT'],
+              ['positions', '02', 'daily', 'ETHUSDT'],
+              ['positions', '2', 'other', 'ETHUSDT'],
+              ['positions', '2', 'daily', 'ethusdt'],
+              ['positions', 'portfolio', '2', 'daily', 'ETHUSDT'],
+            ]) {
+              expect(
+                (await request({
+                  'method': 'invoke',
+                  'operation': name,
+                  'args': args,
+                }))['type'],
+                'error',
+              );
+            }
+          } else {
+            expect(
+              (await request({
+                'method': 'invoke',
+                'operation': name,
+                'args': [name],
+              }))['type'],
+              'error',
+            );
+          }
           await visible(find.text('Caller rules'));
           await tester.tap(find.text('Caller rules'));
           final ruleCard = find.byKey(ValueKey('rule-state-$proposalId'));

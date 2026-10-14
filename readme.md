@@ -375,8 +375,8 @@ as `clone-futpib.zond` on the caller:
 
 ```text
 rule clone-futpib(x: repo-name) {
-  require is-dir "$HOME/code"
-  create-new-dir "$HOME/code/$x" as dest {
+  require is-dir "~/code"
+  create-new-dir "~/code/$x" as dest {
     run git clone -- "https://github.com/futpib/$x.git" "$dest"
   }
 }
@@ -522,19 +522,87 @@ The language supports one `run`, optional `require is-dir`, `require absent` and
 `require user-service-active-or-enabled` checks before it, and an optional
 `create-new-dir PATH as VARIABLE { ... }` block.
 `create-new` remains an alias for older rule source.
-Each check occupies its own line. Parameters are positional and declared as
-`name: repo-name`; up to 16 are allowed. `repo-name` requires a full match of
+Each check occupies its own line. Parameters are positional, with up to 16
+declarations of `name: TYPE`. Types are `repo-name` or a local definition.
+`repo-name` requires a full match of
 `[A-Za-z0-9][A-Za-z0-9._-]{0,99}`: bounded ASCII, no slash, leading hyphen,
 whitespace, control characters, or Unicode. It validates syntax, not remote
 repository existence. Every invocation is checked on the receiver, including
 requests made directly through the protocol.
 
+Local definitions precede the single rule and belong only to that proposal:
+
+```text
+type repository = repo-name
+type connection = enum { binance, ibkr }
+type cursor = uint(0, 18446744073709551615)
+type job-id = uint(1, 18446744073709551615)
+type adjustment = int(-100, 100)
+type symbol = text('[A-Z0-9]+', 2, 20)
+type live-view = choice(resource, market) {
+  balances = ("balances", "portfolio")
+  accounts = ("accounts", "portfolio")
+  positions = ("positions", "usdm")
+}
+
+rule binance-live(view: live-view) {
+  run uv run --no-sync --frozen --directory "~/code/folio" folio read binance "${view.resource}" --live --market "${view.market}" --account-mode portfolio --verbose
+}
+```
+
+- An alias names `repo-name` or another local type. Forward references work;
+  unknown references, cycles, duplicate names and builtin shadowing are rejected.
+- An enum accepts exactly one of its listed literal strings. Quotes preserve
+  spaces and special characters. No normalization or recursive expansion occurs.
+- `uint(MIN, MAX)` and `int(MIN, MAX)` use inclusive 64-bit ranges. Invocation
+  values must be canonical decimal strings: no leading zeros except `0`, plus
+  signs, whitespace, negative zero or overflow. Unsigned types reject negatives.
+- `text(PATTERN, MIN_BYTES, MAX_BYTES)` accepts printable ASCII strings whose
+  length is in the inclusive range and whose entire value matches the Rust regex
+  pattern. Patterns cannot select arbitrary code or invoke a validator program.
+- A choice accepts one case name, supplied as one positional argument. Its fields
+  expand through braced projections such as `${view.market}`. All fields come
+  from the selected row together; callers cannot supply or mix them separately.
+  Choice aliases preserve the same fields. The selector itself is available as
+  `$view`. Field values are literal argv pieces, without further expansion.
+
+The example permits exactly the three resource/market pairs shown. Invoke it
+with `zondctl invoke binance-live positions`; there is no separate market argument.
+Unlike independent enums, it cannot grant a Cartesian product of those pairs.
+See [the complete merged rule](examples/rules/binance-live.zond),
+[typed trade-history rule](examples/rules/binance-history.zond), and
+[typed GitHub job rule](examples/rules/read-github-failure.zond). These are templates
+for new proposals; installing this language support does not replace existing grants.
+
+There are at most 32 local definitions, 64 values/cases per enum or choice, and
+16 fields per choice. Text lengths are at most 4096 bytes and patterns at most
+1024 bytes, with bounded regex compilation. The whole source remains limited to
+16 KiB; the compiled proposal, including its review, must fit within 12 KiB.
+Constraints, aliases and every correlated row appear in the receiver's
+review and normalized source and are covered by the immutable approval digest.
+Every invocation, including raw protocol requests and resumed jobs, is checked
+on the receiver. Definitions have no imports, global registry or ambient state.
+64-bit integer bounds use decimal strings in JSON so Android and audit exports
+retain their exact values.
+
+Saved language-version-1 grants retain their original source, review, digest and
+`$HOME`/quoted-tilde behavior. New proposals use language version 2. Restore checks
+select the recorded syntax version and compare the source against the compiled
+rule; the compatibility path cannot be used to submit new legacy proposals.
+
 Double quotes group arguments and allow `$name` or `${name}` substitution;
 single quotes preserve literal text. Backslash can quote a backslash, quote,
-dollar sign or space. Expansion happens exactly once into argv entries, with no
-shell, word splitting, command substitution, globbing, pipelines, or redirection.
-`$HOME` is the receiving daemon's home, frozen at proposal time. Bare executable
-names resolve through `/usr/bin:/bin` when proposed; review and execution use
+dollar sign, tilde or space. Expansion happens exactly once into argv entries,
+with no shell, word splitting, command substitution, globbing, pipelines,
+or redirection.
+`~` and `~/path` expand to the receiving daemon's home, frozen at proposal time,
+at the start of unquoted or double-quoted words. A single-quoted or escaped tilde
+is literal. Named-user expansion (`~user`) is unsupported. New proposals reject
+`$HOME` and `${HOME}` at the start of a word when `~` can express the same path.
+An embedded home variable such as `prefix:$HOME/path` remains available. Literal
+values supplied through parameters or choice fields never trigger tilde expansion.
+A fixed `~/bin/program` executable resolves to its absolute path at proposal time.
+Bare executable names resolve through `/usr/bin:/bin` when proposed; review and execution use
 the resulting absolute path. A rule cannot substitute its executable.
 
 For a trusted user service, allow restarting it while active, or starting it

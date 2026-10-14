@@ -1,8 +1,8 @@
 use libzond::rules::{BoundRule, parse, valid_repo_name, valid_service_unit};
 
 const SOURCE: &str = r#"rule clone-futpib(x: repo-name) {
-  require is-dir "$HOME/code"
-  create-new-dir "$HOME/code/$x" as dest {
+  require is-dir "~/code"
+  create-new-dir "~/code/$x" as dest {
     run git clone -- "https://github.com/futpib/${x}.git" "$dest"
   }
 }"#;
@@ -140,7 +140,7 @@ fn reject_shell_code_unknown_variables_types_and_ambiguous_bindings() {
         SOURCE.replace("${x}", "${x:-evil}"),
         SOURCE.replace("\"$dest\"", "\"${dest\""),
         SOURCE.replace("\"$dest\"", "\"unterminated"),
-        SOURCE.replace("$HOME/code", "$dest/code"),
+        SOURCE.replace("~/code", "$dest/code"),
         format!("{SOURCE}\nrun sh"),
         format!("{SOURCE}\0"),
         "#".repeat(16 * 1024 + 1),
