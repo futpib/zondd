@@ -43,7 +43,7 @@ pub fn unhex<const N: usize>(value: &str) -> Result<[u8; N]> {
         "invalid audit key or signature length"
     );
     let mut bytes = [0; N];
-    for (i, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (i, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         ensure!(
             pair.iter()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b)),
