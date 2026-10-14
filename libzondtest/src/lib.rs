@@ -35,15 +35,19 @@ pub fn cargo_bin(name: &str) -> PathBuf {
     path.join(name)
 }
 
-pub fn wait_for(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+pub fn wait_for(condition: impl FnMut() -> bool) {
+    wait_for_with_timeout(Duration::from_secs(10), condition);
+}
+
+fn wait_for_with_timeout(timeout: Duration, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
     loop {
         if condition() {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "condition did not become true within ten seconds"
+            "condition did not become true within {timeout:?}"
         );
         thread::sleep(Duration::from_millis(20));
     }
@@ -323,9 +327,14 @@ impl TestEnv {
         processes.len() - 1
     }
     pub fn start_daemon(&self) {
+        self.start_daemon_with_timeout(Duration::from_secs(10));
+    }
+    pub fn start_daemon_with_timeout(&self, timeout: Duration) {
         self.daemon_process
             .set(self.start(self.daemon_command().arg("serve"), "daemon"));
-        wait_for(|| UnixStream::connect(self.runtime.join("ops.sock")).is_ok());
+        wait_for_with_timeout(timeout, || {
+            UnixStream::connect(self.runtime.join("ops.sock")).is_ok()
+        });
     }
     pub fn daemon_command(&self) -> Command {
         let mut cmd = Command::new(&self.daemon);

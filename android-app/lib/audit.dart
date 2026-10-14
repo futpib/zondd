@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
@@ -7,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:pinenacl/ed25519.dart' as ed25519;
 import 'package:pinenacl/tweetnacl.dart' show TweetNaClExt;
 import 'control.dart';
+import 'transport.dart';
 
 abstract interface class AuditPeer {
   String? get auditScope;
@@ -104,6 +106,25 @@ class AuditPreparationTimeout implements Exception {
   @override
   String toString() =>
       'Preparing your action timed out. It was not sent. Try again.';
+}
+
+class AuditHistoryPaused implements Exception {
+  const AuditHistoryPaused();
+  @override
+  String toString() =>
+      'History verification paused while preparing a decision. Refresh to continue.';
+}
+
+class AuditIntegrityFailure extends StateError {
+  AuditIntegrityFailure(super.message);
+}
+
+void _checkAuditEvent(String logId, Map<String, dynamic> event) {
+  try {
+    verifyAuditEvent(logId, event);
+  } catch (error) {
+    throw AuditIntegrityFailure('$error');
+  }
 }
 
 Future<Map<String, dynamic>> prepareAuditedRequest(
@@ -277,6 +298,11 @@ void verifyAuditSignature(
     _verifiedAuditSignatures.add(cacheKey);
     return;
   }
+  if (Platform.isAndroid) {
+    verifyNativeAuditSignature(publicKey, signature, message);
+    _rememberAuditSignature(cacheKey);
+    return;
+  }
   final prime = (BigInt.one << 255) - BigInt.from(19);
   for (final point in [publicKey, signature.sublist(0, 32)]) {
     final y = Uint8List.fromList(point)..[31] &= 0x7f;
@@ -299,6 +325,10 @@ void verifyAuditSignature(
   ed25519.VerifyKey(
     publicKey,
   ).verify(signature: ed25519.Signature(signature), message: message);
+  _rememberAuditSignature(cacheKey);
+}
+
+void _rememberAuditSignature(String cacheKey) {
   _verifiedAuditSignatures.add(cacheKey);
   if (_verifiedAuditSignatures.length > 4096) {
     _verifiedAuditSignatures.remove(_verifiedAuditSignatures.first);
@@ -440,6 +470,7 @@ class AuditVerifier {
   static final _scopeTails = <String, Future<void>>{};
   static final _invalidatedScopes = <String>{};
   static final _legacyInvalidatedScopes = <String>{};
+  static final _pendingDecisionChecks = <String, int>{};
   Future<bool> hasSavedCheckpoint() async =>
       await storage.read('audit:checkpoint:$scope') != null;
   Future<void> sync({bool includeLegacy = true}) async {
@@ -448,13 +479,18 @@ class AuditVerifier {
     final previous = _scopeTails[scope] ?? Future<void>.value();
     final gate = Completer<void>();
     _scopeTails[scope] = gate.future;
+    if (!includeLegacy) {
+      _pendingDecisionChecks[scope] = (_pendingDecisionChecks[scope] ?? 0) + 1;
+    }
     await previous;
     _checkingImportedHistory = false;
     try {
-      await _sync(includeLegacy: includeLegacy);
-    } catch (_) {
+      await _sync(includeLegacy: includeLegacy, allowPause: includeLegacy);
+    } on AuditHistoryPaused {
+      rethrow;
+    } catch (error) {
       _invalidatedScopes.add(scope);
-      if (_checkingImportedHistory) {
+      if (_checkingImportedHistory && error is AuditIntegrityFailure) {
         _legacyInvalidatedScopes.add(scope);
         try {
           await storage.write('audit:legacy-failure:$scope', 'failed');
@@ -464,22 +500,35 @@ class AuditVerifier {
       }
       rethrow;
     } finally {
+      if (!includeLegacy) {
+        final remaining = _pendingDecisionChecks[scope]! - 1;
+        if (remaining == 0) {
+          _pendingDecisionChecks.remove(scope);
+        } else {
+          _pendingDecisionChecks[scope] = remaining;
+        }
+      }
       gate.complete();
       if (identical(_scopeTails[scope], gate.future)) _scopeTails.remove(scope);
     }
   }
 
-  Future<void> _sync({required bool includeLegacy}) async {
+  Future<void> _sync({
+    required bool includeLegacy,
+    bool allowPause = false,
+  }) async {
     final snapshot = await api.request({'method': 'audit_snapshot'});
     if (snapshot['chain_version'] != 1) {
-      throw StateError('This receiver does not support history verification.');
+      throw AuditIntegrityFailure(
+        'This receiver does not support history verification.',
+      );
     }
     final target = Map<String, dynamic>.from(snapshot['checkpoint'] as Map);
     final logId = target['log_id'] as String;
     final through = target['sequence'] as int;
     final legacy = snapshot['legacy_through_sequence'] as int;
     if (through < 0 || legacy < 0 || legacy > through) {
-      throw StateError('Invalid audit snapshot boundary.');
+      throw AuditIntegrityFailure('Invalid audit snapshot boundary.');
     }
     final stored = await storage.read('audit:checkpoint:$scope');
     final saved = stored == null
@@ -490,7 +539,7 @@ class AuditVerifier {
         (old['log_id'] != logId ||
             through < (old['sequence'] as int) ||
             saved!['legacy_through_sequence'] != legacy)) {
-      throw StateError(
+      throw AuditIntegrityFailure(
         'History was replaced or rolled back. The phone checkpoint is preserved.',
       );
     }
@@ -514,7 +563,7 @@ class AuditVerifier {
     var previous = full ? auditGenesis(logId) : checkpoint!['hash'] as String;
     if (checkpoint != null &&
         (checkpoint!['log_id'] != logId || through < sequence)) {
-      throw StateError('History was replaced or rolled back.');
+      throw AuditIntegrityFailure('History was replaced or rolled back.');
     }
     final additions = <int, Map<String, dynamic>>{};
     final receipts = full
@@ -538,10 +587,12 @@ class AuditVerifier {
           rows.length != 1 ||
           rows.single['sequence'] != legacy ||
           boundary['next_after'] != null) {
-        throw StateError('History has a missing migration boundary.');
+        throw AuditIntegrityFailure(
+          'History has a missing migration boundary.',
+        );
       }
       final event = rows.single;
-      verifyAuditEvent(logId, event);
+      _checkAuditEvent(logId, event);
       previous = event['hash'] as String;
       hashes[legacy] = previous;
       additions[legacy] = Map<String, dynamic>.from(event);
@@ -551,11 +602,16 @@ class AuditVerifier {
         (old['sequence'] == 0 && old['hash'] == auditGenesis(logId));
     if (old != null && sequence == old['sequence']) {
       if (previous != old['hash']) {
-        throw StateError('History checkpoint changed.');
+        throw AuditIntegrityFailure('History checkpoint changed.');
       }
       foundOld = true;
     }
     while (sequence < through) {
+      if (allowPause &&
+          sequence < legacy &&
+          (_pendingDecisionChecks[scope] ?? 0) > 0) {
+        throw const AuditHistoryPaused();
+      }
       final page = await api.request({
         'method': 'audit_page',
         'after': sequence,
@@ -563,19 +619,21 @@ class AuditVerifier {
         'limit': 100,
       });
       if (page['through'] != through) {
-        throw StateError('History snapshot changed.');
+        throw AuditIntegrityFailure('History snapshot changed.');
       }
       final rows = (page['actions'] as List).cast<Map<String, dynamic>>();
-      if (rows.isEmpty) throw StateError('History has a missing event.');
+      if (rows.isEmpty) {
+        throw AuditIntegrityFailure('History has a missing event.');
+      }
       for (final event in rows) {
         final next = event['sequence'] as int;
         if (next <= sequence ||
             next > through ||
             (next > legacy && next != sequence + 1) ||
             event['previous_hash'] != previous) {
-          throw StateError('History has a gap at event $next.');
+          throw AuditIntegrityFailure('History has a gap at event $next.');
         }
-        verifyAuditEvent(logId, event);
+        _checkAuditEvent(logId, event);
         if (!checkLegacy && event['action'] == 'signed_decision') {
           final observed = event['detail']['proof']['checkpoint'] as Map;
           if (!hashes.containsKey(observed['sequence']) &&
@@ -585,27 +643,32 @@ class AuditVerifier {
             return;
           }
         }
-        verifyAuditBinding(event, hashes, receipts);
+        try {
+          verifyAuditBinding(event, hashes, receipts);
+        } catch (error) {
+          throw AuditIntegrityFailure('$error');
+        }
         previous = event['hash'] as String;
         sequence = next;
         additions[next] = Map<String, dynamic>.from(event);
         hashes[next] = previous;
         if (old != null && next == old['sequence']) {
           if (previous != old['hash']) {
-            throw StateError('History no longer matches the phone checkpoint.');
+            throw AuditIntegrityFailure(
+              'History no longer matches the phone checkpoint.',
+            );
           }
           foundOld = true;
         }
-        if (event['action'] == 'signed_decision' || sequence % 16 == 0) {
-          await Future<void>.delayed(Duration.zero);
-        }
       }
       if (page['next_after'] != null && page['next_after'] != sequence) {
-        throw StateError('History pagination skipped an event.');
+        throw AuditIntegrityFailure('History pagination skipped an event.');
       }
     }
     if (!foundOld || previous != target['hash'] || sequence != through) {
-      throw StateError('History no longer matches the phone checkpoint.');
+      throw AuditIntegrityFailure(
+        'History no longer matches the phone checkpoint.',
+      );
     }
     final local = await storage.read('audit:receipts:$scope');
     var missing = 0;

@@ -886,9 +886,11 @@ retrying requires an explicit tap.
 Android signs decision metadata and its observed checkpoint with a separate
 device Ed25519 key. Receipts are saved on the phone before transmission; the
 receiver checks the signature, exact intent and checkpoint and rejects replayed
-nonces before processing the decision. Credential receipts record whether input
-was provided, never its values. A signature proves possession of that audit key,
-without granting permission or identifying a human. Unix account and SSH key
+nonces before processing the decision. Android verifies signatures with the
+native strict Ed25519 implementation also used by the receiver. Credential
+receipts record whether input was provided, never its values. A signature proves
+possession of that audit key, without granting permission or identifying a human.
+Unix account and SSH key
 attribution are separate receiver reports. New `authorize-key` entries bind the
 caller key fingerprint into their forced command; management key attribution
 requires OpenSSH `ExposeAuthInfo yes`. Existing caller entries can be refreshed
@@ -1068,6 +1070,8 @@ The CLI transport tests and Android app pin `futpib/iroh-ssh` at
 `iroh-ssh-android`. Android E2E builds an ephemeral test server from the app's
 native lockfile. Android connections require a server with a compatible Iroh
 wire version.
+Set `ZONDD_ANDROID_HISTORY_FIXTURE` to a retained test-history SQLite database
+to exercise a fresh connection against existing signed events.
 
 **Release Linux binaries** runs when a `vMAJOR.MINOR.PATCH` tag is pushed, or when
 manually dispatched against such a tag. The version must match the Rust workspace

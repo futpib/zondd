@@ -78,6 +78,7 @@ jobs:
         run: |
           cargo fmt --manifest-path android-app/native/Cargo.toml -- --check
           cargo clippy --locked --manifest-path android-app/native/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path android-app/native/Cargo.toml --lib
       - run: cargo build --locked --workspace --bins
       - name: Build normal debug app for both supported ABIs
         working-directory: android-app

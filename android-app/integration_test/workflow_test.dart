@@ -10,6 +10,7 @@ import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
 import 'package:zondd_control/identities.dart';
 import 'package:zondd_control/ui.dart';
+import 'package:zondd_control/history.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -90,7 +91,7 @@ void main() {
       await settle();
     }
 
-    Future<void> pending(bool approve) async {
+    Future<String> pending(bool approve) async {
       final socket = await SSHSocket.connect(f['host'], f['port']);
       final caller = SSHClient(
         socket,
@@ -128,6 +129,9 @@ void main() {
           isTrue,
         );
         expect(jsonDecode(events.current)['body']['type'], 'pending');
+        final requestId =
+            jsonDecode(events.current)['body']['request']['request_id']
+                as String;
         await waitFor(find.text('Approve once'));
         if (approve) {
           await capture('14-pending-approval');
@@ -160,6 +164,7 @@ void main() {
         await capture(approve ? '16-approved' : '17-rejected');
         await events.cancel();
         session.close();
+        return requestId;
       } finally {
         caller.close();
       }
@@ -284,17 +289,37 @@ void main() {
       await waitFor(find.text('All caught up'));
       await capture('13-queue-empty');
       await pending(true);
-      await pending(false);
+      final deniedId = await pending(false);
       await tap(find.text('History'));
+      await waitFor(find.byType(TextField));
+      await tester.enterText(find.byType(TextField).first, 'Hello from zondd');
+      await tester.pump(const Duration(milliseconds: 500));
       await waitFor(find.text('Denied · exec'));
       await capture('32-history');
       await tap(find.text('Denied · exec').first);
+      expect(
+        tester
+            .widget<RequestDetailsPage>(find.byType(RequestDetailsPage))
+            .requestId,
+        deniedId,
+      );
       await waitFor(find.text('Run again'));
       await capture('33-denied-request');
       await tap(find.text('Run again'));
       await waitFor(find.text('Approve once'));
       await capture('34-rerun-pending');
-      await tap(find.text('Approve once'));
+      final approval = find.widgetWithText(FilledButton, 'Approve once');
+      await tester.ensureVisible(approval);
+      for (
+        var i = 0;
+        i < 200 && tester.widget<FilledButton>(approval).onPressed == null;
+        i++
+      ) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(tester.widget<FilledButton>(approval).onPressed, isNotNull);
+      await tester.tap(approval);
+      await tester.pump();
       await waitFor(find.text('Exited with status 0'));
       await tester.scrollUntilVisible(
         find.text('Finished'),
@@ -318,6 +343,8 @@ void main() {
       await capture('36-request-activity');
       await tester.pageBack();
       await settle();
+      await tester.enterText(find.byType(TextField).first, '');
+      await tester.pump(const Duration(milliseconds: 500));
       await tester.scrollUntilVisible(
         find.text('Activity'),
         -300,

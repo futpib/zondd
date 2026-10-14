@@ -38,6 +38,10 @@ fn android_management_over_ssh_and_iroh() {
         writeln!(authorized, "{}", key.trim()).unwrap();
     }
     ssh.env.stop_daemon();
+    if let Ok(path) = std::env::var("ZONDD_ANDROID_HISTORY_FIXTURE") {
+        fs::copy(path, ssh.env.config.with_extension("history.sqlite3"))
+            .expect("copy retained audit history fixture");
+    }
     fs::write(
         &ssh.env.config,
         ssh.env
@@ -130,7 +134,7 @@ fn android_management_over_ssh_and_iroh() {
                 legacy.env.policy.replace("timeout_secs = 4", "timeout_secs = 120"),
             )
             .unwrap();
-            legacy.env.start_daemon();
+            legacy.env.start_daemon_with_timeout(Duration::from_secs(60));
             let endpoint = start_iroh(&legacy, legacy.port, "legacy-iroh");
             let fingerprint = checked(
                 Command::new("ssh-keygen")

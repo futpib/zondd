@@ -32,6 +32,21 @@ Map<String, dynamic> _nativeRequest(String request) {
   }
 }
 
+void verifyNativeAuditSignature(
+  List<int> publicKey,
+  List<int> signature,
+  List<int> message,
+) {
+  _nativeRequest(
+    jsonEncode({
+      'method': 'verify_audit_signature',
+      'public_key': publicKey,
+      'signature': signature,
+      'message': message,
+    }),
+  );
+}
+
 class IrohTransport {
   static Future<int> connect(String endpoint, List<String> relays) async {
     final request = jsonEncode({

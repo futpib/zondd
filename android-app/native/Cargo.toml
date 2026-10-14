@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 crate-type = ["cdylib"]
 
 [dependencies]
+ed25519-dalek = "2.2.0"
 iroh-ssh = { git = "https://github.com/futpib/iroh-ssh", rev = "f7e04ea411b198a334d118675de5e015ae527dae", version = "0.2.12", default-features = false, features = ["flutter"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "time"] }

@@ -91,6 +91,14 @@ void main() {
               home: Dashboard(api: api, name: 'Imported history'),
             ),
           );
+          if (iroh) {
+            await visible(find.text('History'));
+            await tester.tap(find.text('History'));
+            await tester.pump(const Duration(milliseconds: 300));
+            expect(find.byType(CircularProgressIndicator), findsOneWidget);
+            await tester.tap(find.text('Approvals'));
+            await tester.pump(const Duration(milliseconds: 100));
+          }
           await visible(find.text('Approve rule'));
           await tester.tap(find.text('Approve rule'));
           await visible(

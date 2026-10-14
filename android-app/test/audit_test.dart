@@ -112,6 +112,8 @@ class AuditControl implements ControlApi, AuditPeer {
   bool missingPage = false, online = true, legacy = false;
   int pageSize = 2;
   Completer<void>? holdSnapshot;
+  Completer<void>? holdLegacyPage;
+  Completer<void>? legacyPageStarted;
   final calls = <Map<String, dynamic>>[];
   @override
   Future<void> close() async {}
@@ -129,6 +131,12 @@ class AuditControl implements ControlApi, AuditPeer {
           'daemon_online': online,
         };
       case 'audit_page':
+        if (body['after'] == 0 && holdLegacyPage != null) {
+          if (legacyPageStarted?.isCompleted == false) {
+            legacyPageStarted!.complete();
+          }
+          await holdLegacyPage!.future;
+        }
         final rows = (bundle['events'] as List)
             .cast<Map<String, dynamic>>()
             .where(
@@ -320,6 +328,72 @@ void main() {
     expect(prepared['actor'], isA<Map>());
     expect(await device.receipts('preparation-timeout'), hasLength(1));
   });
+
+  test(
+    'a decision pauses legacy browsing without weakening verification',
+    () async {
+      final storage = MemoryAuditStorage();
+      final bundle = migratedFixture();
+      (bundle['events'] as List).insert(
+        1,
+        copy(bundle['events'][0] as Map<String, dynamic>)..['sequence'] = 100,
+      );
+      rehash(bundle);
+      appendEvent(bundle);
+      final api = AuditControl(bundle, storage, 'legacy-priority')
+        ..holdLegacyPage = Completer<void>()
+        ..legacyPageStarted = Completer<void>();
+      final browsing = expectLater(
+        api.historyVerifier.sync(),
+        throwsA(isA<AuditHistoryPaused>()),
+      );
+      await api.legacyPageStarted!.future;
+      final preparation =
+          prepareAuditedRequest(api.historyVerifier, AuditDevice(storage), {
+            'method': 'resolve_rule',
+            'proposal_id': 'proposal-1',
+            'digest': 'digest-1',
+            'approve': true,
+          });
+      api.holdLegacyPage!.complete();
+      await browsing;
+      expect((await preparation)['actor']['checkpoint']['sequence'], 207494);
+      expect(storage.values['audit:legacy-failure:legacy-priority'], isNull);
+      expect(
+        api.historyVerifier.events.keys.every((sequence) => sequence >= 207493),
+        isTrue,
+      );
+      await api.historyVerifier.sync();
+      expect(api.historyVerifier.events.length, 4);
+    },
+  );
+
+  test(
+    'a transport failure during browsing does not require legacy replay',
+    () async {
+      final storage = MemoryAuditStorage();
+      final api = AuditControl(migratedFixture(), storage, 'legacy-disconnect')
+        ..holdLegacyPage = Completer<void>()
+        ..legacyPageStarted = Completer<void>();
+      final browsing = expectLater(
+        api.historyVerifier.sync(),
+        throwsStateError,
+      );
+      await api.legacyPageStarted!.future;
+      api.holdLegacyPage!.completeError(StateError('Connection closed'));
+      await browsing;
+      expect(storage.values['audit:legacy-failure:legacy-disconnect'], isNull);
+      api.holdLegacyPage = null;
+      api.calls.clear();
+      await api.historyVerifier.sync(includeLegacy: false);
+      expect(
+        api.calls
+            .where((call) => call['method'] == 'audit_page')
+            .map((call) => call['after']),
+        [207492],
+      );
+    },
+  );
 
   test(
     'approval checks the migration tail and export checks the full range',
