@@ -60,7 +60,13 @@ yay -S zondd-git
 
 The package installs `zondd` and `zondctl` in `/usr/bin`, the systemd user
 service in `/usr/lib/systemd/user`, and the example policy in
-`/usr/share/doc/zondd`. To check the configuration and start the user service:
+`/usr/share/doc/zondd`. Both `zondd --version` and `zondctl --version` include
+the build's Git commit, for example `zondd 0.1.0 (f27728341271)`. Cargo refreshes
+the embedded revision when HEAD changes. Builds from source archives without
+Git metadata show `unknown commit`; packagers can set `ZONDD_GIT_COMMIT` to the
+full commit hash when building an archive.
+
+To check the configuration and start the user service:
 
 ```sh
 zondd check

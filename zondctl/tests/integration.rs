@@ -16,10 +16,9 @@ use std::{
 fn cli_version_and_argument_errors() {
     let ctl = env!("CARGO_BIN_EXE_zondctl");
     let version = checked(Command::new(ctl).arg("--version"), 0);
-    assert!(
-        String::from_utf8(version.stdout)
-            .unwrap()
-            .starts_with("zondctl ")
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap(),
+        format!("zondctl {}\n", libzond::BUILD_VERSION)
     );
     checked(Command::new(ctl).args(["--iroh", "exec", "/bin/true"]), 2);
 }

@@ -16,7 +16,7 @@ use std::{
 
 #[derive(Parser)]
 #[command(
-    version,
+    version = libzond::BUILD_VERSION,
     about = "SSH-authenticated operations daemon and forced-command bridge"
 )]
 struct Cli {

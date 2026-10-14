@@ -9,6 +9,7 @@ pub mod wire;
 
 use serde::{Deserialize, Serialize};
 
+pub const BUILD_VERSION: &str = env!("ZONDD_BUILD_VERSION");
 pub const VERSION: u32 = 1;
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
