@@ -5,8 +5,10 @@ import android.content.Intent
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var credentialVault: CredentialVault? = null
     private external fun initVerifier(context: Context)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -18,6 +20,14 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         OpenKeychainBridge.register(flutterEngine.dartExecutor.binaryMessenger, this)
+        credentialVault = CredentialVault(this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.github.futpib.zond/credential_vault")
+            .setMethodCallHandler(credentialVault)
+    }
+
+    override fun onStop() {
+        credentialVault?.cancelPending()
+        super.onStop()
     }
 
     override fun onResume() {

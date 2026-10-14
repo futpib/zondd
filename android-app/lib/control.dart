@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'transport.dart';
 import 'identities.dart';
 import 'audit.dart';
+import 'saved_credentials.dart';
 
 class Profile {
   Profile({
@@ -170,7 +171,7 @@ abstract interface class ConnectionEvents {
 /// Requests are never retried: a lost response may hide a completed mutation.
 class ControlConnection extends ChangeNotifier
     with WidgetsBindingObserver
-    implements ControlApi, AuditPeer {
+    implements ControlApi, AuditPeer, CredentialPeer {
   ControlConnection(this._api, this._connect, {this.onClose}) {
     WidgetsBinding.instance.addObserver(this);
     _foreground = _isForeground(WidgetsBinding.instance.lifecycleState);
@@ -180,6 +181,9 @@ class ControlConnection extends ChangeNotifier
   @override
   String? get auditScope =>
       _api is AuditPeer ? (_api as AuditPeer).auditScope : null;
+  @override
+  String? get credentialScope =>
+      _api is CredentialPeer ? (_api as CredentialPeer).credentialScope : null;
   @override
   AuditVerifier? get historyVerifier =>
       _api is AuditPeer ? (_api as AuditPeer).historyVerifier : null;
@@ -380,7 +384,8 @@ class AuthenticationCancelled implements Exception {
   String toString() => 'Authentication cancelled';
 }
 
-class SshControl implements ControlApi, ConnectionEvents, AuditPeer {
+class SshControl
+    implements ControlApi, ConnectionEvents, AuditPeer, CredentialPeer {
   SshControl._(this._ssh, this.profile, this._tunnel, this.auditScope);
   final SSHClient _ssh;
   static final auditDevice = AuditDevice(const SecureAuditStorage());
@@ -391,6 +396,9 @@ class SshControl implements ControlApi, ConnectionEvents, AuditPeer {
   AuditVerifier get historyVerifier =>
       _verifier ??= AuditVerifier(this, auditScope);
   final Profile profile;
+  @override
+  String get credentialScope =>
+      credentialReceiverScope(auditScope, profile.executable);
   final int? _tunnel;
   bool _closed = false;
   @override

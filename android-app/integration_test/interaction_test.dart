@@ -106,6 +106,17 @@ void main() {
             matching: find.byType(TextField),
           );
           expect(tester.widget<TextField>(password).obscureText, true);
+          await tester.pumpAndSettle();
+          final saving = find.widgetWithText(
+            CheckboxListTile,
+            'Save credentials on this device',
+          );
+          if (saving.evaluate().isNotEmpty &&
+              tester.widget<CheckboxListTile>(saving).value == true) {
+            await tester.ensureVisible(saving);
+            await tester.tap(saving);
+            await tester.pumpAndSettle();
+          }
           await tester.tap(find.text('Send response'));
           await waitFor(
             find.text('Response sent to the configured application.'),

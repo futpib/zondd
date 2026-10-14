@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'json_yaml.dart';
+import 'credential_save_panel.dart';
+import 'saved_credentials.dart';
 
 class InteractionCard extends StatelessWidget {
   const InteractionCard({
@@ -94,19 +96,28 @@ class InteractionDialog extends StatefulWidget {
     required this.challenge,
     required this.server,
     required this.isCurrent,
+    this.binding,
+    this.vault = const AndroidCredentialVault(),
   });
   final Map<String, dynamic> challenge;
   final String server;
   final bool Function() isCurrent;
+  final CredentialBinding? binding;
+  final CredentialVault vault;
 
   @override
   State<InteractionDialog> createState() => _InteractionDialogState();
 }
 
-class _InteractionDialogState extends State<InteractionDialog> {
+class _InteractionDialogState extends State<InteractionDialog>
+    with WidgetsBindingObserver {
   final form = GlobalKey<FormState>();
   final controllers = <String, TextEditingController>{};
   final choices = <String, String>{};
+  final memory = GlobalKey<CredentialSavePanelState>();
+  bool sending = false;
+  bool loadedSavedValues = false;
+  bool get busy => sending || (memory.currentState?.busy ?? false);
   late final Timer timer;
   List<Map<String, dynamic>> get fields =>
       (widget.challenge['fields'] as List).cast<Map<String, dynamic>>();
@@ -118,6 +129,7 @@ class _InteractionDialogState extends State<InteractionDialog> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     for (final field in fields) {
       controllers[field['id'] as String] = TextEditingController();
     }
@@ -128,12 +140,59 @@ class _InteractionDialogState extends State<InteractionDialog> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     timer.cancel();
     for (final controller in controllers.values) {
       controller.clear();
       controller.dispose();
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      for (final controller in controllers.values) {
+        controller.clear();
+      }
+      choices.clear();
+      loadedSavedValues = false;
+    }
+  }
+
+  void edited(Map<String, dynamic> field) {
+    if (!loadedSavedValues ||
+        (!['text', 'choice', 'confirmation'].contains(field['kind']) &&
+            (field['choices'] as List? ?? []).isEmpty)) {
+      return;
+    }
+    for (final item in fields) {
+      if (item['kind'] != 'text') controllers[item['id']]!.clear();
+    }
+    loadedSavedValues = false;
+  }
+
+  Future<void> send() async {
+    if (!current || busy || !form.currentState!.validate()) return;
+    setState(() => sending = true);
+    final values = <String, String>{
+      for (final field in fields)
+        field['id'] as String:
+            choices[field['id']] ?? controllers[field['id']]!.text,
+    };
+    try {
+      if (memory.currentState != null &&
+          !await memory.currentState!.save(values)) {
+        return;
+      }
+      if (mounted && current) {
+        Navigator.pop(context, Map<String, String>.from(values));
+      }
+    } finally {
+      values.clear();
+      if (mounted) setState(() => sending = false);
+    }
   }
 
   Widget fieldInput(Map<String, dynamic> field) {
@@ -152,7 +211,12 @@ class _InteractionDialogState extends State<InteractionDialog> {
             .toSet()
             .map((v) => DropdownMenuItem(value: v, child: Text(v)))
             .toList(),
-        onChanged: current ? (value) => choices[id] = value ?? '' : null,
+        onChanged: current && !busy
+            ? (value) {
+                edited(field);
+                setState(() => choices[id] = value ?? '');
+              }
+            : null,
         validator: validate,
       );
     }
@@ -160,7 +224,7 @@ class _InteractionDialogState extends State<InteractionDialog> {
     return TextFormField(
       key: ValueKey('interaction-field-$id'),
       controller: controllers[id],
-      enabled: current,
+      enabled: current && !busy,
       obscureText: kind != 'text',
       autocorrect: false,
       enableSuggestions: false,
@@ -173,6 +237,7 @@ class _InteractionDialogState extends State<InteractionDialog> {
         counterText: '',
       ),
       validator: validate,
+      onChanged: (_) => edited(field),
     );
   }
 
@@ -212,6 +277,32 @@ class _InteractionDialogState extends State<InteractionDialog> {
                   ),
                 ],
               ),
+              if (widget.binding != null)
+                CredentialSavePanel(
+                  key: memory,
+                  binding: widget.binding!.forAnswers(choices),
+                  vault: widget.vault,
+                  isCurrent: () => current,
+                  apply: (values) {
+                    for (final field in fields) {
+                      final id = field['id'] as String;
+                      if (field['kind'] == 'text' &&
+                          controllers[id]!.text.isNotEmpty &&
+                          values.containsKey(id) &&
+                          controllers[id]!.text != values[id]) {
+                        return false;
+                      }
+                    }
+                    for (final entry in values.entries) {
+                      controllers[entry.key]?.text = entry.value;
+                    }
+                    loadedSavedValues = true;
+                    return true;
+                  },
+                  changed: () {
+                    if (mounted) setState(() {});
+                  },
+                ),
               if (!current)
                 const Text(
                   'This request is no longer available. Reconnect or refresh the queue.',
@@ -223,22 +314,11 @@ class _InteractionDialogState extends State<InteractionDialog> {
     ),
     actions: [
       TextButton(
-        onPressed: () => Navigator.pop(context),
+        onPressed: busy ? null : () => Navigator.pop(context),
         child: const Text('Cancel'),
       ),
       FilledButton(
-        onPressed: !current
-            ? null
-            : () {
-                if (form.currentState!.validate()) {
-                  Navigator.pop(context, <String, String>{
-                    for (final field in fields)
-                      field['id'] as String:
-                          choices[field['id']] ??
-                          controllers[field['id']]!.text,
-                  });
-                }
-              },
+        onPressed: !current || busy ? null : send,
         child: const Text('Send response'),
       ),
     ],

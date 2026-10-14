@@ -42,6 +42,39 @@ credentials fail the release build; no temporary or debug key is substituted.
 Do not delete the latest Android release or replace the signing key between
 updates. Both would break the version/signature continuity Obtainium relies on.
 
+## Saved credentials
+
+Sudo password and application credential dialogs offer **Save credentials on
+this device** with a **1 hour** default. Choose 15 minutes, 8 hours or **Forever**,
+or turn off saving for that response. Saving and each **Use saved credentials**
+operation require strong biometric authentication on Android 11 or newer.
+Devices without suitable enrolled biometrics can still enter and send answers
+manually. Reuse fills the form for review; sending remains a separate action.
+
+Values are encrypted with AES-GCM using Android Keystore keys that require
+authentication for each operation and are invalidated by biometric enrollment
+changes. Expiry and credential identity are authenticated with the encrypted
+record. Expired records and their keys are removed when checked; timed records
+also use a monotonic deadline within the same device boot. Saved values are
+never added to receiver history or audit exports.
+
+Matching includes the verified SSH destination and host key, Unix account,
+receiver config/runtime paths, selected management executable, and the
+authentication context. Sudo values also
+bind the caller, exact command, operation and prompt. Application values bind
+the registered recipient and configuration revision, UID, provider origin,
+complete form and context, and selected choice/confirmation values. Process,
+session, request and challenge IDs may change without changing the credential
+identity. An entered username must match the saved username; editing an account
+field clears a reused password. OTPs, confirmation/choice answers, unknown field
+types and fields named as verification codes are never saved. Changed or expired
+requests, reconnection and backgrounding during unlock prevent reuse.
+
+Open **Saved credentials** from the connection list or receiver toolbar to see
+recipient, purpose, fields and lifetime, remove one entry, or remove all entries.
+This screen never decrypts or displays saved answers. SSH connection passwords
+and imported keys remain separate from this credential vault.
+
 ## Connect
 
 Iroh connections use the same pinned bridge as `iroh-ssh-android`:
@@ -275,6 +308,27 @@ Set `ZONDD_ANDROID_TEST=integration_test/rules_test.dart` to run only reusable
 rule review and revocation over SSH and Iroh. That test verifies caller-visible
 status, invalid parameter rejection, successful directory publication, and
 refusal to replace an existing destination.
+
+The biometric vault has a separate device test. Use an isolated, read-only
+Android 11+ emulator with fingerprint 1 enrolled, and run `adb -s DEVICE root`
+before starting. In one terminal, from `android-app`, run:
+
+```sh
+python3 scripts/credential-vault-driver.py --device emulator-5584 \
+  --log /tmp/zond-vault-test.log
+```
+
+In another terminal, run:
+
+```sh
+flutter test integration_test/saved_credentials_test.dart -d emulator-5584 \
+  --reporter expanded > /tmp/zond-vault-test.log 2>&1
+```
+
+The driver supplies real fingerprint events, cancels a prompt, backgrounds the
+app, inspects encrypted storage, and advances/restores the emulator's clock to
+check expiry. Test-mode handshakes live only in the integration test; the normal
+app has no authentication bypass or test vault.
 
 External adapter repositories can set `ZONDD_ANDROID_TEST` to an absolute Dart
 test path. The harness creates and cleans up a temporary entrypoint inside this

@@ -10,6 +10,7 @@ import 'keys_page.dart';
 import 'qr_scan.dart';
 import 'ui.dart';
 import 'search.dart';
+import 'saved_credentials_page.dart';
 
 class Target {
   const Target(this.user, this.host, this.port);
@@ -385,6 +386,16 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
       appBar: AppBar(
         title: const Text('zond'),
         actions: [
+          IconButton(
+            tooltip: 'Saved credentials',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => const SavedCredentialsPage(),
+              ),
+            ),
+            icon: const Icon(Icons.password),
+          ),
           IconButton(
             tooltip: 'SSH keys',
             onPressed: busy ? null : manageKeys,

@@ -215,6 +215,17 @@ void main() {
               true,
             );
             await tester.enterText(find.byType(TextField), password);
+            await tester.pumpAndSettle();
+            final saving = find.widgetWithText(
+              CheckboxListTile,
+              'Save credentials on this device',
+            );
+            if (saving.evaluate().isNotEmpty &&
+                tester.widget<CheckboxListTile>(saving).value == true) {
+              await tester.ensureVisible(saving);
+              await tester.tap(saving);
+              await tester.pumpAndSettle();
+            }
             await tester.tap(find.text('Send password'));
             await tester.pump(const Duration(milliseconds: 500));
           }

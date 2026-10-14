@@ -1,5 +1,6 @@
 import 'policy_overview.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'search.dart';
 import 'package:toml/toml.dart';
@@ -9,6 +10,9 @@ import 'history.dart';
 import 'rules.dart';
 import 'json_yaml.dart';
 import 'interactions.dart';
+import 'saved_credentials.dart';
+import 'saved_credentials_page.dart';
+import 'sudo_password_dialog.dart';
 
 class Dashboard extends StatefulWidget {
   const Dashboard({
@@ -16,9 +20,11 @@ class Dashboard extends StatefulWidget {
     required this.api,
     required this.name,
     this.connection = 'SSH',
+    this.credentialVault = const AndroidCredentialVault(),
   });
   final ControlApi api;
   final String name, connection;
+  final CredentialVault credentialVault;
   @override
   State<Dashboard> createState() => _DashboardState();
 }
@@ -29,6 +35,18 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       widget.api is ControlConnection ? widget.api as ControlConnection : null;
   bool get reconnecting => connection?.reconnecting ?? false;
   bool get disconnected => connection?.disconnected ?? false;
+  String? get credentialReceiver => widget.api is CredentialPeer
+      ? (widget.api as CredentialPeer).credentialScope
+      : null;
+  bool matchingChallenge(List<dynamic> items, Map<String, dynamic> challenge) =>
+      items.any(
+        (item) =>
+            item['challenge_id'] == challenge['challenge_id'] &&
+            jsonEncode(canonicalCredentialContext(item)) ==
+                jsonEncode(canonicalCredentialContext(challenge)) &&
+            DateTime.now().millisecondsSinceEpoch <
+                (item['expires_unix_ms'] as int),
+      );
 
   int connectionGeneration = 0, fetchGeneration = 0;
   bool needsRecovery = false;
@@ -209,15 +227,39 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     bool provide,
   ) async {
     String? password;
+    final receiver = credentialReceiver;
+    final generation = connection?.generation;
+    bool current() =>
+        mounted &&
+        !disconnected &&
+        connection?.generation == generation &&
+        credentialReceiver == receiver &&
+        matchingChallenge(credentials, challenge);
     if (provide) {
       password = await showDialog<String>(
         context: context,
-        builder: (context) =>
-            _SudoPasswordDialog(prompt: challenge['prompt'] as String),
+        builder: (context) => SudoPasswordDialog(
+          challenge: challenge,
+          isCurrent: current,
+          binding: CredentialBinding.sudo(receiver, widget.name, challenge),
+          vault: widget.credentialVault,
+        ),
       );
-      if (password == null) return;
+      if (password == null || !current()) return;
     }
     await action(() async {
+      if (provide) {
+        final pending = await widget.api.request({'method': 'pending'});
+        if (!current() ||
+            !matchingChallenge(
+              pending['credentials'] as List? ?? [],
+              challenge,
+            )) {
+          throw StateError(
+            'This password request changed or is no longer available.',
+          );
+        }
+      }
       await widget.api.request({
         'method': 'credential',
         'challenge_id': challenge['challenge_id'],
@@ -234,6 +276,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         });
       }
     });
+    password = null;
     await refresh();
   }
 
@@ -242,12 +285,14 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     bool provide,
   ) async {
     Map<String, String>? values;
+    final receiver = credentialReceiver;
+    final generation = connection?.generation;
     bool current() =>
         mounted &&
         !disconnected &&
-        interactions.any(
-          (item) => item['challenge_id'] == challenge['challenge_id'],
-        );
+        connection?.generation == generation &&
+        credentialReceiver == receiver &&
+        matchingChallenge(interactions, challenge);
     if (provide) {
       values = await showDialog<Map<String, String>>(
         context: context,
@@ -255,12 +300,34 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
           challenge: challenge,
           server: widget.name,
           isCurrent: current,
+          binding: CredentialBinding.application(
+            receiver,
+            widget.name,
+            challenge,
+          ),
+          vault: widget.credentialVault,
         ),
       );
-      if (values == null || !current()) return;
+      if (values == null) return;
+      if (!current()) {
+        values.clear();
+        return;
+      }
     }
     try {
       await action(() async {
+        if (provide) {
+          final pending = await widget.api.request({'method': 'pending'});
+          if (!current() ||
+              !matchingChallenge(
+                pending['interactions'] as List? ?? [],
+                challenge,
+              )) {
+            throw StateError(
+              'This application request changed or is no longer available.',
+            );
+          }
+        }
         await widget.api.request({
           'method': 'answer_interaction',
           'challenge_id': challenge['challenge_id'],
@@ -403,6 +470,17 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Saved credentials',
+            icon: const Icon(Icons.password),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    SavedCredentialsPage(vault: widget.credentialVault),
+              ),
+            ),
+          ),
           if (connection != null)
             IconButton(
               tooltip: 'Reconnect',
@@ -1270,55 +1348,4 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       ],
     );
   }
-}
-
-class _SudoPasswordDialog extends StatefulWidget {
-  const _SudoPasswordDialog({required this.prompt});
-  final String prompt;
-
-  @override
-  State<_SudoPasswordDialog> createState() => _SudoPasswordDialogState();
-}
-
-class _SudoPasswordDialogState extends State<_SudoPasswordDialog> {
-  final controller = TextEditingController();
-
-  @override
-  void dispose() {
-    controller.clear();
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    scrollable: true,
-    title: const Text('Sudo password'),
-    content: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(widget.prompt),
-        const SizedBox(height: 12),
-        TextField(
-          controller: controller,
-          obscureText: true,
-          enableSuggestions: false,
-          autocorrect: false,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Password'),
-        ),
-      ],
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
-      ),
-      FilledButton(
-        onPressed: () => Navigator.pop(context, controller.text),
-        child: const Text('Send password'),
-      ),
-    ],
-  );
 }

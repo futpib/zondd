@@ -63,6 +63,7 @@ class EditableControl implements ControlApi {
 }
 
 class CredentialControl implements ControlApi {
+  final expires = DateTime.now().millisecondsSinceEpoch + 60000;
   Map<String, dynamic>? answer;
   bool open = true;
   @override
@@ -85,8 +86,7 @@ class CredentialControl implements ControlApi {
                     'args': ['-Syu'],
                   },
                   'prompt': 'Password for sudo:',
-                  'expires_unix_ms':
-                      DateTime.now().millisecondsSinceEpoch + 60000,
+                  'expires_unix_ms': expires,
                 },
               ]
             : [],
@@ -118,6 +118,7 @@ void main() {
       final field = tester.widget<TextField>(find.byType(TextField));
       expect(field.obscureText, true);
       await tester.enterText(find.byType(TextField), 'test-password');
+      await tester.pump();
       await tester.tap(find.text('Send password'));
       await tester.pumpAndSettle();
       expect(api.answer, {
