@@ -8,7 +8,7 @@ import 'package:zondd_control/open_keychain.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const channel = MethodChannel('zondd/openkeychain');
+  const channel = MethodChannel(openKeychainChannelName);
 
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

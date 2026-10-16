@@ -248,12 +248,10 @@ for local types, choice projections and home expansion.
 
 ## Architecture
 
-The local `vendor/dartssh2` dependency retains version 4.1.0 with one documented
-patch: discover the server's authentication methods before requesting credentials.
-
 Flutter provides the UI and `dartssh2` provides SSH authentication and exec
 channels. A small Rust FFI adapter calls the existing `futpib/iroh-ssh` bridge
 library to obtain a loopback TCP port. SSH runs through that tunnel unchanged.
+The shared `openkeychain_ssh` Flutter plugin handles Android key providers.
 The dependency is pinned by revision; tunnel and authentication implementations
 are not copied from slopd or iroh-ssh-android. Unlike slopd's separate Iroh endpoint
 allowlist, management authority here comes from the normal SSH account.

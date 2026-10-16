@@ -9,6 +9,7 @@ import 'package:zondd_control/control.dart';
 import 'package:zondd_control/dashboard.dart';
 import 'package:zondd_control/history.dart';
 import 'package:zondd_control/keys_page.dart';
+import 'package:zondd_control/open_keychain.dart';
 
 class PolicyState {
   String content = '[principals.demo]\ncwd = "/"\n';
@@ -311,7 +312,7 @@ void main() {
   testWidgets('leaving keys cancels pending import without adding a late key', (
     tester,
   ) async {
-    const channel = MethodChannel('zondd/openkeychain');
+    const channel = MethodChannel(openKeychainChannelName);
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     final pending = Completer<Object?>();
@@ -346,7 +347,7 @@ void main() {
       testWidgets(
         'provider $phase ${timeout ? 'deadline' : 'cancel'} permits retry and ignores late result',
         (tester) async {
-          const channel = MethodChannel('zondd/openkeychain');
+          const channel = MethodChannel(openKeychainChannelName);
           final messenger =
               TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
           final waiting = Completer<Object?>();
