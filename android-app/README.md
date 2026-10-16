@@ -23,19 +23,20 @@ the same application ID, `io.github.futpib.zondd_control`, and must always use
 the same signing key. Earlier development APKs use a different key and must be
 uninstalled before installing the first release, which removes their local data.
 
-Before the first release, publish the source repository and configure GitHub
-Actions secrets `KEYSTORE_BASE64` (the base64-encoded persistent keystore) and
-`KEYSTORE_PASSWORD`. The key alias defaults to `release`; set `KEY_ALIAS` if
-different, and `KEY_PASSWORD` if the key password differs from the store password.
-Create and back up a dedicated keystore outside the repository, for example:
+Before the first release, publish the source repository and configure the GitHub
+Actions secret `KEYSTORE_BASE64` with the base64-encoded persistent keystore.
+The workflow uses the `release` key alias and `android` for both passwords,
+matching the existing `iroh-ssh-android` release keystore. Keep a backup of the
+keystore outside the repository. To create a dedicated key with those values:
 
 ```sh
 umask 077
 keytool -genkeypair -keystore "$HOME/zondd-release.jks" -storetype JKS \
   -alias release -keyalg RSA -keysize 3072 -validity 10000
 base64 -w0 "$HOME/zondd-release.jks" | gh secret set KEYSTORE_BASE64 --repo futpib/zondd
-gh secret set KEYSTORE_PASSWORD --repo futpib/zondd
 ```
+
+Enter `android` for the store and key passwords when `keytool` prompts.
 
 Then run **Actions → Build Android APK → Run workflow**. Missing signing
 credentials fail the release build; no temporary or debug key is substituted.
