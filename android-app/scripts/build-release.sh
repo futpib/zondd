@@ -18,10 +18,24 @@ release_output=$(realpath -m "$3")
 mkdir -p "$release_output"
 
 flutter_bin=${FLUTTER:-flutter}
-"$flutter_bin" build apk --release --target lib/main.dart \
+build_log=$(mktemp)
+trap 'rm -f "$build_log"' EXIT
+build_apk() {
+    for attempt in 1 2 3; do
+        if "$flutter_bin" build apk "$@" 2>&1 | tee "$build_log"; then
+            return 0
+        fi
+        if (( attempt == 3 )) || ! grep -Eq 'Received status code 5[0-9][0-9]|Read timed out|Connection reset' "$build_log"; then
+            return 1
+        fi
+        echo "Artifact download failed; retrying APK build ($attempt/3)" >&2
+        sleep $((attempt * 10))
+    done
+}
+build_apk --release --target lib/main.dart \
     --target-platform android-arm64,android-x64 --build-name="$1" --build-number="$2"
 install -m644 build/app/outputs/flutter-apk/app-release.apk "$release_output/app-release.apk"
-"$flutter_bin" build apk --release --target lib/main.dart --split-per-abi \
+build_apk --release --target lib/main.dart --split-per-abi \
     --target-platform android-arm64,android-x64 --build-name="$1" --build-number="$2"
 for abi in arm64-v8a x86_64; do
     install -m644 "build/app/outputs/flutter-apk/app-$abi-release.apk" "$release_output/app-$abi-release.apk"

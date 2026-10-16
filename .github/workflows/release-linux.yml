@@ -28,10 +28,10 @@ jobs:
             echo 'Run this workflow on a vMAJOR.MINOR.PATCH tag matching Cargo.toml.' >&2
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --release --workspace --bins
-      - run: cargo test --locked --release --workspace
+      - run: cargo test --locked --release --workspace -- --test-threads=1
       - name: Package binaries and user service
         run: scripts/package-linux.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/linux-dist"
       - uses: actions/upload-artifact@v4

@@ -19,6 +19,7 @@ void main() {
     testWidgets(
       'signed decisions, native export and tamper detection over ${iroh ? 'Iroh' : 'SSH'}',
       (tester) async {
+        debugPrint('Audit E2E ${iroh ? 'Iroh' : 'SSH'}: connecting');
         final profile = Profile(
           name: 'Audit server',
           host: fixture[iroh ? 'endpoint' : 'host'],
@@ -136,6 +137,7 @@ db.commit();undo.unlink()
             true,
           );
           expect(jsonDecode(responses.current)['body']['type'], 'completed');
+          debugPrint('Audit E2E ${iroh ? 'Iroh' : 'SSH'}: approval completed');
           await responses.cancel();
           session.close();
           session = null;
@@ -238,6 +240,7 @@ db.commit();undo.unlink()
             (w) => w is IconButton && w.tooltip == 'Export audit history',
           );
           await visible(export);
+          debugPrint('Audit E2E ${iroh ? 'Iroh' : 'SSH'}: export ready');
           for (var i = 0; i < 500; i++) {
             final button = tester.widget<IconButton>(export);
             if (button.onPressed != null) break;
@@ -245,10 +248,21 @@ db.commit();undo.unlink()
           }
           expect(tester.widget<IconButton>(export).onPressed, isNotNull);
           await tester.tap(export);
+          debugPrint(
+            'Audit E2E ${iroh ? 'Iroh' : 'SSH'}: native save requested',
+          );
           // The host driver completes the real Android document saver, pulls the
           // saved bytes, checks them with zondctl, and removes the exported fixture.
           await visible(find.text('Audit history exported.'));
+          debugPrint(
+            'Audit E2E ${iroh ? 'Iroh' : 'SSH'}: native save completed',
+          );
           await tester.pumpWidget(const SizedBox.shrink());
+          await api.close();
+          api = await SshControl.connect(
+            profile,
+            (_, fp) async => fp == fixture['fingerprint'],
+          );
           await api.request({
             'method': 'save_config',
             'revision': saved['revision'],

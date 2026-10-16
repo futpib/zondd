@@ -12,16 +12,22 @@ import xml.etree.ElementTree as ET
 
 device, ctl = sys.argv[1:]
 adb = [os.environ.get("ADB", "adb"), "-s", device]
-deadline = time.monotonic() + 1100
 verified = 0
 seen = set()
+next_report = time.monotonic() + 60
 
-while verified < 2 and time.monotonic() < deadline:
+# The owning Rust test stops this helper if Flutter fails. Its APK build can
+# consume most of the test time before either native save dialog appears.
+while verified < 2:
     time.sleep(1)
     # UIAutomator enables accessibility while dumping. Restrict it to the
     # native saver so it cannot leave Flutter test semantics handles active.
     window = subprocess.run(adb + ["shell", "dumpsys", "window", "displays"], capture_output=True, text=True, timeout=10)
-    if not any("documentsui" in line for line in window.stdout.splitlines() if "mCurrentFocus=" in line):
+    focus = next((line.strip() for line in window.stdout.splitlines() if "mCurrentFocus=" in line), "no focused window")
+    if time.monotonic() >= next_report:
+        print(f"Waiting for Android audit saver ({verified}/2): {focus}", flush=True)
+        next_report = time.monotonic() + 60
+    if "documentsui" not in focus.lower():
         continue
     dumped = subprocess.run(adb + ["shell", "uiautomator", "dump", "/sdcard/zond-audit-window.xml"], capture_output=True, timeout=15)
     if dumped.returncode:
@@ -62,4 +68,3 @@ while verified < 2 and time.monotonic() < deadline:
     verified += 1
 
 subprocess.run(adb + ["shell", "rm", "-f", "/sdcard/zond-audit-window.xml"], timeout=10)
-assert verified == 2, f"Expected two real Android exports, got {verified}"
