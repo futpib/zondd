@@ -96,4 +96,5 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back virtualscene
           script: |
             cargo test --locked -p zondctl --test android -- --ignored --nocapture
+            (cd android-app && flutter test integration_test/identity_selection_test.dart) || exit 1
             python3 android-app/scripts/test-qr.py

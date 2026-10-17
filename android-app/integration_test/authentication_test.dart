@@ -162,7 +162,7 @@ void main() {
           await waitFor(tester, find.text('Edited name'));
           await tester.tap(find.text('Save connection'));
           await waitFor(tester, find.text('Connect'));
-          await waitFor(tester, find.text('Edited name'));
+          await waitFor(tester, find.widgetWithText(ListTile, 'Edited name'));
           expect((await store.load()).single.name, 'Edited name');
 
           // No stored identity or password: cancel, reconnect, and correct a typo.
