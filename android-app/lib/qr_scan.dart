@@ -69,6 +69,7 @@ class _QrScanPageState extends State<QrScanPage> {
             final text = result.text;
             if (!mounted ||
                 scanned ||
+                ModalRoute.of(context)?.isCurrent != true ||
                 !result.isValid ||
                 text == null ||
                 text.isEmpty) {

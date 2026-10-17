@@ -18,12 +18,12 @@ void main() {
   ) async {
     final store = IdentityStore();
     final previous = await store.load();
-    Future<void> displayQr(String contents) async {
+    Future<void> displayQr(String contents, {bool live = false}) async {
       final client = HttpClient();
       try {
         final request = await client.postUrl(
           Uri.parse(
-            'http://10.0.2.2:${const String.fromEnvironment('QR_TEST_PORT')}/qr',
+            'http://10.0.2.2:${const String.fromEnvironment('QR_TEST_PORT')}/${live ? 'qr-live' : 'qr'}',
           ),
         );
         final bytes = utf8.encode(contents);
@@ -43,11 +43,19 @@ void main() {
 
     Future<void> scan(String label, String contents, String expected) async {
       debugPrint('Scanning $label');
-      await displayQr(contents);
+      await displayQr('');
       final button = find.byTooltip('Scan $label QR code');
       await tester.ensureVisible(button);
       await tester.tap(button);
-      await tester.pump();
+      for (
+        var i = 0;
+        i < 30 && find.byType(QrScanPage).evaluate().isEmpty;
+        i++
+      ) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.byType(QrScanPage), findsOneWidget);
+      await displayQr(contents, live: true);
       for (var i = 0; i < 300; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         if (find.byType(QrScanPage).evaluate().isEmpty) break;
@@ -66,6 +74,15 @@ void main() {
       await store.save(previous);
       await tester.pumpWidget(const MaterialApp(home: ConnectionsPage()));
       await tester.pumpAndSettle();
+      await displayQr('');
+      final cancelButton = find.byTooltip('Scan target QR code');
+      await tester.tap(cancelButton);
+      await tester.pumpAndSettle();
+      expect(find.byType(QrScanPage), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(QrScanPage), findsNothing);
+      expect(scanButton(cancelButton).controller.text, '');
       final target = 'alice@${'ab' * 32}';
       await scan('target', ' $target ', target);
       expect(find.byType(ConnectionsPage), findsOneWidget);
@@ -113,15 +130,6 @@ void main() {
         ' passphrase with spaces ',
         ' passphrase with spaces ',
       );
-      await displayQr('');
-      final button = find.byTooltip('Scan passphrase QR code');
-      await tester.tap(button);
-      await tester.pumpAndSettle();
-      expect(find.byType(QrScanPage), findsOneWidget);
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-      expect(find.byType(QrScanPage), findsNothing);
-      expect(scanButton(button).controller.text, ' passphrase with spaces ');
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Passphrase (if encrypted)'),
         '',
