@@ -50,6 +50,7 @@ class QrScanPage extends StatefulWidget {
 
 class _QrScanPageState extends State<QrScanPage> {
   bool scanned = false, cameraUnavailable = false;
+  String? pending;
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -61,6 +62,8 @@ class _QrScanPageState extends State<QrScanPage> {
           tryHarder: true,
           resolution: ResolutionPreset.veryHigh,
           cropPercent: 0,
+          scanDelay: const Duration(milliseconds: 100),
+          scanDelaySuccess: const Duration(milliseconds: 100),
           galleryIcon: const Tooltip(
             message: 'Choose QR image',
             child: Icon(Icons.photo_library),
@@ -75,9 +78,14 @@ class _QrScanPageState extends State<QrScanPage> {
                 text.isEmpty) {
               return;
             }
+            if (pending != text) {
+              pending = text;
+              return;
+            }
             scanned = true;
             Navigator.of(context).pop(text);
           },
+          onScanFailure: (_) => pending = null,
           onControllerCreated: (_, error) {
             if (mounted) setState(() => cameraUnavailable = error != null);
           },

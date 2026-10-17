@@ -18,12 +18,12 @@ void main() {
   ) async {
     final store = IdentityStore();
     final previous = await store.load();
-    Future<void> displayQr(String contents, {bool live = false}) async {
+    Future<void> displayQr(String contents, {bool staged = false}) async {
       final client = HttpClient();
       try {
         final request = await client.postUrl(
           Uri.parse(
-            'http://10.0.2.2:${const String.fromEnvironment('QR_TEST_PORT')}/${live ? 'qr-live' : 'qr'}',
+            'http://10.0.2.2:${const String.fromEnvironment('QR_TEST_PORT')}/${staged ? 'qr-stage' : 'qr'}',
           ),
         );
         final bytes = utf8.encode(contents);
@@ -44,6 +44,7 @@ void main() {
     Future<void> scan(String label, String contents, String expected) async {
       debugPrint('Scanning $label');
       await displayQr('');
+      await displayQr(contents, staged: true);
       final button = find.byTooltip('Scan $label QR code');
       await tester.ensureVisible(button);
       await tester.tap(button);
@@ -55,7 +56,6 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100));
       }
       expect(find.byType(QrScanPage), findsOneWidget);
-      await displayQr(contents, live: true);
       for (var i = 0; i < 300; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         if (find.byType(QrScanPage).evaluate().isEmpty) break;

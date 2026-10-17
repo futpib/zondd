@@ -264,7 +264,7 @@ app intentionally has the same rights as that login's general-purpose shell.
 
 ## Build
 
-Requires Flutter (tested with 3.44.1/Dart 3.12.1), Rust, Android SDK, JDK 17,
+Requires Flutter 3.47.5 (Dart 3.13.4), Rust, Android SDK, JDK 25,
 NDK 28.2.13676358, and `cargo-ndk`. The app supports Android API 24+ on ARM64 and
 x86-64. Gradle builds the native adapter automatically, with its committed lockfile.
 

@@ -88,19 +88,21 @@ with tempfile.TemporaryDirectory(prefix="zondd-qr-") as directory, preserved_cam
     pose = Path(directory) / "camera-pose"
     camera_pose(pose)
     adb("emu", "automation", "play", str(pose))
-    blank = Path(directory) / "blank.png"
-    Image.new("RGB", (512, 512), "white").save(blank)
-
     class QrHandler(BaseHTTPRequestHandler):
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
-            if self.path not in ("/qr", "/qr-live") or not 0 <= length <= 4096:
+            if self.path not in ("/qr", "/qr-stage") or not 0 <= length <= 4096:
                 self.send_error(400)
                 return
             try:
                 if self.path == "/qr":
                     wait_for_camera_close()
-                    adb("emu", "virtualscene-image", "wall", str(blank))
+                    # Use a fresh path so the virtual scene reloads the blank texture.
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".png", dir=directory, delete=False
+                    ) as image:
+                        Image.new("RGB", (512, 512), "white").save(image.name)
+                        adb("emu", "virtualscene-image", "wall", image.name)
                     time.sleep(2)
                 if length:
                     with tempfile.NamedTemporaryFile(
