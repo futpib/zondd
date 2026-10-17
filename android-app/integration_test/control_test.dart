@@ -253,8 +253,10 @@ void main() {
       'automatically recover a closed ${iroh ? 'Iroh' : 'SSH'} session in place',
       (tester) async {
         var connections = 0;
+        final allowReconnect = Completer<void>();
         Future<SshControl> open() async {
           connections++;
+          if (connections == 2) await allowReconnect.future;
           return SshControl.connect(
             profile(iroh),
             (_, fp) async => fp == fixture['fingerprint'],
@@ -285,10 +287,9 @@ void main() {
           ) {
             await tester.pump(const Duration(milliseconds: 100));
           }
-          expect(
-            find.text('Connection lost. Retrying automatically…'),
-            findsOneWidget,
-          );
+          expect(api.disconnected, isTrue);
+          expect(find.text('Reconnect'), findsOneWidget);
+          allowReconnect.complete();
           for (
             var i = 0;
             i < 400 &&
@@ -306,6 +307,7 @@ void main() {
             isEmpty,
           );
         } finally {
+          if (!allowReconnect.isCompleted) allowReconnect.complete();
           await tester.pumpWidget(const SizedBox.shrink());
           await api.close();
           api.dispose();

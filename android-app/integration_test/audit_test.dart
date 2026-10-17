@@ -35,12 +35,6 @@ void main() {
           profile,
           (_, fp) async => fp == fixture['fingerprint'],
         );
-        final management = SSHClient(
-          await SSHSocket.connect(fixture['host'], fixture['port']),
-          username: fixture['user'],
-          identities: SSHKeyPair.fromPem(fixture['key']),
-          onVerifyHostKey: (_, fp) => utf8.decode(fp) == fixture['fingerprint'],
-        );
         final caller = SSHClient(
           await SSHSocket.connect(fixture['host'], fixture['port']),
           username: fixture['user'],
@@ -62,14 +56,25 @@ void main() {
         Future<void> remotePython(String source) async {
           final command =
               'python3 -c ${quote(source)} ${quote(fixture['config'])}';
-          final process = await management.execute(command);
-          final errors = process.stderr
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .join();
-          await process.done.timeout(const Duration(seconds: 20));
-          expect(process.exitCode, 0, reason: await errors);
-          process.close();
+          final management = SSHClient(
+            await SSHSocket.connect(fixture['host'], fixture['port']),
+            username: fixture['user'],
+            identities: SSHKeyPair.fromPem(fixture['key']),
+            onVerifyHostKey: (_, fp) =>
+                utf8.decode(fp) == fixture['fingerprint'],
+          );
+          try {
+            final process = await management.execute(command);
+            final errors = process.stderr
+                .cast<List<int>>()
+                .transform(utf8.decoder)
+                .join();
+            await process.done.timeout(const Duration(seconds: 20));
+            expect(process.exitCode, 0, reason: await errors);
+            process.close();
+          } finally {
+            management.close();
+          }
         }
 
         const tamper = '''
@@ -311,7 +316,6 @@ db.commit();undo.unlink()
           await tester.pumpWidget(const SizedBox.shrink());
           session?.close();
           caller.close();
-          management.close();
           await api.close();
           await tester.pump(const Duration(seconds: 2));
         }
