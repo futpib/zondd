@@ -100,8 +100,10 @@ Plain SSH connections do not depend on Iroh versions.
    `user@<64-hex-endpoint-id>`, optionally choose a key, and connect. IPv6 addresses use
    `user@[address]:port`. Successful quick connections are saved automatically.
    Choose **Password / no SSH key** to connect without an identity, even when
-   keys are stored. The app asks only for authentication methods offered by the
-   server, supports expired-password changes, and displays keyboard-interactive
+   keys are stored. Quick connect selects a key automatically only when one is
+   saved. **Connection options** can save an ordered list of keys for a server
+   that requires more than one identity. The app asks only for authentication
+   methods offered by the server, supports expired-password changes, and displays keyboard-interactive
    prompts and instructions, including verification codes and push approvals. Cancel returns to
    the connection list; rejected answers can be retried. Prompted answers are
    never saved. **Connection options** supports an optional saved password,

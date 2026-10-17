@@ -23,6 +23,7 @@ class Profile {
     this.password = '',
     this.passphrase = '',
     this.keyId = '',
+    this.additionalKeyIds = const [],
     this.relays = const [],
     this.executable = 'zondctl',
     this.runtime = '',
@@ -41,6 +42,11 @@ class Profile {
   final int port;
   final bool iroh;
   final List<String> relays;
+  final List<String> additionalKeyIds;
+  List<String> get selectedKeyIds => [
+    if (keyId.isNotEmpty) keyId,
+    ...additionalKeyIds,
+  ];
   String get hostIdentity =>
       '${iroh ? 'iroh' : 'ssh'}:$host:${iroh ? 22 : port}';
   Map<String, dynamic> toJson() => {
@@ -53,6 +59,7 @@ class Profile {
     'password': password,
     'passphrase': passphrase,
     'keyId': keyId,
+    'additionalKeyIds': additionalKeyIds,
     'relays': relays,
     'executable': executable,
     'runtime': runtime,
@@ -68,6 +75,8 @@ class Profile {
     password: value['password'] as String,
     passphrase: value['passphrase'] as String,
     keyId: value['keyId'] as String? ?? '',
+    additionalKeyIds:
+        (value['additionalKeyIds'] as List?)?.cast<String>() ?? const [],
     executable: value['executable'] as String,
     runtime: value['runtime'] as String,
     config: value['config'] as String,
@@ -459,16 +468,19 @@ class SshControl
     }
 
     try {
-      final identity = profile.keyId.isEmpty
-          ? null
-          : await IdentityStore().get(profile.keyId);
-      final pem = identity?.pem ?? profile.privateKey;
-      final passphrase = identity?.passphrase ?? profile.passphrase;
-      final identities = identity != null
-          ? identity.createIdentities()
-          : pem.trim().isEmpty
-          ? null
-          : SSHKeyPair.fromPem(pem, passphrase.isEmpty ? null : passphrase);
+      final selected = <SSHIdentity>[];
+      for (final id in profile.selectedKeyIds) {
+        selected.addAll((await IdentityStore().get(id)).createIdentities());
+      }
+      if (selected.isEmpty && profile.privateKey.trim().isNotEmpty) {
+        selected.addAll(
+          SSHKeyPair.fromPem(
+            profile.privateKey,
+            profile.passphrase.isEmpty ? null : profile.passphrase,
+          ),
+        );
+      }
+      final identities = selected.isEmpty ? null : selected;
       if (profile.iroh) {
         tunnel = await IrohTransport.connect(profile.host, profile.relays);
       }
