@@ -352,6 +352,40 @@ impl History {
         Ok(())
     }
 
+    pub fn migrate_rule_states(
+        &mut self,
+        migrate: impl Fn(&str) -> Result<Option<crate::rules::RuleState>>,
+    ) -> Result<()> {
+        let tx = self
+            .0
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let records = {
+            let mut q = tx.prepare("SELECT id,record FROM rule_states ORDER BY id")?;
+            q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, record) in records {
+            if let Some(state) = migrate(&record).with_context(|| format!("migrate rule {id}"))? {
+                anyhow::ensure!(state.proposal.id == id, "stored rule id mismatch");
+                tx.execute(
+                    "UPDATE rule_states SET status=?2,record=?3 WHERE id=?1",
+                    params![id, state.status, serde_json::to_string(&state)?],
+                )?;
+                Self::insert_action(
+                    &tx,
+                    None,
+                    "rule_migrated",
+                    json!({
+                        "previous": serde_json::from_str::<Value>(&record)?,
+                        "current": state,
+                    }),
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn rule_states(
         &self,
         principal: Option<&str>,

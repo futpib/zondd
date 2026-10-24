@@ -70,11 +70,11 @@ fn source_word_mode(word: &Word, home: bool) -> String {
     value
 }
 
-fn normalized_source(bound: &BoundRule) -> String {
+pub(super) fn normalized_source(bound: &BoundRule) -> String {
     normalized_source_mode(bound, true)
 }
 
-fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
+pub(super) fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
     let rule = &bound.rule;
     let home = home && rule.language_version >= 2;
     let parameters = rule
@@ -124,42 +124,7 @@ fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
 }
 
 pub(super) fn is_current(bound: &BoundRule, review: Option<&serde_json::Value>) -> bool {
-    let Ok(current) = describe(bound) else {
-        return false;
-    };
-    for legacy_home in [false, true] {
-        let mut candidate = current.clone();
-        if legacy_home {
-            if !bound.rule.types.is_empty() {
-                continue;
-            }
-            candidate["sections"][0]["fields"][0]["value"] =
-                normalized_source_mode(bound, false).into();
-        }
-        // Earlier reviews contain the same execution details without normalized source.
-        if !review.is_some_and(|r| {
-            r["sections"]
-                .as_array()
-                .is_some_and(|sections| sections.iter().any(|s| s["title"] == "Normalized rule"))
-        }) {
-            candidate["sections"].as_array_mut().unwrap().remove(0);
-        }
-        if review == Some(&candidate) {
-            return true;
-        }
-        // The directory effect's spelling changed without changing its semantics.
-        if bound.rule.create_new.is_some() {
-            for section in candidate["sections"].as_array_mut().unwrap() {
-                if section["title"] == "Effects" {
-                    section["fields"][0]["label"] = "create-new".into();
-                }
-            }
-        }
-        if review == Some(&candidate) {
-            return true;
-        }
-    }
-    false
+    describe(bound).is_ok_and(|current| review == Some(&current))
 }
 
 pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
@@ -326,25 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_home_reviews_preserve_literal_tildes_and_empty_type_serialization() {
-        let bound = BoundRule {
-            rule: libzond::rules::parse_stored(
-                "rule old() { run /usr/bin/printf '%s' \"$HOME/code\" \"~\" }",
-            )
-            .unwrap(),
-            home: "/home/old".into(),
-            cwd: "/tmp".into(),
-        };
-        let source = normalized_source(&bound);
-        assert!(source.contains("${HOME}/code") && source.contains("\"~\""));
-        assert_eq!(libzond::rules::parse_stored(&source).unwrap(), bound.rule);
-        assert!(is_current(&bound, Some(&describe(&bound).unwrap())));
-        let serialized = serde_json::to_value(&bound.rule).unwrap();
-        assert!(serialized.get("language_version").is_none() && serialized.get("types").is_none());
-    }
-
-    #[test]
-    fn prior_reviews_remain_valid_but_a_different_normalized_rule_does_not() {
+    fn current_reviews_require_the_exact_normalized_rule() {
         let bound = BoundRule {
             rule: libzond::rules::parse("rule old() { run /usr/bin/true }").unwrap(),
             home: "/home/test".into(),
@@ -353,7 +300,7 @@ mod tests {
         let mut current = describe(&bound).unwrap();
         let mut old = current.clone();
         old["sections"].as_array_mut().unwrap().remove(0);
-        assert!(is_current(&bound, Some(&old)));
+        assert!(!is_current(&bound, Some(&old)));
         current["sections"][0]["fields"][0]["value"] = "rule old() { run /usr/bin/false }".into();
         assert!(!is_current(&bound, Some(&current)));
     }
@@ -375,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_directory_label_preserves_grants_but_changed_semantics_do_not() {
+    fn current_reviews_require_the_current_directory_effect() {
         let bound = BoundRule {
             rule: libzond::rules::parse(
                 r#"rule directory(x: repo-name) {
@@ -397,7 +344,7 @@ mod tests {
             .find(|s| s["title"] == "Effects")
             .unwrap();
         effects["fields"][0]["label"] = "create-new".into();
-        assert!(is_current(&bound, Some(&legacy)));
+        assert!(!is_current(&bound, Some(&legacy)));
         legacy["sections"][0]["fields"][0]["value"] = "Changed authority".into();
         assert!(!is_current(&bound, Some(&legacy)));
     }

@@ -1,4 +1,4 @@
-use libzond::rules::{BoundRule, TypeKind, parse, parse_stored};
+use libzond::rules::{BoundRule, TypeKind, parse};
 
 const CHOICES: &str = r#"type view = choice(resource, market) {
   balances = ("balances", "portfolio")
@@ -6,7 +6,7 @@ const CHOICES: &str = r#"type view = choice(resource, market) {
   positions = ("positions", "usdm")
 }
 type selected = view
-type count = uint(0, 1000)
+type count = integer(min_inclusive=0, max_exclusive=1001)
 rule query(v: selected, n: count) {
   run /usr/bin/printf "%s" "${v.resource}" "${v.market}" "$n"
 }"#;
@@ -67,11 +67,11 @@ fn correlated_rows_supply_exact_pairs_and_aliases_keep_their_fields() {
 
 #[test]
 fn integer_ranges_are_canonical_and_do_not_overflow() {
-    let unsigned = "type n = uint(0, 18446744073709551615)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
+    let unsigned = "type n = integer(min_inclusive=0, max_exclusive=2**64)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
     let serialized = serde_json::to_value(parse(unsigned).unwrap()).unwrap();
     assert_eq!(
-        serialized["types"][0]["definition"]["max"],
-        "18446744073709551615"
+        serialized["types"][0]["definition"]["max_exclusive"],
+        "18446744073709551616"
     );
     assert_eq!(
         serde_json::from_value::<libzond::rules::Rule>(serialized).unwrap(),
@@ -96,7 +96,7 @@ fn integer_ranges_are_canonical_and_do_not_overflow() {
     ] {
         assert!(expand(unsigned, &[value]).is_err(), "{value}");
     }
-    let signed = "type n = int(-9223372036854775808, 9223372036854775807)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
+    let signed = "type n = integer(min_inclusive=-2**63, max_exclusive=2**63)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
     for value in ["-9223372036854775808", "-1", "0", "9223372036854775807"] {
         assert!(expand(signed, &[value]).is_ok());
     }
@@ -109,7 +109,10 @@ fn integer_ranges_are_canonical_and_do_not_overflow() {
     ] {
         assert!(expand(signed, &[value]).is_err());
     }
-    let bounded = unsigned.replace("0, 18446744073709551615", "10, 12");
+    let bounded = unsigned.replace(
+        "min_inclusive=0, max_exclusive=2**64",
+        "min_inclusive=10, max_exclusive=13",
+    );
     for value in ["10", "11", "12"] {
         assert!(expand(&bounded, &[value]).is_ok());
     }
@@ -219,7 +222,7 @@ fn home_expansion_is_frozen_and_home_variable_paths_need_the_new_spelling() {
                 parse(&source).unwrap_err().to_string().contains("use ~"),
                 "{source}"
             );
-            assert!(parse_stored(&source).is_ok());
+            assert!(libzond::rules::migration::source(&source, 1).is_ok());
         }
     }
     for value in ["~root/path", "~$x"] {
@@ -242,13 +245,17 @@ fn home_expansion_is_frozen_and_home_variable_paths_need_the_new_spelling() {
         parse("rule exe() { run ~/bin/tool }").unwrap().program,
         "~/bin/tool"
     );
-    let old = parse_stored(r#"rule old() { run /usr/bin/printf "%s" "$HOME/code" "~" }"#).unwrap();
-    assert_eq!(old.language_version, 1);
+    let old = libzond::rules::migration::source(
+        r#"rule old() { run /usr/bin/printf "%s" "$HOME/code" "~" }"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(old.language_version, 3);
     assert!(
         serde_json::to_value(&old)
             .unwrap()
             .get("language_version")
-            .is_none()
+            .is_some()
     );
     let call = BoundRule {
         rule: old,
@@ -294,7 +301,7 @@ fn merged_live_example_has_exactly_the_three_previously_separate_commands() {
             "rule old() {{ run /usr/bin/uv run --no-sync --frozen --directory \"$HOME/code/folio\" folio read binance {view} --live --market {market} --account-mode portfolio --verbose }}"
         );
         let old = BoundRule {
-            rule: parse_stored(&old).unwrap(),
+            rule: libzond::rules::migration::source(&old, 1).unwrap(),
             home: combined.home.clone(),
             cwd: combined.cwd.clone(),
         };
@@ -321,5 +328,121 @@ fn merged_live_example_has_exactly_the_three_previously_separate_commands() {
         include_str!("../../examples/rules/read-github-failure.zond"),
     ] {
         parse(source).unwrap();
+    }
+}
+
+#[test]
+fn arbitrary_integers_keyword_bounds_and_expression_precedence() {
+    for (expression, expected) in [
+        ("2**128", "340282366920938463463374607431768211456"),
+        ("-2**127", "-170141183460469231731687303715884105728"),
+        ("2**3**2", "512"),
+        ("(-2)**4", "16"),
+        ("2 + 3 * 4", "14"),
+        ("(2 + 3) * 4", "20"),
+        ("-7//3", "-3"),
+        ("-7%3", "2"),
+        ("7%-3", "-2"),
+        ("12/3", "4"),
+        ("20-5-3", "12"),
+        ("0**0", "1"),
+        ("(-1)**(2**100)", "1"),
+    ] {
+        let source = format!(
+            "type n = integer(max_exclusive=({expression}) + 1, min_inclusive={expression})\nrule value(x: n) {{ run /usr/bin/printf '%s' \"$x\" }}"
+        );
+        assert_eq!(
+            expand(&source, &[expected]).unwrap()[1],
+            expected,
+            "{source}"
+        );
+        let rule = parse(&source).unwrap();
+        let definition = &rule.types[0];
+        assert!(
+            definition
+                .source()
+                .contains(&format!("min_inclusive={expected}"))
+        );
+        let round_trip = parse(&format!(
+            "{}\nrule value(x: n) {{ run /usr/bin/printf '%s' \"$x\" }}",
+            definition.source()
+        ))
+        .unwrap();
+        assert_eq!(rule, round_trip);
+    }
+    for ty in ["integer", "integer()"] {
+        let source = format!(
+            "type n = {ty}\nrule big(x: n, y: integer) {{ run /usr/bin/printf '%s' \"$x\" \"$y\" }}"
+        );
+        let huge = format!("-{}", "9".repeat(300));
+        assert!(expand(&source, &[&huge, &huge]).is_ok());
+        assert!(expand(&source, &[&"1".repeat(4097), "0"]).is_err());
+        for invalid in ["-0", "+1", "00", "-01", "1_000", "2**32", " 1", "1\n"] {
+            assert!(expand(&source, &[invalid, "0"]).is_err(), "{invalid}");
+        }
+    }
+    let named = "type uint = integer(min_inclusive=0, max_exclusive=2**32)\nrule n(x: uint) { run /usr/bin/printf '%s' \"$x\" }";
+    assert!(expand(named, &["4294967295"]).is_ok());
+    assert!(expand(named, &["4294967296"]).is_err());
+    let lower =
+        "type n = integer(min_inclusive=0)\nrule n(x: n) { run /usr/bin/printf '%s' \"$x\" }";
+    assert!(expand(lower, &["0"]).is_ok());
+    assert!(expand(lower, &["-1"]).is_err());
+    let upper = lower.replace("min_inclusive=0", "max_exclusive=0");
+    assert!(expand(&upper, &["-1"]).is_ok());
+    assert!(expand(&upper, &["0"]).is_err());
+}
+
+#[test]
+fn integer_expression_errors_and_budgets_fail_closed() {
+    for bounds in [
+        "0, 10",
+        "min=0",
+        "max=10",
+        "min_inclusive=0, min_inclusive=1",
+        "min_inclusive=1, max_exclusive=1",
+        "min_inclusive=2, max_exclusive=1",
+        "max_exclusive=2**-1",
+        "max_exclusive=1/0",
+        "max_exclusive=1//0",
+        "max_exclusive=1%0",
+        "max_exclusive=3/2",
+        "max_exclusive=2**(2**32)",
+        "max_exclusive=2**65536",
+        "max_exclusive=",
+        "max_exclusive=1 2",
+        "max_exclusive=1+",
+        "max_exclusive=1,",
+        "max_exclusive=foo()",
+        "max_exclusive=$HOME",
+        "max_exclusive=$(id)",
+        "max_exclusive=2;id",
+        "max_exclusive=2|id",
+        "max_exclusive=0x100",
+    ] {
+        let source = format!(
+            "type n = integer({bounds})\nrule n(x: n) {{ run /usr/bin/printf '%s' \"$x\" }}"
+        );
+        assert!(parse(&source).is_err(), "{source}");
+    }
+    for expression in [
+        format!("{}1{}", "(".repeat(80), ")".repeat(80)),
+        format!("{}1", "-".repeat(80)),
+        "1+".repeat(1100) + "1",
+    ] {
+        assert!(
+            parse(&format!(
+                "type n = integer(max_exclusive={expression})\nrule n() {{ run true }}"
+            ))
+            .is_err()
+        );
+    }
+    for source in [
+        "rule n(x: int) { run true }",
+        "rule n(x: uint) { run true }",
+        "rule n() { run /usr/bin/printf 2**32 }",
+        "rule n() { run /usr/bin/printf * }",
+    ] {
+        assert!(parse(source).is_err(), "{source}");
     }
 }

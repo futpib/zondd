@@ -529,7 +529,7 @@ The language supports one `run`, optional `require is-dir`, `require absent` and
 `create-new-dir PATH as VARIABLE { ... }` block.
 `create-new` remains an alias for older rule source.
 Each check occupies its own line. Parameters are positional, with up to 16
-declarations of `name: TYPE`. Types are `repo-name` or a local definition.
+declarations of `name: TYPE`. Types are `integer`, `repo-name` or a local definition.
 `repo-name` requires a full match of
 `[A-Za-z0-9][A-Za-z0-9._-]{0,99}`: bounded ASCII, no slash, leading hyphen,
 whitespace, control characters, or Unicode. It validates syntax, not remote
@@ -541,9 +541,9 @@ Local definitions precede the single rule and belong only to that proposal:
 ```text
 type repository = repo-name
 type connection = enum { binance, ibkr }
-type cursor = uint(0, 18446744073709551615)
-type job-id = uint(1, 18446744073709551615)
-type adjustment = int(-100, 100)
+type cursor = integer(min_inclusive=0, max_exclusive=2**64)
+type job-id = integer(min_inclusive=1, max_exclusive=2**64)
+type adjustment = integer(min_inclusive=-100, max_exclusive=101)
 type symbol = text('[A-Z0-9]+', 2, 20)
 type live-view = choice(resource, market) {
   balances = ("balances", "portfolio")
@@ -556,13 +556,24 @@ rule binance-live(view: live-view) {
 }
 ```
 
-- An alias names `repo-name` or another local type. Forward references work;
+- An alias names `integer`, `repo-name` or another local type. Forward references work;
   unknown references, cycles, duplicate names and builtin shadowing are rejected.
 - An enum accepts exactly one of its listed literal strings. Quotes preserve
   spaces and special characters. No normalization or recursive expansion occurs.
-- `uint(MIN, MAX)` and `int(MIN, MAX)` use inclusive 64-bit ranges. Invocation
-  values must be canonical decimal strings: no leading zeros except `0`, plus
-  signs, whitespace, negative zero or overflow. Unsigned types reject negatives.
+- `integer` accepts arbitrary-precision integers. Bounds are optional and always
+  keyword-only: `integer(min_inclusive=0, max_exclusive=2**32)` means
+  `0 <= value < 4294967296`. Either bound may be omitted; bare `integer` has
+  neither bound. Positional, duplicate and unknown bound arguments are rejected.
+  Bounds accept decimal literals, parentheses, unary `+`/`-`, and `+`, `-`, `*`,
+  `/`, `//`, `%`, `**`. Exponentiation associates right and binds more tightly
+  than unary signs; multiplication/division bind before addition/subtraction.
+  `/` requires an exact result; `//` rounds down; `%` is the corresponding floor
+  remainder. Exponents must be nonnegative; `0**0` is 1. Expressions use exact
+  integer arithmetic with no variables, function calls or shell evaluation.
+  Evaluation allows at most 1024 syntax nodes, 64 nested expressions and 65536-bit
+  intermediate values; expensive powers are rejected before allocation.
+  Invocation values must be canonical decimal strings, at most 4096 bytes: no
+  leading zeros except `0`, plus signs, whitespace or negative zero.
 - `text(PATTERN, MIN_BYTES, MAX_BYTES)` accepts printable ASCII strings whose
   length is in the inclusive range and whose entire value matches the Rust regex
   pattern. Patterns cannot select arbitrary code or invoke a validator program.
@@ -588,13 +599,21 @@ Constraints, aliases and every correlated row appear in the receiver's
 review and normalized source and are covered by the immutable approval digest.
 Every invocation, including raw protocol requests and resumed jobs, is checked
 on the receiver. Definitions have no imports, global registry or ambient state.
-64-bit integer bounds use decimal strings in JSON so Android and audit exports
-retain their exact values.
+Integer bounds use decimal strings in JSON (`min_inclusive`, `max_exclusive`)
+so Android and audit exports retain exact values. Approval reviews display the
+evaluated bounds and explicitly show the inclusive/exclusive inequality.
 
-Saved language-version-1 grants retain their original source, review, digest and
-`$HOME`/quoted-tilde behavior. New proposals use language version 2. Restore checks
-select the recorded syntax version and compare the source against the compiled
-rule; the compatibility path cannot be used to submit new legacy proposals.
+On startup, saved version-1 and version-2 rules are migrated transactionally to
+language version 3, including inactive records. Old inclusive `uint`/`int` upper
+bounds increase by one using arbitrary-precision arithmetic; their accepted
+values, grant status and expiry remain unchanged. Home expansion and literal
+tildes retain their meanings in normalized current syntax. The migration checks
+old digests, compiled definitions and reviews, regenerates source/review/digests,
+and appends `rule_migrated` audit events containing the previous and current
+records. Existing audit entries remain unchanged. Inconsistent live records are
+invalidated. Pending proposals require the new digest; an approval using an old
+digest fails. New proposals have no `uint` or `int` builtins and reject positional
+integer bounds. The grammar and integer expressions use Winnow parser combinators.
 
 Double quotes group arguments and allow `$name` or `${name}` substitution;
 single quotes preserve literal text. Backslash can quote a backslash, quote,

@@ -1,0 +1,367 @@
+use super::{check_stored, resolve_program, review};
+use anyhow::{Context, Result, ensure};
+use libzond::{
+    config::revision,
+    rules::{BoundRule, LANGUAGE_VERSION, RuleState, migration},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+mod previous;
+
+// Reproduce the original schema when checking a pre-migration digest.
+// Audit records are immutable; only current rule state receives the new format.
+#[derive(Deserialize, Serialize)]
+struct PreviousProposal {
+    id: String,
+    principal: String,
+    source: String,
+    bound: previous::Bound,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review: Option<Value>,
+    digest: String,
+    revision: String,
+    principal_revision: String,
+    created_unix_ms: u64,
+    expires_unix_ms: u64,
+}
+
+fn previous_description(rule: &Value, mut name: String) -> Option<String> {
+    let types = rule.get("types")?.as_array()?;
+    for _ in 0..=types.len() {
+        let definition = &types.iter().find(|t| t["name"] == name)?["definition"];
+        let min = definition["min"].as_str().unwrap_or_default();
+        let max = definition["max"].as_str().unwrap_or_default();
+        match definition["kind"].as_str()? {
+            "alias" => name = definition["target"].as_str()?.into(),
+            "uint" => {
+                return Some(format!(
+                    "Unsigned decimal integer from {min} through {max}, inclusive. Canonical digits only: no sign, leading zeros (except 0), whitespace or overflow."
+                ));
+            }
+            "int" => {
+                return Some(format!(
+                    "Signed decimal integer from {min} through {max}, inclusive. Canonical digits with optional minus: no plus, leading zeros, negative zero, whitespace or overflow."
+                ));
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn previous_type_source(ty: &Value, current: &libzond::rules::TypeDefinition) -> String {
+    let definition = &ty["definition"];
+    let mut current = current.clone();
+    current.name = ty["name"].as_str().unwrap().into();
+    match definition["kind"].as_str() {
+        Some(kind @ ("uint" | "int")) => format!(
+            "type {} = {kind}({}, {})",
+            current.name,
+            definition["min"].as_str().unwrap(),
+            definition["max"].as_str().unwrap()
+        ),
+        Some("alias") => format!(
+            "type {} = {}",
+            current.name,
+            definition["target"].as_str().unwrap()
+        ),
+        _ => current.source(),
+    }
+}
+
+fn previous_review_matches(
+    bound: &BoundRule,
+    old_rule: &Value,
+    saved: Option<&Value>,
+    version: u32,
+) -> Result<bool> {
+    let mut old_bound = bound.clone();
+    old_bound.rule.language_version = version;
+    let mut current = review::describe(&old_bound)?;
+    let source = review::normalized_source(&old_bound);
+    let prefix = bound
+        .rule
+        .types
+        .iter()
+        .map(|ty| format!("{}\n", ty.source()))
+        .collect::<String>();
+    let old_types = old_rule["types"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let old_prefix = bound
+        .rule
+        .types
+        .iter()
+        .zip(old_types)
+        .map(|(ty, previous)| format!("{}\n", previous_type_source(previous, ty)))
+        .collect::<String>();
+    let parameters = &bound.rule.parameters;
+    let old_parameters: Vec<libzond::rules::Parameter> =
+        serde_json::from_value(old_rule["parameters"].clone())?;
+    let header = |parameters: &[libzond::rules::Parameter]| {
+        format!(
+            "rule {}({})",
+            bound.rule.name,
+            parameters
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.kind))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let body = source.strip_prefix(&prefix).unwrap().replacen(
+        &header(parameters),
+        &header(&old_parameters),
+        1,
+    );
+    current["sections"][0]["fields"][0]["value"] = format!("{old_prefix}{body}").into();
+    for section in current["sections"].as_array_mut().unwrap() {
+        if section["title"] == "Parameters (positional order)" {
+            for (field, parameter) in section["fields"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .zip(&old_parameters)
+            {
+                field["label"] = format!("{}: {}", parameter.name, parameter.kind).into();
+                if let Some(description) = previous_description(old_rule, parameter.kind.clone()) {
+                    field["value"] = description.into();
+                }
+            }
+        } else if section["title"] == "Local type definitions" {
+            for ((field, ty), previous) in section["fields"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .zip(&bound.rule.types)
+                .zip(old_types)
+            {
+                let name = previous["name"].as_str().unwrap();
+                field["label"] = name.into();
+                let description = previous_description(old_rule, name.into())
+                    .unwrap_or(bound.rule.type_description(&ty.name)?);
+                field["value"] =
+                    format!("{}\n{description}", previous_type_source(previous, ty)).into();
+            }
+        }
+    }
+    for old_home in [false, true] {
+        let mut candidate = current.clone();
+        if old_home {
+            if !bound.rule.types.is_empty() {
+                continue;
+            }
+            candidate["sections"][0]["fields"][0]["value"] =
+                review::normalized_source_mode(&old_bound, false).into();
+        }
+        if !saved.is_some_and(|r| {
+            r["sections"]
+                .as_array()
+                .is_some_and(|sections| sections.iter().any(|s| s["title"] == "Normalized rule"))
+        }) {
+            candidate["sections"].as_array_mut().unwrap().remove(0);
+        }
+        if saved == Some(&candidate) {
+            return Ok(true);
+        }
+        if bound.rule.create_new.is_some() {
+            for section in candidate["sections"].as_array_mut().unwrap() {
+                if section["title"] == "Effects" {
+                    section["fields"][0]["label"] = "create-new".into();
+                }
+            }
+        }
+        if saved == Some(&candidate) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(super) fn migrate(record: &str) -> Result<Option<RuleState>> {
+    let mut value: Value = serde_json::from_str(record)?;
+    let version = value["proposal"]["bound"]["rule"]
+        .get("language_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    if version == u64::from(LANGUAGE_VERSION) {
+        return Ok(None);
+    }
+    ensure!(
+        matches!(version, 1 | 2),
+        "unsupported stored rule language {version}"
+    );
+    let mut previous: PreviousProposal = serde_json::from_value(value["proposal"].clone())?;
+    let old_rule = value["proposal"]["bound"]["rule"].clone();
+    let migrated_rule = migration::compiled(old_rule.clone())?;
+    value["proposal"]["bound"]["rule"] = serde_json::to_value(&migrated_rule)?;
+    let mut state: RuleState = serde_json::from_value(value)?;
+    let valid = (|| -> Result<()> {
+        let digest = std::mem::take(&mut previous.digest);
+        ensure!(
+            revision(&serde_json::to_string(&previous)?) == digest,
+            "previous proposal digest does not match its contents"
+        );
+        ensure!(
+            resolve_program(migration::source(&previous.source, version as u32)?)? == migrated_rule,
+            "previous rule source and compiled definition disagree"
+        );
+        ensure!(
+            previous_review_matches(
+                &state.proposal.bound,
+                &old_rule,
+                previous.review.as_ref(),
+                version as u32
+            )?,
+            "previous proposal review is missing or changed"
+        );
+        Ok(())
+    })();
+    state.proposal.source = review::normalized_source(&state.proposal.bound);
+    state.proposal.review = Some(review::describe(&state.proposal.bound)?);
+    state.proposal.digest.clear();
+    state.proposal.digest = revision(&serde_json::to_string(&state.proposal)?);
+    let valid = valid.and_then(|()| check_stored(&state.proposal).context("check migrated rule"));
+    if let Err(error) = valid {
+        if matches!(state.status.as_str(), "active" | "pending") {
+            state.status = "invalidated".into();
+        }
+        state.reason =
+            format!("rule migration failed consistency checks: {error:#}; submit a new proposal");
+    }
+    Ok(Some(state))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> PreviousProposal {
+        let state: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/integer-v2.json")).unwrap();
+        let mut proposal: PreviousProposal =
+            serde_json::from_value(state["proposal"].clone()).unwrap();
+        let digest = std::mem::take(&mut proposal.digest);
+        assert_eq!(
+            revision(&serde_json::to_string(&proposal).unwrap()),
+            digest,
+            "fixture captured from installed zondd 1d1abd38a774 must retain its original digest"
+        );
+        let mut bound = serde_json::to_value(&proposal.bound).unwrap();
+        bound["home"] = libzond::paths::home_dir()
+            .to_string_lossy()
+            .into_owned()
+            .into();
+        for section in proposal.review.as_mut().unwrap()["sections"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if section["title"] == "Execution" {
+                for field in section["fields"].as_array_mut().unwrap() {
+                    if field["label"] == "Server HOME" {
+                        field["value"] = bound["home"].to_string().into();
+                    }
+                }
+            }
+        }
+        proposal.bound = serde_json::from_value(bound).unwrap();
+        proposal
+    }
+
+    fn record(mut proposal: PreviousProposal) -> String {
+        proposal.digest.clear();
+        proposal.digest = revision(&serde_json::to_string(&proposal).unwrap());
+        format!(
+            r#"{{"proposal":{},"status":"active","reason":"approved","grant_expires_unix_ms":null}}"#,
+            serde_json::to_string(&proposal).unwrap()
+        )
+    }
+
+    #[test]
+    fn installed_v2_fixture_migrates_with_exact_scope_and_an_idempotent_digest() {
+        let old = record(fixture());
+        // Stored JSON formatting and object key order do not change the approved digest.
+        let old =
+            serde_json::to_string_pretty(&serde_json::from_str::<Value>(&old).unwrap()).unwrap();
+        let new = migrate(&old).unwrap().unwrap();
+        assert_eq!(new.status, "active", "{}", new.reason);
+        assert_eq!(new.proposal.bound.rule.language_version, LANGUAGE_VERSION);
+        for (a, b) in [
+            ("0", "-9223372036854775808"),
+            ("18446744073709551615", "9223372036854775807"),
+        ] {
+            let invocation = new
+                .proposal
+                .bound
+                .instantiate("grant", &[a.into(), b.into()], None)
+                .unwrap();
+            assert_eq!(invocation.command.args, ["%s:%s", a, b]);
+        }
+        assert!(
+            migrate(&serde_json::to_string(&new).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        check_stored(&new.proposal).unwrap();
+    }
+
+    #[test]
+    fn migration_does_not_restore_tampered_authority() {
+        for tamper in ["source", "review", "digest"] {
+            let mut proposal = fixture();
+            if tamper == "source" {
+                proposal.source = proposal.source.replace("run printf", "run false");
+            }
+            if tamper == "review" {
+                proposal.review.as_mut().unwrap()["sections"][1]["fields"][0]["value"] =
+                    "anything goes".into();
+            }
+            let mut old = record(proposal);
+            if tamper == "digest" {
+                old = old.replace("\"digest\":\"", "\"digest\":\"bad-");
+            }
+            let new = migrate(&old).unwrap().unwrap();
+            assert_eq!(new.status, "invalidated", "{tamper}: {}", new.reason);
+            assert!(new.reason.contains("consistency checks"));
+        }
+    }
+
+    #[test]
+    fn migration_renames_a_previous_local_integer_type_and_its_aliases() {
+        let previous = serde_json::to_string(&fixture())
+            .unwrap()
+            .replace("count", "integer");
+        let old = record(serde_json::from_str(&previous).unwrap());
+        let new = migrate(&old).unwrap().unwrap();
+        assert_eq!(new.status, "active", "{}", new.reason);
+        assert_eq!(new.proposal.bound.rule.types[0].name, "integer-local-1");
+        assert!(
+            new.proposal
+                .source
+                .contains("type selected = integer-local-1")
+        );
+        assert!(
+            new.proposal
+                .bound
+                .instantiate("grant", &["18446744073709551616".into(), "0".into()], None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn old_reviews_without_normalized_source_are_migrated_to_complete_reviews() {
+        let mut proposal = fixture();
+        proposal.review.as_mut().unwrap()["sections"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        let new = migrate(&record(proposal)).unwrap().unwrap();
+        assert_eq!(new.status, "active", "{}", new.reason);
+        assert!(review::is_current(
+            &new.proposal.bound,
+            new.proposal.review.as_ref()
+        ));
+    }
+}

@@ -48,7 +48,7 @@ fn cli_forwards_local_definitions_and_invokes_correlated_choices_with_exact_boun
  balances = ("balances", "portfolio")
  positions = ("positions", "usdm")
 }
-type cursor = uint(0, 18446744073709551615)
+type cursor = integer(min_inclusive=0, max_exclusive=2**128)
 rule typed(v: view, n: cursor) {
  run printf "%s:%s:%s" "${v.resource}" "${v.market}" "$n"
 }"#;
@@ -70,8 +70,8 @@ rule typed(v: view, n: cursor) {
     let proposal = &event["proposal"];
     assert_eq!(proposal["source"], source);
     assert_eq!(
-        proposal["bound"]["rule"]["types"][1]["definition"]["max"],
-        "18446744073709551615"
+        proposal["bound"]["rule"]["types"][1]["definition"]["max_exclusive"],
+        "340282366920938463463374607431768211456"
     );
     checked(
         env.cli().args([
@@ -90,13 +90,16 @@ rule typed(v: view, n: cursor) {
             "invoke",
             "typed",
             "positions",
-            "18446744073709551615",
+            "340282366920938463463374607431768211455",
         ]),
         0,
     );
-    assert_eq!(result.stdout, b"positions:usdm:18446744073709551615");
+    assert_eq!(
+        result.stdout,
+        b"positions:usdm:340282366920938463463374607431768211455"
+    );
     for args in [
-        vec!["positions", "18446744073709551616"],
+        vec!["positions", "340282366920938463463374607431768211456"],
         vec!["other", "1"],
         vec!["positions", "1", "portfolio"],
     ] {

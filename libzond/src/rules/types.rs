@@ -1,5 +1,6 @@
 use super::{Rule, identifier, valid_repo_name};
 use anyhow::{Context, Result, bail, ensure};
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,17 +24,13 @@ pub enum TypeKind {
     Enum {
         values: Vec<String>,
     },
-    Uint {
-        #[serde(with = "decimal")]
-        min: u64,
-        #[serde(with = "decimal")]
-        max: u64,
-    },
-    Int {
-        #[serde(with = "decimal")]
-        min: i64,
-        #[serde(with = "decimal")]
-        max: i64,
+    Integer {
+        #[serde(default, with = "decimal", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "min_inclusive")]
+        min: Option<BigInt>,
+        #[serde(default, with = "decimal", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "max_exclusive")]
+        max: Option<BigInt>,
     },
     Text {
         pattern: String,
@@ -47,29 +44,31 @@ pub enum TypeKind {
 }
 
 mod decimal {
+    use num_bigint::BigInt;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
-    use std::{fmt::Display, str::FromStr};
 
-    // Decimal strings preserve exact 64-bit bounds in Android JSON and audit exports.
-    pub fn serialize<T: Display, S: Serializer>(
-        value: &T,
+    // Decimal strings preserve exact bounds in Android JSON and audit exports.
+    pub fn serialize<S: Serializer>(
+        value: &Option<BigInt>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&value.to_string())
+        serializer.serialize_str(
+            &value
+                .as_ref()
+                .expect("absent bounds are omitted")
+                .to_string(),
+        )
     }
 
-    pub fn deserialize<'de, T: FromStr + Display, D: Deserializer<'de>>(
+    pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<T, D::Error>
-    where
-        T::Err: Display,
-    {
+    ) -> Result<Option<BigInt>, D::Error> {
         let text = String::deserialize(deserializer)?;
-        let value = text.parse::<T>().map_err(D::Error::custom)?;
+        let value = text.parse::<BigInt>().map_err(D::Error::custom)?;
         if value.to_string() != text {
             return Err(D::Error::custom("noncanonical decimal bound"));
         }
-        Ok(value)
+        Ok(Some(value))
     }
 }
 
@@ -114,8 +113,20 @@ impl TypeDefinition {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            TypeKind::Uint { min, max } => format!("uint({min}, {max})"),
-            TypeKind::Int { min, max } => format!("int({min}, {max})"),
+            TypeKind::Integer {
+                min: None,
+                max: None,
+            } => "integer".into(),
+            TypeKind::Integer { min, max } => {
+                let mut bounds = Vec::new();
+                if let Some(min) = min {
+                    bounds.push(format!("min_inclusive={min}"));
+                }
+                if let Some(max) = max {
+                    bounds.push(format!("max_exclusive={max}"));
+                }
+                format!("integer({})", bounds.join(", "))
+            }
             TypeKind::Text { pattern, min, max } => {
                 format!("text({}, {min}, {max})", quoted(pattern))
             }
@@ -144,6 +155,12 @@ impl Rule {
     pub fn type_kind(&self, name: &str) -> Result<Option<&TypeKind>> {
         let mut name = name;
         for _ in 0..=MAX_TYPES {
+            if name == "integer" {
+                return Ok(Some(&TypeKind::Integer {
+                    min: None,
+                    max: None,
+                }));
+            }
             if name == "repo-name" {
                 return Ok(None);
             }
@@ -153,7 +170,7 @@ impl Rule {
                 .find(|t| t.name == name)
                 .with_context(|| {
                     format!(
-                        "unknown type '{name}'; supported type: repo-name or a local definition"
+                        "unknown type '{name}'; supported types: integer, repo-name or a local definition"
                     )
                 })?
                 .definition;
@@ -173,7 +190,7 @@ impl Rule {
                 crate::config::valid_name(&ty.name)
                     && !matches!(
                         ty.name.as_str(),
-                        "repo-name" | "enum" | "uint" | "int" | "text" | "choice"
+                        "repo-name" | "enum" | "integer" | "text" | "choice"
                     )
                     && names.insert(&ty.name),
                 "invalid, reserved or duplicate local type"
@@ -190,10 +207,14 @@ impl Rule {
                         "enum needs 1–64 distinct bounded ASCII literals"
                     );
                 }
-                TypeKind::Uint { min, max } => {
-                    ensure!(min <= max, "invalid unsigned integer range")
+                TypeKind::Integer { min, max } => {
+                    ensure!(
+                        min.as_ref()
+                            .zip(max.as_ref())
+                            .is_none_or(|(min, max)| min < max),
+                        "integer range must be nonempty (minimum inclusive, maximum exclusive)"
+                    );
                 }
-                TypeKind::Int { min, max } => ensure!(min <= max, "invalid integer range"),
                 TypeKind::Text { pattern, min, max } => {
                     ensure!(
                         min <= max && *max <= 4096,
@@ -236,12 +257,14 @@ impl Rule {
         let valid = match self.type_kind(kind)? {
             None => valid_repo_name(value),
             Some(TypeKind::Enum { values }) => values.iter().any(|v| v == value),
-            Some(TypeKind::Uint { min, max }) => value
-                .parse::<u64>()
-                .is_ok_and(|n| n >= *min && n <= *max && n.to_string() == value),
-            Some(TypeKind::Int { min, max }) => value
-                .parse::<i64>()
-                .is_ok_and(|n| n >= *min && n <= *max && n.to_string() == value),
+            Some(TypeKind::Integer { min, max }) => {
+                value.len() <= 4096
+                    && value.parse::<BigInt>().is_ok_and(|n| {
+                        min.as_ref().is_none_or(|min| &n >= min)
+                            && max.as_ref().is_none_or(|max| &n < max)
+                            && n.to_string() == value
+                    })
+            }
             Some(TypeKind::Text { pattern, min, max }) => {
                 literal(value)
                     && (*min..=*max).contains(&value.len())
@@ -277,8 +300,15 @@ impl Rule {
         Ok(match self.type_kind(kind)? {
             None => "1–100 ASCII letters, digits, dots, underscores or hyphens; starts with a letter or digit. Full match: [A-Za-z0-9][A-Za-z0-9._-]{0,99}. Validated on every invocation; does not check repository existence.".into(),
             Some(TypeKind::Enum { values }) => format!("Exactly one of {}. Case-sensitive literal values; validated on every invocation.", serde_json::to_string(values)?),
-            Some(TypeKind::Uint { min, max }) => format!("Unsigned decimal integer from {min} through {max}, inclusive. Canonical digits only: no sign, leading zeros (except 0), whitespace or overflow."),
-            Some(TypeKind::Int { min, max }) => format!("Signed decimal integer from {min} through {max}, inclusive. Canonical digits with optional minus: no plus, leading zeros, negative zero, whitespace or overflow."),
+            Some(TypeKind::Integer { min, max }) => {
+                let range = match (min, max) {
+                    (Some(min), Some(max)) => format!("{min} <= value < {max} (minimum inclusive, maximum exclusive)"),
+                    (Some(min), None) => format!("value >= {min} (no upper bound)"),
+                    (None, Some(max)) => format!("value < {max} (no lower bound)"),
+                    (None, None) => "no lower or upper bound".into(),
+                };
+                format!("Arbitrary-precision decimal integer: {range}. Canonical digits with optional minus: no plus, leading zeros, negative zero or whitespace. At most 4096 bytes per argument.")
+            }
             Some(TypeKind::Text { pattern, min, max }) => format!("Printable ASCII text, {min}–{max} bytes, matching the entire regular expression {}. Validated on every invocation; values are never expanded again.", serde_json::to_string(pattern)?),
             Some(TypeKind::Choice { fields, cases }) => {
                 let rows = cases.iter().map(|(name, row)| {

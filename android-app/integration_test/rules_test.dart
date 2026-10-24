@@ -98,12 +98,12 @@ void main() {
   positions = ("positions", "usdm")
 }
 type selected = view
-type number = uint(1, 10)
-type big-count = uint(0, 18446744073709551615)
+type number = integer(min_inclusive=1, max_exclusive=11)
+type big-count = integer(min_inclusive=0, max_exclusive=2**128)
 type category = enum { daily, weekly }
 type symbol = text('[A-Z]+', 2, 10)
-rule RULE_NAME(v: selected, n: number, c: category, s: symbol) {
-  run printf "%s:%s:%s:%s:%s" "${v.resource}" "${v.market}" "$n" "$c" "$s"
+rule RULE_NAME(v: selected, n: number, c: category, s: symbol, b: big-count) {
+  run printf "%s:%s:%s:%s:%s:%s" "${v.resource}" "${v.market}" "$n" "$c" "$s" "$b"
 }'''
                   .replaceAll('RULE_NAME', name)
             : scenario.service
@@ -149,6 +149,16 @@ rule RULE_NAME(v: selected, n: number, c: category, s: symbol) {
           expect(find.text(definition), findsOneWidget);
           if (scenario.typed) {
             expect(find.text('Local type definitions'), findsOneWidget);
+            expect(
+              proposal['bound']['rule']['types'][3]['definition']['max_exclusive'],
+              '340282366920938463463374607431768211456',
+            );
+            expect(
+              find.textContaining(
+                '0 <= value < 340282366920938463463374607431768211456',
+              ),
+              findsWidgets,
+            );
             expect(
               find.textContaining('No other combinations are permitted.'),
               findsWidgets,
@@ -202,7 +212,13 @@ rule RULE_NAME(v: selected, n: number, c: category, s: symbol) {
             'method': 'invoke',
             'operation': name,
             'args': scenario.typed
-                ? ['positions', '2', 'daily', 'ETHUSDT']
+                ? [
+                    'positions',
+                    '2',
+                    'daily',
+                    'ETHUSDT',
+                    '340282366920938463463374607431768211455',
+                  ]
                 : [name],
           });
           if (scenario.service) {
@@ -217,14 +233,22 @@ rule RULE_NAME(v: selected, n: number, c: category, s: symbol) {
           if (scenario.typed) {
             expect(
               utf8.decode(base64Decode(invoked['stdout'] as String)),
-              'positions:usdm:2:daily:ETHUSDT',
+              'positions:usdm:2:daily:ETHUSDT:340282366920938463463374607431768211455',
             );
             for (final args in [
-              ['positions', '11', 'daily', 'ETHUSDT'],
-              ['positions', '02', 'daily', 'ETHUSDT'],
-              ['positions', '2', 'other', 'ETHUSDT'],
-              ['positions', '2', 'daily', 'ethusdt'],
-              ['positions', 'portfolio', '2', 'daily', 'ETHUSDT'],
+              ['positions', '11', 'daily', 'ETHUSDT', '0'],
+              ['positions', '02', 'daily', 'ETHUSDT', '0'],
+              ['positions', '2', 'other', 'ETHUSDT', '0'],
+              ['positions', '2', 'daily', 'ethusdt', '0'],
+              ['positions', 'portfolio', '2', 'daily', 'ETHUSDT', '0'],
+
+              [
+                'positions',
+                '2',
+                'daily',
+                'ETHUSDT',
+                '340282366920938463463374607431768211456',
+              ],
             ]) {
               expect(
                 (await request({

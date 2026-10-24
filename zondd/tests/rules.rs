@@ -55,12 +55,12 @@ fn local_types_are_reviewed_bound_to_the_digest_and_enforced_after_restart() {
  positions = ("positions", "usdm")
 }
 type selected = view
-type count = uint(0, 1000)
+type count = integer(min_inclusive=0, max_exclusive=1001)
 rule typed(v: selected, n: count) {
  run printf "%s:%s:%s" "${v.resource}" "${v.market}" "$n"
 }"#;
     let proposal = propose(&env, source);
-    assert_eq!(proposal["bound"]["rule"]["language_version"], 2);
+    assert_eq!(proposal["bound"]["rule"]["language_version"], 3);
     let review = proposal["review"].to_string();
     assert!(
         review.contains("Local type definitions")
@@ -154,49 +154,236 @@ fn home_paths_expand_on_the_receiver_and_new_home_spellings_are_rejected() {
     assert_eq!(states(&env, "exec")[0]["proposal"], proposal);
 }
 
+#[path = "../src/rules/migration/previous.rs"]
+mod previous;
+
+// Sign modified fixtures using the serialization that produced the old approval.
+fn sign_previous(state: &mut Value) -> String {
+    let proposal = &mut state["proposal"];
+    proposal["digest"] = "".into();
+    let fields = [
+        "id",
+        "principal",
+        "source",
+        "bound",
+        "review",
+        "digest",
+        "revision",
+        "principal_revision",
+        "created_unix_ms",
+        "expires_unix_ms",
+    ];
+    let unsigned = format!(
+        "{{{}}}",
+        fields
+            .iter()
+            .filter_map(|name| proposal.get(*name).map(|value| format!(
+                "{}:{}",
+                serde_json::to_string(name).unwrap(),
+                if *name == "bound" {
+                    serde_json::to_string(
+                        &serde_json::from_value::<previous::Bound>(value.clone()).unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    value.to_string()
+                }
+            )))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    proposal["digest"] = libzond::config::revision(&unsigned).into();
+    state.to_string()
+}
+
+fn previous_fixture(seed: &Value, fixture: &str) -> Value {
+    let mut state: Value = serde_json::from_str(fixture).unwrap();
+    for key in [
+        "id",
+        "principal",
+        "revision",
+        "principal_revision",
+        "created_unix_ms",
+        "expires_unix_ms",
+    ] {
+        state["proposal"][key] = seed[key].clone();
+    }
+    state["proposal"]["expires_unix_ms"] = (libzond::history::now() + 60000).into();
+    state["proposal"]["bound"]["home"] = seed["bound"]["home"].clone();
+    state["proposal"]["bound"]["cwd"] = seed["bound"]["cwd"].clone();
+    for section in state["proposal"]["review"]["sections"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if section["title"] == "Execution" {
+            for field in section["fields"].as_array_mut().unwrap() {
+                if field["label"] == "Server HOME" {
+                    field["value"] = seed["bound"]["home"].to_string().into();
+                }
+                if field["label"] == "Working directory" {
+                    field["value"] = seed["bound"]["cwd"].to_string().into();
+                }
+            }
+        }
+    }
+    state
+}
+
+fn store_previous(env: &TestEnv, state: &mut Value) {
+    let record = sign_previous(state);
+    let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+    db.execute("INSERT OR REPLACE INTO rule_states(id,principal,status,updated,record) VALUES (?1,'exec',?2,?3,?4)", rusqlite::params![state["proposal"]["id"].as_str().unwrap(), state["status"].as_str().unwrap(), libzond::history::now() as i64, record]).unwrap();
+}
+
 #[test]
-fn upgrading_preserves_legacy_home_grants_digests_and_literal_tildes() {
+fn upgrading_migrates_home_syntax_and_preserves_literal_tildes() {
     let env = TestEnv::new();
-    let source = "rule legacy() { run printf '%s:%s' \"~/code\" '~' }";
-    let proposal = approve(&env, source);
-    let mut state: libzond::rules::RuleState =
-        serde_json::from_value(states(&env, "exec")[0].clone()).unwrap();
-    state.proposal.source = source.replace("~/code", "$HOME/code");
-    let mut old_rule = libzond::rules::parse_stored(&state.proposal.source).unwrap();
-    old_rule.program = state.proposal.bound.rule.program.clone();
-    state.proposal.bound.rule = old_rule;
-    let review = state.proposal.review.as_mut().unwrap();
-    let normalized = review["sections"][0]["fields"][0]["value"]
+    let proposal = approve(&env, "rule seed() { run true }");
+    let mut state = previous_fixture(&proposal, include_str!("fixtures/home-v2.json"));
+    state["status"] = "active".into();
+    state["proposal"]["bound"]["rule"]
+        .as_object_mut()
+        .unwrap()
+        .remove("language_version");
+    state["proposal"]["source"] =
+        "rule legacy() { run printf '%s:%s' \"$HOME/code\" \"~\" }".into();
+    let normalized = state["proposal"]["review"]["sections"][0]["fields"][0]["value"]
         .as_str()
         .unwrap()
         .replace("\"~/code\"", "\"${HOME}/code\"")
         .replace("\"\\~\"", "\"~\"");
-    review["sections"][0]["fields"][0]["value"] = normalized.into();
-    state.proposal.digest.clear();
-    state.proposal.digest =
-        libzond::config::revision(&serde_json::to_string(&state.proposal).unwrap());
-    let expected = serde_json::to_value(&state.proposal).unwrap();
-    assert!(expected["bound"]["rule"].get("language_version").is_none());
-    assert!(expected["bound"]["rule"].get("types").is_none());
+    state["proposal"]["review"]["sections"][0]["fields"][0]["value"] = normalized.into();
     env.stop_daemon();
-    let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
-    db.execute(
-        "UPDATE rule_states SET record=?1 WHERE id=?2",
-        rusqlite::params![
-            serde_json::to_string(&state).unwrap(),
-            proposal["id"].as_str().unwrap()
-        ],
-    )
-    .unwrap();
-    drop(db);
+    store_previous(&env, &mut state);
     env.start_daemon();
     let restored = &states(&env, "exec")[0];
     assert_eq!(restored["status"], "active", "{restored}");
-    assert_eq!(restored["proposal"], expected);
+    assert_eq!(restored["proposal"]["bound"]["rule"]["language_version"], 3);
+    assert_ne!(restored["proposal"]["digest"], state["proposal"]["digest"]);
     let output = format!("{}:~", libzond::paths::home_dir().join("code").display());
     assert_eq!(
         decoded(&invoke(&env, "legacy", &[]), "stdout"),
         output.as_bytes()
+    );
+    env.stop_daemon();
+    env.start_daemon();
+    assert_eq!(&states(&env, "exec")[0], restored);
+}
+
+#[test]
+fn upgrading_migrates_inclusive_bounds_and_all_statuses_once() {
+    let env = TestEnv::new();
+    let seed = approve(&env, "rule seed() { run true }");
+    env.stop_daemon();
+    let mut old = Vec::new();
+    for status in [
+        "active",
+        "pending",
+        "denied",
+        "revoked",
+        "expired",
+        "withdrawn",
+    ] {
+        let mut state = previous_fixture(&seed, include_str!("fixtures/integer-v2.json"));
+        state["status"] = status.into();
+        state["proposal"]["id"] = format!("{}-{status}", seed["id"].as_str().unwrap()).into();
+        if status == "active" {
+            state["proposal"]["id"] = seed["id"].clone();
+        }
+        let name = format!("migrated-{status}");
+        state["proposal"]["bound"]["rule"]["name"] = name.clone().into();
+        state["proposal"]["review"]["title"] = name.clone().into();
+        for location in ["source", "normalized"] {
+            let text = if location == "source" {
+                &mut state["proposal"]["source"]
+            } else {
+                &mut state["proposal"]["review"]["sections"][0]["fields"][0]["value"]
+            };
+            *text = text
+                .as_str()
+                .unwrap()
+                .replace("migrated(", &format!("{name}("))
+                .into();
+        }
+        state["grant_expires_unix_ms"] = (libzond::history::now() + 60000).into();
+        store_previous(&env, &mut state);
+        old.push(state);
+    }
+    env.start_daemon();
+    let migrated = states(&env, "exec");
+    for previous in &old {
+        let current = migrated
+            .iter()
+            .find(|s| s["proposal"]["id"] == previous["proposal"]["id"])
+            .unwrap();
+        assert_eq!(current["status"], previous["status"], "{current}");
+        assert_eq!(
+            current["grant_expires_unix_ms"],
+            previous["grant_expires_unix_ms"]
+        );
+        assert_eq!(
+            current["proposal"]["bound"]["rule"]["types"][0]["definition"]["max_exclusive"],
+            "18446744073709551616"
+        );
+        assert_eq!(
+            current["proposal"]["bound"]["rule"]["types"][1]["definition"]["max_exclusive"],
+            "9223372036854775808"
+        );
+        assert_ne!(
+            current["proposal"]["digest"],
+            previous["proposal"]["digest"]
+        );
+        assert!(
+            !current["proposal"]["source"]
+                .as_str()
+                .unwrap()
+                .contains("uint(")
+        );
+    }
+    for args in [
+        ["0", "-9223372036854775808"],
+        ["18446744073709551615", "9223372036854775807"],
+    ] {
+        let result = invoke(&env, "migrated-active", &args);
+        assert_eq!(result["type"], "completed", "{result}");
+        assert_eq!(decoded(&result, "stdout"), args.join(":").as_bytes());
+    }
+    for args in [
+        ["18446744073709551616", "0"],
+        ["0", "9223372036854775808"],
+        ["0", "-9223372036854775809"],
+        ["-1", "0"],
+    ] {
+        assert_eq!(invoke(&env, "migrated-active", &args)["type"], "error");
+    }
+    let pending = old.iter().find(|s| s["status"] == "pending").unwrap();
+    assert_eq!(
+        resolve(&env, &pending["proposal"], true, None)["type"],
+        "error"
+    );
+    let actions = env.request("admin", json!({"method":"actions","limit":100}));
+    let migrations: Vec<_> = actions["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["action"] == "rule_migrated")
+        .collect();
+    assert_eq!(migrations.len(), old.len());
+    for action in migrations {
+        assert!(old.contains(&action["detail"]["previous"]));
+    }
+    env.stop_daemon();
+    env.start_daemon();
+    assert_eq!(states(&env, "exec"), migrated);
+    let actions = env.request("admin", json!({"method":"actions","limit":100}));
+    assert_eq!(
+        actions["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["action"] == "rule_migrated")
+            .count(),
+        old.len()
     );
 }
 
@@ -645,7 +832,18 @@ fn stored_source_ast_and_digest_must_agree_before_restoring_authority() {
         );
         assert_eq!(resolve(&env, proposal, true, None)["type"], "error");
     }
-    assert_eq!(invoke(&env, "legacy", &[])["code"], 0);
+    let legacy_record = records
+        .iter()
+        .find(|s| s["proposal"]["id"] == legacy["id"])
+        .unwrap();
+    assert_eq!(legacy_record["status"], "invalidated");
+    assert!(
+        legacy_record["reason"]
+            .as_str()
+            .unwrap()
+            .contains("review changed or is missing")
+    );
+    assert_eq!(invoke(&env, "legacy", &[])["type"], "error");
     let audit = env.request("admin", json!({"method":"actions","limit":100}));
     assert_eq!(
         audit["actions"]
@@ -991,4 +1189,64 @@ fn cancellation_racing_publication_reports_the_actual_commit_outcome() {
             other => panic!("unexpected final status {other}: {result}"),
         }
     }
+}
+
+#[test]
+fn migration_rolls_back_the_batch_if_a_record_cannot_be_converted() {
+    let env = TestEnv::new();
+    let seed = approve(&env, "rule seed() { run true }");
+    env.stop_daemon();
+    let mut old = previous_fixture(&seed, include_str!("fixtures/integer-v2.json"));
+    old["proposal"]["id"] = "a-old".into();
+    store_previous(&env, &mut old);
+    let mut future = old.clone();
+    future["proposal"]["id"] = "z-future".into();
+    future["proposal"]["bound"]["rule"]["language_version"] = 999.into();
+    store_previous(&env, &mut future);
+    let failure = checked(env.daemon_command().arg("serve"), 1);
+    assert!(
+        String::from_utf8_lossy(&failure.stderr).contains("unsupported stored rule language 999")
+    );
+    let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+    let saved: String = db
+        .query_row("SELECT record FROM rule_states WHERE id='a-old'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(), old);
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM actions WHERE action='rule_migrated'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    db.execute("DELETE FROM rule_states WHERE id='z-future'", [])
+        .unwrap();
+    drop(db);
+    env.start_daemon();
+    let migrated = states(&env, "exec");
+    assert!(
+        migrated
+            .iter()
+            .any(|s| s["proposal"]["id"] == "a-old" && s["status"] == "pending")
+    );
+}
+
+#[test]
+fn migration_includes_records_outside_the_recent_history_page() {
+    let env = TestEnv::new();
+    let seed = approve(&env, "rule seed() { run true }");
+    env.stop_daemon();
+    for index in 0..260 {
+        let mut old = previous_fixture(&seed, include_str!("fixtures/integer-v2.json"));
+        old["proposal"]["id"] = format!("historical-{index}").into();
+        old["status"] = "revoked".into();
+        store_previous(&env, &mut old);
+    }
+    env.start_daemon_with_timeout(std::time::Duration::from_secs(30));
+    let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+    let migrated: i64 = db.query_row("SELECT count(*) FROM rule_states WHERE status='revoked' AND json_extract(record,'$.proposal.bound.rule.language_version')=3", [], |r| r.get(0)).unwrap();
+    assert_eq!(migrated, 260);
 }

@@ -6,6 +6,7 @@ use libzond::{
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
+mod migration;
 mod review;
 
 #[derive(Clone)]
@@ -20,12 +21,11 @@ fn principal_revision(config: &Config, principal: &str) -> Result<String> {
     )?))
 }
 
-fn compile(source: &str, stored: bool) -> Result<libzond::rules::Rule> {
-    let mut rule = if stored {
-        libzond::rules::parse_stored(source)?
-    } else {
-        libzond::rules::parse(source)?
-    };
+fn compile(source: &str) -> Result<libzond::rules::Rule> {
+    resolve_program(libzond::rules::parse(source)?)
+}
+
+fn resolve_program(mut rule: libzond::rules::Rule) -> Result<libzond::rules::Rule> {
     if rule.program == "~" || rule.program.starts_with("~/") {
         rule.program = libzond::paths::home_dir()
             .join(rule.program.strip_prefix("~/").unwrap_or(""))
@@ -53,8 +53,7 @@ fn compile(source: &str, stored: bool) -> Result<libzond::rules::Rule> {
 
 fn check_stored(proposal: &Proposal) -> Result<()> {
     ensure!(
-        compile(&proposal.source, proposal.bound.rule.language_version == 1)?
-            == proposal.bound.rule,
+        compile(&proposal.source)? == proposal.bound.rule,
         "rule source and compiled definition disagree"
     );
     ensure!(
@@ -81,6 +80,7 @@ impl Rules {
     }
 
     pub fn load(history: &mut History) -> Result<Self> {
+        history.migrate_rule_states(migration::migrate)?;
         let mut live = BTreeMap::new();
         let mut invalid = Vec::new();
         for mut state in history.rule_states(None, true)? {
@@ -213,7 +213,7 @@ impl Rules {
             "approval queue full"
         );
         ensure!(self.0.len() < 192, "rule capacity exhausted");
-        let rule = compile(&source, false)?;
+        let rule = compile(&source)?;
         ensure!(
             !config.operations.contains_key(&rule.name),
             "rule name conflicts with configured operation"
