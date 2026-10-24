@@ -180,6 +180,22 @@ pub struct PolicyCheck {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ClientInfo {
+    pub name: String,
+    pub version: String,
+}
+
+impl ClientInfo {
+    pub fn current(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            version: BUILD_VERSION.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Envelope<T> {
     pub version: u32,
     pub id: u64,
@@ -188,6 +204,10 @@ pub struct Envelope<T> {
     pub actor: Option<audit::ActorProof>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<audit::TransportActor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<ClientInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<ClientInfo>,
 }
 
 impl<T> Envelope<T> {
@@ -198,6 +218,8 @@ impl<T> Envelope<T> {
             body,
             actor: None,
             transport: None,
+            client: None,
+            via: None,
         }
     }
 }

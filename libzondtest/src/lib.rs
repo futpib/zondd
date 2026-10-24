@@ -342,7 +342,8 @@ impl TestEnv {
             "XDG_CONFIG_HOME",
             self.config.parent().unwrap().parent().unwrap(),
         )
-        .env("XDG_RUNTIME_DIR", self.runtime.parent().unwrap());
+        .env("XDG_RUNTIME_DIR", self.runtime.parent().unwrap())
+        .env_remove("RUST_LOG");
         cmd
     }
     pub fn stop_daemon(&self) {

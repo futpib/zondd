@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 pub mod credential;
-use libzond::{Envelope, Event, MAX_RESPONSE_BYTES, Request, VERSION, wire};
+use libzond::{ClientInfo, Envelope, Event, MAX_RESPONSE_BYTES, Request, VERSION, wire};
 use std::{
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
@@ -79,6 +79,8 @@ pub struct Client {
     _ssh: Option<SshProcess>,
     active: Option<u64>,
     used: bool,
+    client: Option<ClientInfo>,
+    via: Option<ClientInfo>,
 }
 
 struct SshProcess(Child);
@@ -104,6 +106,8 @@ impl Client {
             _ssh: None,
             active: None,
             used: false,
+            client: Some(ClientInfo::current("libzondctl")),
+            via: None,
         })
     }
 
@@ -124,7 +128,15 @@ impl Client {
             _ssh: Some(SshProcess(child)),
             active: None,
             used: false,
+            client: Some(ClientInfo::current("libzondctl")),
+            via: None,
         })
+    }
+
+    pub fn with_client_info(mut self, client: Option<ClientInfo>, via: Option<ClientInfo>) -> Self {
+        self.client = client;
+        self.via = via;
+        self
     }
 
     pub async fn send(&mut self, request: Request) -> Result<()> {
@@ -141,6 +153,8 @@ impl Client {
         let mut envelope = Envelope::new(1, request);
         envelope.actor = actor;
         envelope.transport = transport;
+        envelope.client = self.client.clone();
+        envelope.via = self.via.clone();
         let frame = zeroize::Zeroizing::new(serde_json::to_vec(&envelope)?);
         ensure!(
             frame.len() < libzond::MAX_REQUEST_BYTES,

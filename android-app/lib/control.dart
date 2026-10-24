@@ -395,8 +395,15 @@ class AuthenticationCancelled implements Exception {
 
 class SshControl
     implements ControlApi, ConnectionEvents, AuditPeer, CredentialPeer {
-  SshControl._(this._ssh, this.profile, this._tunnel, this.auditScope);
+  SshControl._(
+    this._ssh,
+    this.profile,
+    this._tunnel,
+    this.auditScope,
+    this._clientInfo,
+  );
   final SSHClient _ssh;
+  final Map<String, String> _clientInfo;
   static final auditDevice = AuditDevice(const SecureAuditStorage());
   @override
   final String auditScope;
@@ -563,6 +570,14 @@ class SshControl
         profile,
         tunnel,
         auditScopeFor(profile, hostFingerprint),
+        {
+          'name': 'zond-android',
+          'version':
+              await const MethodChannel('io.github.futpib.zond/app_info')
+                  .invokeMethod<String>('version')
+                  .timeout(const Duration(seconds: 5)) ??
+              'unknown',
+        },
       );
     } catch (_) {
       client?.close();
@@ -625,7 +640,9 @@ class SshControl
       ]);
       session.stdin.add(
         Uint8List.fromList(
-          utf8.encode('${jsonEncode({'version': 1, ...body})}\n'),
+          utf8.encode(
+            '${jsonEncode({'version': 1, ...body, 'client': _clientInfo})}\n',
+          ),
         ),
       );
       // A complete request is sufficient; keeping stdin open also works with SSH proxies.

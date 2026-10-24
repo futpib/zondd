@@ -19,7 +19,10 @@ use serde_json::json;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -29,6 +32,48 @@ use tokio::{
     task::JoinSet,
     time::Instant,
 };
+use tracing::Instrument;
+
+static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
+
+struct ConnectionLog {
+    span: tracing::Span,
+    started: Instant,
+    outcome: &'static str,
+}
+
+impl Drop for ConnectionLog {
+    fn drop(&mut self) {
+        self.span.in_scope(|| {
+            tracing::info!(
+                elapsed_ms = self.started.elapsed().as_millis() as u64,
+                outcome = self.outcome,
+                "client disconnected"
+            );
+        });
+    }
+}
+
+fn log_client(envelope: &Envelope<Request>, request: &serde_json::Value) {
+    let span = tracing::Span::current();
+    span.record("protocol", envelope.version);
+    span.record("method", request["method"].as_str().unwrap_or("unknown"));
+    for (name, version, info) in [
+        ("client_name", "client_version", &envelope.client),
+        ("via_name", "via_version", &envelope.via),
+    ] {
+        // Peer-reported labels are diagnostics, never authentication. Bound and
+        // escape them so a client cannot inject lines or flood the journal.
+        for (field, value) in [
+            (name, info.as_ref().map(|info| info.name.as_str())),
+            (version, info.as_ref().map(|info| info.version.as_str())),
+        ] {
+            let value: String = value.unwrap_or("unknown").chars().take(128).collect();
+            span.record(field, tracing::field::debug(value));
+        }
+    }
+    tracing::info!("client identified");
+}
 
 #[derive(Clone)]
 struct Entry {
@@ -555,7 +600,8 @@ async fn accept(
             _ = shutdown.changed() => break,
             connection = listener.accept() => {
                 let (socket, _) = connection?;
-                let uid = socket.peer_cred()?.uid();
+                let peer = socket.peer_cred()?;
+                let uid = peer.uid();
                 if uid != libzond::paths::current_uid() {
                     state.active.lock().unwrap().history.audit(None, "connection_rejected", json!({"uid":uid,"reason":"different Unix user"}))?;
                     continue;
@@ -579,12 +625,36 @@ async fn accept(
                 }
                 let state = state.clone();
                 let principal = principal.clone();
+                let span = tracing::info_span!(
+                    "connection",
+                    connection_id = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed),
+                    uid,
+                    pid = ?peer.pid(),
+                    role = if principal.is_some() { "caller" } else { "admin" },
+                    principal = principal.as_deref().unwrap_or("admin"),
+                    protocol = tracing::field::Empty,
+                    method = tracing::field::Empty,
+                    client_name = tracing::field::Empty,
+                    client_version = tracing::field::Empty,
+                    via_name = tracing::field::Empty,
+                    via_version = tracing::field::Empty,
+                );
                 clients.spawn(async move {
                     let _permits = (admin_permit, caller_permit);
+                    let mut log = ConnectionLog {
+                        span: tracing::Span::current(),
+                        started: Instant::now(),
+                        outcome: "cancelled",
+                    };
+                    tracing::info!("client connected");
                     if let Err(error) = handle(socket, principal.clone(), state.clone()).await {
+                        log.outcome = "failed";
+                        tracing::warn!("client session failed");
                         let _ = state.active.lock().unwrap().history.audit(None, "session_error", json!({"principal":principal,"error":error.to_string()}));
+                    } else {
+                        log.outcome = "finished";
                     }
-                });
+                }.instrument(span));
             }
             _ = clients.join_next(), if !clients.is_empty() => {}
         }
@@ -607,6 +677,8 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
     .await
     .context("request timeout")??
     .context("no request")?;
+    let request = audit_request(&envelope.body);
+    log_client(&envelope, &request);
     ensure!(envelope.version == VERSION, "unsupported protocol version");
     let id = envelope.id;
     let actor = {
@@ -629,7 +701,7 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
         active.history.actor(
             envelope.actor.as_ref(),
             &envelope.transport.unwrap_or_default(),
-            &audit_request(&envelope.body),
+            &request,
             subject,
             peer_pid,
         )
@@ -637,6 +709,7 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
     let actor = match actor {
         Ok(actor) => actor,
         Err(error) => {
+            tracing::warn!("client authentication failed");
             return wire::write(
                 &mut write,
                 &Envelope::new(
@@ -655,7 +728,10 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
         let mut extra = [0u8; 1];
         tokio::select! {
             value = &mut task => value,
-            _ = read.read(&mut extra) => return Ok(()),
+            _ = read.read(&mut extra) => {
+                tracing::info!("client closed before response");
+                return Ok(());
+            },
         }
     };
     let mut event = result.unwrap_or_else(|error| Event::Error {
@@ -667,7 +743,14 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
                 .into(),
         };
     }
-    wire::write(&mut write, &Envelope::new(id, event)).await
+    let outcome = match &event {
+        Event::Error { .. } => "error",
+        Event::Rejected { .. } => "rejected",
+        _ => "completed",
+    };
+    wire::write(&mut write, &Envelope::new(id, event)).await?;
+    tracing::info!(outcome, "client request finished");
+    Ok(())
 }
 
 struct Evaluation {

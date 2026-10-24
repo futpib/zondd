@@ -239,7 +239,7 @@ fn android_management_over_ssh_and_iroh() {
     });
     let mut process = Process::spawn(
         Command::new(std::env::var("FLUTTER").unwrap_or_else(|_| "flutter".into()))
-            .current_dir(app)
+            .current_dir(&app)
             .args(["test", "--reporter", "expanded"])
             .args(if let Some(target) = selected_test {
                 vec![target]
@@ -247,6 +247,7 @@ fn android_management_over_ssh_and_iroh() {
                 vec!["integration_test/external_key_test.dart".into()]
             } else {
                 vec![
+                    "integration_test/client_logging_test.dart".into(),
                     "integration_test/legacy_rules_test.dart".into(),
                     "integration_test/audit_test.dart".into(),
                     "integration_test/authentication_test.dart".into(),
@@ -282,6 +283,67 @@ fn android_management_over_ssh_and_iroh() {
         );
     }
     assert!(ssh.env.queue().is_empty());
+    // Flutter removes integration APKs on exit. Inspect the same tested APK
+    // through Android's package manager, then remove it again.
+    let device = std::env::var("ZONDD_ANDROID_DEVICE").unwrap_or_else(|_| "emulator-5554".into());
+    checked(
+        Command::new("adb")
+            .arg("-s")
+            .arg(&device)
+            .args(["install", "-r"])
+            .arg(app.join("build/app/outputs/flutter-apk/app-debug.apk")),
+        0,
+    );
+    let package = checked(
+        Command::new("adb").arg("-s").arg(&device).args([
+            "shell",
+            "dumpsys",
+            "package",
+            "io.github.futpib.zondd_control",
+        ]),
+        0,
+    );
+    let package = String::from_utf8(package.stdout).unwrap();
+    checked(
+        Command::new("adb")
+            .arg("-s")
+            .arg(&device)
+            .args(["uninstall", "io.github.futpib.zondd_control"]),
+        0,
+    );
+    let package_field = |name: &str| {
+        package
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix(name))
+            .unwrap()
+    };
+    let version = format!(
+        "{}+{}",
+        package_field("versionName="),
+        package_field("versionCode=")
+    );
+    let logs = fs::read_to_string(ssh.env.dir.path().join("daemon.log")).unwrap();
+    let app_connections: Vec<_> = logs
+        .lines()
+        .filter(|line| {
+            line.contains("client identified") && line.contains("client_name=\"zond-android\"")
+        })
+        .collect();
+    assert!(
+        !app_connections.is_empty(),
+        "Android did not report its client version"
+    );
+    for line in app_connections {
+        assert!(
+            line.contains(&format!("client_version={version:?}")),
+            "{line}"
+        );
+        assert!(line.contains("via_name=\"zondctl control\""), "{line}");
+        assert!(
+            line.contains(&format!("via_version={:?}", libzond::BUILD_VERSION)),
+            "{line}"
+        );
+    }
     if let Some(legacy) = &legacy_ssh {
         assert!(legacy.env.queue().is_empty());
     }

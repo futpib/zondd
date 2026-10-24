@@ -292,13 +292,14 @@ impl Cli {
     }
 
     async fn connect(&self) -> Result<Client> {
-        if let Some(options) = self.ssh_options()? {
+        let client = if let Some(options) = self.ssh_options()? {
             Client::ssh(&options)
         } else {
             Client::local(&self.local_socket()).await.with_context(|| format!(
                 "cannot connect to {}; for a remote receiver use --host NAME; list saved receivers with `zondctl connections`, or inspect the selection with `zondctl context`", self.receiver()
             ))
-        }
+        }?;
+        Ok(client.with_client_info(Some(libzond::ClientInfo::current("zondctl")), None))
     }
 
     async fn context(&self) -> Result<()> {

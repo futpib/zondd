@@ -2,6 +2,7 @@ package io.github.futpib.zondd_control
 
 import android.content.Context
 import android.os.Bundle
+import androidx.core.content.pm.PackageInfoCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -21,6 +22,15 @@ class MainActivity : FlutterActivity() {
         credentialVault = CredentialVault(this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.github.futpib.zond/credential_vault")
             .setMethodCallHandler(credentialVault)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.github.futpib.zond/app_info")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "version") {
+                    val info = packageManager.getPackageInfo(packageName, 0)
+                    result.success("${info.versionName}+${PackageInfoCompat.getLongVersionCode(info)}")
+                } else {
+                    result.notImplemented()
+                }
+            }
     }
 
     override fun onStop() {

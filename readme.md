@@ -869,6 +869,18 @@ outside this record.
 Actions are also emitted through tracing to stderr/the user service journal.
 History, retry and activity are available only on the admin endpoint.
 
+At the default info log level, `journalctl --user -u zondd -f` also shows client
+connections, reported client versions, the receiver's bridge/control helper
+version, request method, and disconnection timing. A connection ID ties these
+messages together; Unix peer UID/PID and the socket's principal identify the
+local connection. Android reports the installed APK's version name and build
+number. These diagnostic labels are peer-reported, not authentication evidence.
+Missing version metadata is logged as `unknown`. Connection telemetry stays out
+of the persistent action log, and does not include request bodies or credentials.
+Upgrade the receiver's daemon and helpers before clients: older receivers reject
+the new optional `client`/`via` envelope fields, while updated receivers continue
+to accept clients that omit them.
+
 Each action has a SHA-256 chain over its exact stored payload, previous hash,
 sequence and receiver log ID. Before a decision, Android checks the chain from
 the imported-history boundary, then appended events. Browsing and exporting

@@ -150,6 +150,7 @@ async fn bridge(
             .context("no request")?;
     // The account-side bridge overwrites caller-supplied transport metadata.
     envelope.transport = Some(libzond::audit::ssh_actor(key_fingerprint.as_deref()));
+    envelope.via = Some(libzond::ClientInfo::current("zondd bridge"));
     libzond::wire::write(&mut write, &envelope).await?;
     let mut extra = [0u8; 1];
     tokio::select! {

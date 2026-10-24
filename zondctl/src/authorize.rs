@@ -419,8 +419,9 @@ pub async fn run(options: &Options) -> Result<u8> {
         "policy changed during review; run authorize-key again"
     );
     persist_change(&path, &before, &after)?;
-    if let Ok(mut client) = libzondctl::Client::local(&config.runtime_dir.join("admin.sock")).await
-    {
+    if let Ok(client) = libzondctl::Client::local(&config.runtime_dir.join("admin.sock")).await {
+        let mut client =
+            client.with_client_info(Some(libzond::ClientInfo::current("zondctl")), None);
         let result = client.request(libzond::Request::Audit {
             action: "authorize_key".into(),
             detail: serde_json::json!({"path":path,"principal":options.principal,"fingerprint":public.fingerprint}),
@@ -469,7 +470,9 @@ pub async fn revoke(options: &RevokeOptions, runtime_dir: &Path) -> Result<u8> {
         return Ok(0);
     }
     persist_change(&path, &before, &after)?;
-    if let Ok(mut client) = libzondctl::Client::local(&runtime_dir.join("admin.sock")).await {
+    if let Ok(client) = libzondctl::Client::local(&runtime_dir.join("admin.sock")).await {
+        let mut client =
+            client.with_client_info(Some(libzond::ClientInfo::current("zondctl")), None);
         let result = client
             .request(libzond::Request::Audit {
                 action: if options.all {

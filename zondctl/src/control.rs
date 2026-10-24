@@ -120,6 +120,8 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
             version: u32,
             #[serde(default)]
             actor: Option<libzond::audit::ActorProof>,
+            #[serde(default)]
+            client: Option<libzond::ClientInfo>,
             #[serde(flatten)]
             request: Control,
         }
@@ -129,7 +131,14 @@ pub async fn run(runtime: &Path, config: &Path) -> Result<u8> {
             envelope.version == 1,
             "unsupported control protocol version"
         );
-        dispatch(envelope.request, runtime, config, envelope.actor).await
+        dispatch(
+            envelope.request,
+            runtime,
+            config,
+            envelope.actor,
+            envelope.client,
+        )
+        .await
     }
     .await;
     let (response, code) = match result {
@@ -148,8 +157,15 @@ async fn dispatch(
     runtime: &Path,
     config: &Path,
     proof: Option<libzond::audit::ActorProof>,
+    client_info: Option<libzond::ClientInfo>,
 ) -> Result<Value> {
     let transport = libzond::audit::ssh_actor(None);
+    let identify = |client: Client| {
+        client.with_client_info(
+            client_info.clone(),
+            Some(libzond::ClientInfo::current("zondctl control")),
+        )
+    };
     let request = match request {
         Control::AnswerInteraction {
             challenge_id,
@@ -214,9 +230,9 @@ async fn dispatch(
             include_reads,
         },
         Control::AuditSnapshot {} => {
-            if let Ok(mut client) = Client::local(&runtime.join("admin.sock")).await {
+            if let Ok(client) = Client::local(&runtime.join("admin.sock")).await {
                 return Ok(serde_json::to_value(
-                    client.request(Request::AuditSnapshot).await?,
+                    identify(client).request(Request::AuditSnapshot).await?,
                 )?);
             }
             let history = libzond::history::History::open(config)?;
@@ -229,9 +245,9 @@ async fn dispatch(
             through,
             limit,
         } => {
-            if let Ok(mut client) = Client::local(&runtime.join("admin.sock")).await {
+            if let Ok(client) = Client::local(&runtime.join("admin.sock")).await {
                 return Ok(serde_json::to_value(
-                    client
+                    identify(client)
                         .request(Request::AuditPage {
                             after,
                             through,
@@ -341,8 +357,7 @@ async fn dispatch(
             return result;
         }
     };
-    let event = Client::local(&runtime.join("admin.sock"))
-        .await?
+    let event = identify(Client::local(&runtime.join("admin.sock")).await?)
         .request_as(request, proof, Some(transport))
         .await?;
     if let libzond::Event::Error { message } = event {
