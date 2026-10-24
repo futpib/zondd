@@ -586,9 +586,18 @@ async fn run(cli: Cli) -> Result<u8> {
                 std::io::stdin().is_terminal(),
                 "credential requires an interactive terminal"
             );
+            let Event::Queue { credentials, .. } =
+                cli.connect().await?.request(Request::Pending).await?
+            else {
+                bail!("expected credential queue")
+            };
+            let challenge = credentials
+                .into_iter()
+                .find(|c| c.challenge_id == *id)
+                .context("credential not pending")?;
             Request::Credential {
                 challenge_id: id.clone(),
-                password: Some(SecretString(rpassword::prompt_password("Sudo password: ")?)),
+                password: Some(read_credential(&challenge)?),
             }
         }
         Action::RejectCredential { id } => Request::Credential {
@@ -1025,7 +1034,7 @@ async fn review(cli: &Cli) -> Result<u8> {
             .await
             .context("read credential answer")??;
             let password = match answer.trim() {
-                "p" => Some(SecretString(rpassword::prompt_password("Sudo password: ")?)),
+                "p" => Some(read_credential(&challenge)?),
                 "d" => None,
                 "q" | "" => return Ok(0),
                 _ => continue,
@@ -1063,6 +1072,12 @@ async fn review(cli: &Cli) -> Result<u8> {
             println!("{}", serde_json::to_string(&event)?);
         }
     }
+}
+
+fn read_credential(challenge: &libzond::CredentialChallenge) -> Result<SecretString> {
+    Ok(SecretString(rpassword::prompt_password(
+        challenge.prompt.escape_default(),
+    )?))
 }
 
 fn read_interaction(

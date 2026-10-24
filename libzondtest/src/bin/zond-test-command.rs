@@ -131,7 +131,11 @@ fn main() {
                     std::thread::sleep(Duration::from_secs(3));
                 }
                 let reply = Command::new(&helper)
-                    .arg("Password for sudo:")
+                    .arg(
+                        args.get(2)
+                            .map(String::as_str)
+                            .unwrap_or("Password for sudo:"),
+                    )
                     .output()
                     .unwrap();
                 assert!(reply.status.success(), "askpass failed");
