@@ -86,7 +86,7 @@ from this same revision.
 Plain SSH connections do not depend on Iroh versions.
 
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host
-   using the [receiver instructions](../readme.md#configure-the-receiver). No policy
+   using the [receiver instructions](../docs/reference.md#configure-the-receiver). No policy
    file is needed: the built-in caller requires manual approval for every command.
 2. Open **SSH keys**. Import a PEM/OpenSSH private key from a file, paste it, or scan its QR code,
    including its passphrase if encrypted. Or generate an Ed25519 key and copy
@@ -129,7 +129,7 @@ Plain SSH connections do not depend on Iroh versions.
    both current and historical entries. Search names, callers, status, or any
    rule content, then expand a
    matching entry to read its source and definition or revoke its grant. See
-   [caller rule syntax and semantics](../readme.md#propose-reusable-typed-rules).
+   [caller rule syntax and semantics](../docs/reference.md#propose-reusable-typed-rules).
 
 Rule explanations come from the daemon as a versioned plain-text review document,
 bound to the approval digest. Android renders its sections and fields generically,
@@ -239,14 +239,14 @@ its audit key, not who held the phone or whether an external action succeeded.
 The receiver still controls its own reports and can omit unobserved events.
 The first observation establishes a baseline. Removing app data loses the phone
 anchor; keep earlier exports separately when needed. See the main
-[audit documentation](../readme.md#request-history-and-action-log) for the exact
+[audit documentation](../docs/reference.md#request-history-and-action-log) for the exact
 trust boundary.
 
 Local rule types are receiver-defined. Approval cards show aliases, enum values,
 integer and text constraints, and every correlated choice row; the app submits
 only the reviewed proposal ID and digest. Integer bounds remain exact decimal
 strings in YAML and audit data. The app does not parse rule source or choose
-values on the caller's behalf. See the main [rule language documentation](../readme.md#propose-reusable-typed-rules)
+values on the caller's behalf. See the main [rule language documentation](../docs/reference.md#propose-reusable-typed-rules)
 for local types, choice projections and home expansion.
 
 ## Architecture
