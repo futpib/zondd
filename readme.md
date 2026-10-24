@@ -1131,9 +1131,53 @@ follow the [user-service setup](#configure-the-receiver). No policy file is inst
 releases do not replace Android as the repository's latest release; Obtainium
 users can also filter release titles with `^Android `.
 
-## Protocol version 1
+## Command protocol negotiation
 
-One UTF-8 JSON object followed by LF per frame. Requests use an envelope:
+One UTF-8 JSON object followed by LF per frame. Every command connection starts
+with a stable handshake, before any command or credential is sent:
+
+```json
+{"handshake":1,"protocols":[2],"capabilities":["client-info"]}
+```
+
+The peer responds with its selected command protocol, the intersection of
+supported optional capabilities, and its diagnostic build identity:
+
+```json
+{"handshake":1,"protocol":2,"capabilities":["client-info"],"peer":{"name":"zondd","version":"0.1.0 (build)"},"error":null}
+```
+
+Only **command protocol 2** is implemented. Breaking command, response, or rule
+schema changes bump that number; old command schemas are not translated or kept
+as alternate implementations. The small handshake and error format stay stable.
+No common protocol produces `protocol: null`, an empty capabilities list, and an
+actionable `error`, then closes without executing a request. Clients never retry
+a command or fall back to an older protocol after negotiation fails. Peers from
+before negotiation must be upgraded together, then the receiving user service
+restarted with `systemctl --user restart zondd.service`. An old client receives
+an ordinary version-1 `error` envelope; a new client reports an upgrade/restart
+error if an old peer closes during the handshake.
+
+The SSH bridge negotiates with the running daemon before accepting the client's
+handshake. It advertises only capabilities supported on both hops. Replacing the
+bridge binary while an incompatible daemon is still running therefore fails
+before the client sends a command. Build versions are diagnostic labels, never
+compatibility tests or authority.
+
+`client-info` permits optional `extensions.client` and `extensions.via`, each
+with `name` and `version` strings. Clients omit these when unsupported. The bridge
+overwrites `via` with its own identity and always binds the SSH transport identity
+itself. Unknown extension keys are ignored; extensions can contain diagnostics
+only, never commands, permissions, actor proofs, or behavior-changing options.
+The envelope, command, and authorization schemas continue rejecting unknown
+fields. New optional behavior needs an explicitly negotiated capability; a
+change to required behavior needs a new command protocol.
+
+The handshake has a ten-second deadline and a 64 KiB frame limit. After a
+successful handshake, requests use the stable version-1 envelope below. This
+envelope version is independent of the negotiated command schema. The Android
+`zondctl control` JSON protocol and the credential-recipient socket retain their
+separate version-1 formats; the control helper negotiates its daemon connection.
 
 ```json
 {"version":1,"id":1,"body":{"method":"run","command":{"program":"/usr/bin/uptime","args":[]}}}
@@ -1145,8 +1189,8 @@ Or a named operation:
 {"version":1,"id":1,"body":{"method":"invoke","operation":"service-status","args":["slopd.service"]}}
 ```
 
-Each connection carries **one request**. Keep its writing side open until the
-terminal response; EOF or additional request bytes cancel an attached request
+After the handshake, each connection carries **one request**. Keep its writing
+side open until the terminal response; EOF or additional request bytes cancel an attached request
 or `follow` session, but do not cancel a backgrounded job. Responses echo
 the version and ID. An optional `pending` event precedes one terminal event:
 `completed`, `rejected`, `error`, `operations`, `permissions`, `checked`,
@@ -1185,8 +1229,9 @@ admin-only methods. Request types reject unknown
 fields. Requests are limited to 64 KiB including LF; responses to 4 MiB.
 The `pending` queue has `requests` for approvals and `credentials` for active
 sudo prompts. A null credential password rejects that prompt. The first request
-must arrive within ten seconds. Oversized/malformed requests or
-unsupported protocol versions close the connection without execution. A queue
+must arrive within ten seconds of the handshake. Oversized/malformed requests
+close the connection without execution; unsupported envelope versions return an
+error. A queue
 or operation listing exceeding the response limit returns an error.
 
 ## License

@@ -415,6 +415,7 @@ fn forced_bridge_exits_even_while_ssh_stdin_remains_open() {
             .stderr(Stdio::inherit()),
     );
     let mut stdin = remote.child.stdin.take().unwrap();
+    libzondtest::handshake(&mut stdin, remote.child.stdout.as_mut().unwrap());
     writeln!(
         stdin,
         "{}",

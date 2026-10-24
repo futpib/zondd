@@ -49,6 +49,7 @@ fn main() {
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
+            libzondtest::handshake(&mut socket.try_clone().unwrap(), &mut socket);
             writeln!(
                 socket,
                 "{}",

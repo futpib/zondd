@@ -133,24 +133,54 @@ async fn bridge(
     principal: String,
     key_fingerprint: Option<String>,
 ) -> Result<()> {
+    use libzond::protocol;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
     ensure!(valid_name(&principal), "invalid principal");
     ensure!(
         std::env::var_os("SSH_ORIGINAL_COMMAND").is_none_or(|s| s.is_empty()),
         "this key accepts the zondd protocol only; omit the SSH command"
     );
-    let socket =
-        tokio::net::UnixStream::connect(runtime_dir.join(format!("{principal}.sock"))).await?;
-    let (mut read, mut write) = socket.into_split();
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
-    let mut envelope: libzond::Envelope<libzond::Request> =
-        libzond::wire::read(&mut stdin, libzond::MAX_REQUEST_BYTES)
-            .await?
-            .context("no request")?;
+    let Some(hello) = protocol::read_hello(&mut stdin, &mut stdout, "zondd bridge").await? else {
+        return Ok(());
+    };
+    let upstream = async {
+        let socket =
+            tokio::net::UnixStream::connect(runtime_dir.join(format!("{principal}.sock"))).await?;
+        let (read, mut write) = socket.into_split();
+        let mut read = BufReader::new(read);
+        let offer = protocol::Hello {
+            capabilities: protocol::Negotiated::select(&hello).capabilities,
+            ..protocol::Hello::default()
+        };
+        let selected =
+            protocol::negotiate(&mut read, &mut write, &offer, "running zondd daemon").await?;
+        anyhow::Ok((read, write, selected))
+    }
+    .await;
+    let (mut read, mut write, selected) = match upstream {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            protocol::reply(&mut stdout, "zondd bridge", Err(&format!("{error:#}"))).await?;
+            return Ok(());
+        }
+    };
+    protocol::reply(&mut stdout, "zondd bridge", Ok(&selected)).await?;
+    let mut envelope: libzond::Envelope<libzond::Request> = tokio::time::timeout(
+        protocol::TIMEOUT,
+        libzond::wire::read(&mut stdin, libzond::MAX_REQUEST_BYTES),
+    )
+    .await
+    .context("request timeout")??
+    .context("no request")?;
+    selected.validate(&envelope)?;
     // The account-side bridge overwrites caller-supplied transport metadata.
     envelope.transport = Some(libzond::audit::ssh_actor(key_fingerprint.as_deref()));
-    envelope.via = Some(libzond::ClientInfo::current("zondd bridge"));
+    if selected.client_info() {
+        envelope.extensions.get_or_insert_with(Default::default).via =
+            Some(libzond::ClientInfo::current("zondd bridge"));
+    }
     libzond::wire::write(&mut write, &envelope).await?;
     let mut extra = [0u8; 1];
     tokio::select! {

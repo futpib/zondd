@@ -67,7 +67,7 @@ fn local_clients_report_versions_and_missing_metadata_is_explicit() {
             "uid=",
             "pid=",
             "role=\"admin\"",
-            "protocol=1",
+            "protocol=2",
             "method=\"status\"",
         ] {
             assert!(line.contains(field), "{line}");
@@ -152,7 +152,11 @@ fn ssh_bridge_preserves_client_and_sets_its_own_build_version() {
     let ssh = SshEnv::new();
     checked(ssh.remote("exec").arg("permissions"), 0);
     let mut process = Process::spawn(ssh.ssh().stdin(Stdio::piped()).stdout(Stdio::piped()));
-    writeln!(process.child.stdin.as_mut().unwrap(), "{}", json!({"version":1,"id":7,"body":{"method":"permissions"},"client":{"name":"test-peer","version":"test-build"},"via":{"name":"forged-helper","version":"forged-version"}})).unwrap();
+    libzondtest::handshake(
+        process.child.stdin.as_mut().unwrap(),
+        process.child.stdout.as_mut().unwrap(),
+    );
+    writeln!(process.child.stdin.as_mut().unwrap(), "{}", json!({"version":1,"id":7,"body":{"method":"permissions"},"extensions":{"client":{"name":"test-peer","version":"test-build"},"via":{"name":"forged-helper","version":"forged-version"}}})).unwrap();
     assert_eq!(
         read_json(process.child.stdout.as_mut().unwrap())["body"]["type"],
         "permissions"

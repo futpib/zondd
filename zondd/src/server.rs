@@ -11,7 +11,6 @@ use anyhow::{Context, Result, ensure};
 use libzond::{
     AskpassReply, AskpassRequest, CallerPermissions, CheckInput, Command, CredentialChallenge,
     Envelope, Event, MAX_REQUEST_BYTES, Pending, PolicyCheck, Request, RequestRecord, SecretString,
-    VERSION,
     config::{Config, Decision, validate_command, validate_cwd},
     wire,
 };
@@ -56,17 +55,26 @@ impl Drop for ConnectionLog {
 
 fn log_client(envelope: &Envelope<Request>, request: &serde_json::Value) {
     let span = tracing::Span::current();
-    span.record("protocol", envelope.version);
+    span.record("protocol", libzond::protocol::PROTOCOL);
     span.record("method", request["method"].as_str().unwrap_or("unknown"));
+    let extensions = envelope.extensions.as_ref();
     for (name, version, info) in [
-        ("client_name", "client_version", &envelope.client),
-        ("via_name", "via_version", &envelope.via),
+        (
+            "client_name",
+            "client_version",
+            extensions.and_then(|e| e.client.as_ref()),
+        ),
+        (
+            "via_name",
+            "via_version",
+            extensions.and_then(|e| e.via.as_ref()),
+        ),
     ] {
         // Peer-reported labels are diagnostics, never authentication. Bound and
         // escape them so a client cannot inject lines or flood the journal.
         for (field, value) in [
-            (name, info.as_ref().map(|info| info.name.as_str())),
-            (version, info.as_ref().map(|info| info.version.as_str())),
+            (name, info.map(|info| info.name.as_str())),
+            (version, info.map(|info| info.version.as_str())),
         ] {
             let value: String = value.unwrap_or("unknown").chars().take(128).collect();
             span.record(field, tracing::field::debug(value));
@@ -670,6 +678,9 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
         .and_then(|pid| u32::try_from(pid).ok());
     let (read, mut write) = socket.into_split();
     let mut read = BufReader::new(read);
+    let Some(selected) = libzond::protocol::accept(&mut read, &mut write, "zondd").await? else {
+        return Ok(());
+    };
     let envelope: Envelope<Request> = tokio::time::timeout(
         Duration::from_secs(10),
         wire::read(&mut read, MAX_REQUEST_BYTES),
@@ -679,8 +690,19 @@ async fn handle(socket: UnixStream, principal: Option<String>, state: Arc<State>
     .context("no request")?;
     let request = audit_request(&envelope.body);
     log_client(&envelope, &request);
-    ensure!(envelope.version == VERSION, "unsupported protocol version");
     let id = envelope.id;
+    if let Err(error) = selected.validate(&envelope) {
+        return wire::write(
+            &mut write,
+            &Envelope::new(
+                id,
+                Event::Error {
+                    message: error.to_string(),
+                },
+            ),
+        )
+        .await;
+    }
     let actor = {
         let active = state.active.lock().unwrap();
         let subject = match &envelope.body {

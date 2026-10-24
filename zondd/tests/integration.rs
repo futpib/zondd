@@ -185,14 +185,13 @@ fn binary_output_stderr_and_nonzero_exit_status_survive_protocol() {
 fn malformed_frames_cannot_spoof_identity_or_execute() {
     let env = TestEnv::new();
     for frame in [
-        br#"{"version":99,"id":1,"body":{"method":"status"}}
-"#.to_vec(),
         br#"{"version":1,"id":1,"body":{"method":"run","principal":"admin","command":{"program":"/usr/bin/id"}}}
 "#.to_vec(),
         vec![b'x'; 64 * 1024 + 1],
     ] {
         let mut socket = UnixStream::connect(env.runtime.join("exec.sock")).unwrap();
         socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        libzondtest::handshake(&mut socket.try_clone().unwrap(), &mut socket);
         socket.write_all(&frame).unwrap();
         match socket.read(&mut [0]) {
             Ok(0) => {},

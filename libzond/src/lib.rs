@@ -4,12 +4,14 @@ pub mod credential;
 pub mod history;
 pub mod interaction;
 pub mod paths;
+pub mod protocol;
 pub mod rules;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
 
 pub const BUILD_VERSION: &str = env!("ZONDD_BUILD_VERSION");
+/// Stable envelope version; command schemas are negotiated separately.
 pub const VERSION: u32 = 1;
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -205,9 +207,7 @@ pub struct Envelope<T> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<audit::TransportActor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client: Option<ClientInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via: Option<ClientInfo>,
+    pub extensions: Option<protocol::Extensions>,
 }
 
 impl<T> Envelope<T> {
@@ -218,8 +218,7 @@ impl<T> Envelope<T> {
             body,
             actor: None,
             transport: None,
-            client: None,
-            via: None,
+            extensions: None,
         }
     }
 }

@@ -225,6 +225,22 @@ pub fn read_json(input: &mut (impl Read + AsFd)) -> Value {
     serde_json::from_slice(&read_until(input, b"\n")).unwrap()
 }
 
+pub fn handshake(write: &mut impl Write, read: &mut (impl Read + AsFd)) {
+    writeln!(
+        write,
+        "{}",
+        serde_json::to_string(&libzond::protocol::Hello::default()).unwrap()
+    )
+    .unwrap();
+    let response = read_json(read);
+    assert_eq!(
+        response["protocol"],
+        libzond::protocol::PROTOCOL,
+        "{response}"
+    );
+    assert!(response["error"].is_null(), "{response}");
+}
+
 pub struct Session(BufReader<UnixStream>);
 impl Session {
     pub fn new(path: &Path, body: Value) -> Self {
@@ -235,6 +251,7 @@ impl Session {
         socket
             .set_write_timeout(Some(Duration::from_secs(10)))
             .unwrap();
+        handshake(&mut socket.try_clone().unwrap(), &mut socket);
         writeln!(socket, "{}", json!({"version":1,"id":7,"body":body})).unwrap();
         Self(BufReader::new(socket))
     }

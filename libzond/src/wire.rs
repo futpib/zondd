@@ -7,6 +7,18 @@ pub async fn read<T: DeserializeOwned>(
     reader: &mut (impl AsyncBufRead + Unpin),
     limit: usize,
 ) -> Result<Option<T>> {
+    let Some(frame) = read_frame(reader, limit).await? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        serde_json::from_slice(&frame).map_err(|_| anyhow::anyhow!("invalid protocol frame"))?,
+    ))
+}
+
+pub(crate) async fn read_frame(
+    reader: &mut (impl AsyncBufRead + Unpin),
+    limit: usize,
+) -> Result<Option<Zeroizing<Vec<u8>>>> {
     let mut frame = Zeroizing::new(Vec::new());
     loop {
         let available = reader.fill_buf().await?;
@@ -24,10 +36,7 @@ pub async fn read<T: DeserializeOwned>(
         frame.extend_from_slice(&available[..take]);
         reader.consume(take);
         if end.is_some() {
-            return Ok(Some(
-                serde_json::from_slice(&frame)
-                    .map_err(|_| anyhow::anyhow!("invalid protocol frame"))?,
-            ));
+            return Ok(Some(frame));
         }
     }
 }

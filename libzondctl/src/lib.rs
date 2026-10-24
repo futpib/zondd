@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 pub mod credential;
-use libzond::{ClientInfo, Envelope, Event, MAX_RESPONSE_BYTES, Request, VERSION, wire};
+use libzond::{ClientInfo, Envelope, Event, MAX_RESPONSE_BYTES, Request, VERSION, protocol, wire};
 use std::{
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
@@ -150,17 +150,28 @@ impl Client {
         transport: Option<libzond::audit::TransportActor>,
     ) -> Result<()> {
         ensure!(!self.used, "one request is supported per connection");
+        self.used = true;
+        let selected = protocol::negotiate(
+            &mut self.read,
+            &mut self.write,
+            &protocol::Hello::default(),
+            "zondd or its SSH bridge",
+        )
+        .await?;
         let mut envelope = Envelope::new(1, request);
         envelope.actor = actor;
         envelope.transport = transport;
-        envelope.client = self.client.clone();
-        envelope.via = self.via.clone();
+        if selected.client_info() {
+            envelope.extensions = Some(protocol::Extensions {
+                client: self.client.clone(),
+                via: self.via.clone(),
+            });
+        }
         let frame = zeroize::Zeroizing::new(serde_json::to_vec(&envelope)?);
         ensure!(
             frame.len() < libzond::MAX_REQUEST_BYTES,
             "request exceeds protocol limit"
         );
-        self.used = true;
         self.active = Some(1);
         wire::write(&mut self.write, &envelope).await
     }
