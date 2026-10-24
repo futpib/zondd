@@ -146,7 +146,6 @@ fn previous_body(source: &str) -> String {
             for (current, previous) in [
                 ("require is-directory ", "require is-dir "),
                 ("create-new-directory ", "create-new-dir "),
-                ("run --allow-privilege-escalation ", "run --sudo "),
             ] {
                 if let Some(rest) = text.strip_prefix(current) {
                     return format!("{indent}{previous}{rest}");
@@ -168,6 +167,25 @@ fn previous_review_matches(
     old_bound.rule.language_version = version;
     let mut current = review::describe(&old_bound)?;
     let source = review::normalized_source(&old_bound);
+    if version == 4 {
+        let source = source
+            .lines()
+            .map(|line| {
+                let text = line.trim_start();
+                if let Some(command) = text.strip_prefix("run --sudo ") {
+                    format!(
+                        "{}run --allow-privilege-escalation {command}",
+                        &line[..line.len() - text.len()]
+                    )
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        current["sections"][0]["fields"][0]["value"] = source.into();
+        return Ok(saved == Some(&current));
+    }
     let prefix = bound
         .rule
         .types
@@ -287,7 +305,7 @@ pub(super) fn migrate(record: &str) -> Result<Option<RuleState>> {
         return Ok(None);
     }
     ensure!(
-        matches!(version, 1..=3),
+        matches!(version, 1..=4),
         "unsupported stored rule language {version}"
     );
     let mut previous: PreviousProposal = serde_json::from_value(value["proposal"].clone())?;
@@ -374,6 +392,16 @@ mod tests {
             r#"{{"proposal":{},"status":"active","reason":"approved","grant_expires_unix_ms":null}}"#,
             serde_json::to_string(&proposal).unwrap()
         )
+    }
+
+    #[test]
+    fn captured_v4_digest_is_verified_using_its_original_serialization() {
+        let state: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/sudo-v4.json")).unwrap();
+        let mut previous: PreviousProposal =
+            serde_json::from_value(state["proposal"].clone()).unwrap();
+        let digest = std::mem::take(&mut previous.digest);
+        assert_eq!(revision(&serde_json::to_string(&previous).unwrap()), digest);
     }
 
     #[test]

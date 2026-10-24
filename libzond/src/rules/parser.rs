@@ -264,11 +264,7 @@ fn run(input: &mut Input<'_>) -> winnow::ModalResult<Run> {
     preceded(
         keyword("run"),
         cut_err(terminated(
-            (
-                opt(keyword("--allow-privilege-escalation")),
-                executable,
-                repeat(0..=256, word),
-            ),
+            (opt(keyword("--sudo")), executable, repeat(0..=256, word)),
             end_line,
         )),
     )

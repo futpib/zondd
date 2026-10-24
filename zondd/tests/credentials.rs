@@ -42,10 +42,7 @@ fn persistent_sudo_rules_require_explicit_review_and_keep_credentials_scoped() {
     )
     .unwrap();
     env.request("admin", json!({"method":"reload"}));
-    for (name, flag, output) in [
-        ("ordinary", "", b"1\n"),
-        ("privileged", "--allow-privilege-escalation ", b"0\n"),
-    ] {
+    for (name, flag, output) in [("ordinary", "", b"1\n"), ("privileged", "--sudo ", b"0\n")] {
         let source = format!(
             "rule {name}() {{ run {flag}{} no_new_privs }}",
             env.probe.display()
@@ -111,7 +108,7 @@ fn persistent_sudo_rules_require_explicit_review_and_keep_credentials_scoped() {
     }
 
     let source = format!(
-        "rule passwords() {{ run --allow-privilege-escalation {} askpass }}",
+        "rule passwords() {{ run --sudo {} askpass }}",
         env.probe.display()
     );
     let proposal =

@@ -17,7 +17,7 @@ fn privilege_escalation_is_explicit_and_preserves_ordinary_authority() {
         serde_json::from_value::<libzond::rules::Rule>(serialized).unwrap(),
         ordinary
     );
-    let privileged = parse("rule test() { run --allow-privilege-escalation paru -Syu }").unwrap();
+    let privileged = parse("rule test() { run --sudo paru -Syu }").unwrap();
     assert!(privileged.sudo_password);
     assert_eq!(privileged.program, "paru");
     assert_eq!(
@@ -25,11 +25,11 @@ fn privilege_escalation_is_explicit_and_preserves_ordinary_authority() {
         true
     );
     for source in [
-        "rule test() { run --allow-privilege-escalation }",
-        "rule test() { run --allow-privilege-escalation --allow-privilege-escalation paru }",
-        "rule test() { run --sudo paru }",
+        "rule test() { run --sudo }",
+        "rule test() { run --sudo --sudo paru }",
+        "rule test() { run --allow-privilege-escalation paru }",
         "rule test(x: repository-name) { run $x paru }",
-        "rule test(x: repository-name) { run --allow-privilege-escalation $x }",
+        "rule test(x: repository-name) { run --sudo $x }",
     ] {
         assert!(parse(source).is_err(), "{source}");
     }
@@ -251,5 +251,31 @@ fn service_names_cannot_select_patterns_paths_options_or_templates() {
         &format!("{}.service", "a".repeat(248)),
     ] {
         assert!(!valid_service_unit(invalid), "{invalid:?}");
+    }
+}
+
+#[test]
+fn version_four_migration_changes_only_the_run_capability() {
+    for source in [
+        r#"rule old() { run --allow-privilege-escalation printf 'run --sudo' '--allow-privilege-escalation' }"#,
+        r#"rule old(x: repository-name) {
+ create-new-directory "~/$x" as destination {
+  run --allow-privilege-escalation mkdir "$destination"
+ }
+}"#,
+    ] {
+        let migrated = libzond::rules::migration::source(source, 4).unwrap();
+        let expected =
+            parse(&source.replacen("run --allow-privilege-escalation", "run --sudo", 1)).unwrap();
+        assert_eq!(migrated, expected);
+        assert!(migrated.sudo_password);
+    }
+    for source in [
+        "rule ordinary() { run printf '--allow-privilege-escalation' }",
+        "rule ordinary() { run run --allow-privilege-escalation }",
+    ] {
+        let migrated = libzond::rules::migration::source(source, 4).unwrap();
+        assert_eq!(migrated, parse(source).unwrap());
+        assert!(!migrated.sudo_password);
     }
 }

@@ -10,7 +10,7 @@ mod integer;
 pub mod migration;
 mod parser;
 mod types;
-pub const LANGUAGE_VERSION: u32 = 4;
+pub const LANGUAGE_VERSION: u32 = 5;
 pub use types::{TypeDefinition, TypeKind};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

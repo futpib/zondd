@@ -518,7 +518,7 @@ grants. The caller cannot approve, revoke, change the principal, or broaden an
 approved definition. Replacing a rule requires revoking it and reviewing a new
 proposal; a changed digest cannot reuse an approval. These rules are invoked by
 name and do not add raw `exec` allowlist entries. Commands retain `no_new_privs`
-unless the proposed definition explicitly uses `run --allow-privilege-escalation PROGRAM ...`.
+unless the proposed definition explicitly uses `run --sudo PROGRAM ...`.
 That flag enables sudo password challenges and permits privilege escalation by
 child processes, subject to sudoers. The receiver describes this authority in
 the review and includes it in the approval digest. It does not run the program
@@ -611,16 +611,18 @@ Integer bounds use decimal strings in JSON (`minimum_inclusive`, `maximum_exclus
 so Android and audit exports retain exact values. Approval reviews display the
 evaluated bounds and explicitly show the inclusive/exclusive inequality.
 
-On startup, saved version-1 through version-3 rules are migrated transactionally to
-language version 4, including inactive records. Old inclusive `uint`/`int` upper
+On startup, saved version-1 through version-4 rules are migrated transactionally to
+language version 5, including inactive records. Old inclusive `uint`/`int` upper
 bounds increase by one using arbitrary-precision arithmetic; their accepted
 values, grant status and expiry remain unchanged. Old inclusive text maxima also
 increase by one. Constructor arguments and choice rows gain explicit keywords;
 `enum`, `repo-name`, `is-dir`, `create-new-dir`/`create-new`, `min_inclusive`,
-`max_exclusive`, and `run --sudo` migrate to `enumeration`, `repository-name`,
-`is-directory`, `create-new-directory`, `minimum_inclusive`, `maximum_exclusive`,
-and `run --allow-privilege-escalation`. Local type names that collide with newly
-reserved names are renamed consistently, including their aliases and parameters.
+and `max_exclusive` migrate to `enumeration`, `repository-name`, `is-directory`,
+`create-new-directory`, `minimum_inclusive`, and `maximum_exclusive`. Local type
+names that collide with newly reserved names are renamed consistently, including
+their aliases and parameters. Version-4 rules using `run --allow-privilege-escalation`
+migrate to `run --sudo`, preserving their privileges and literal command arguments.
+New proposals accept only `run --sudo`.
 Home expansion and literal
 tildes retain their meanings in normalized current syntax. The migration checks
 old digests, compiled definitions and reviews, regenerates source/review/digests,
@@ -764,7 +766,7 @@ To approve repeated repository and AUR upgrades, save this as `system-upgrade.zo
 
 ```sh
 rule system-upgrade() {
-  run --allow-privilege-escalation /usr/bin/paru -Syu --devel --noconfirm --skipreview --noupgrademenu --sudoflags=-A
+  run --sudo /usr/bin/paru -Syu --devel --noconfirm --skipreview --noupgrademenu --sudoflags=-A
 }
 ```
 
@@ -774,7 +776,7 @@ use `zondctl invoke system-upgrade` without another command approval. Sudo may
 still ask for a password. The executable and all arguments are fixed; the
 caller cannot add flags or package names. The grant also authorizes future AUR
 build scripts and package hooks run by these upgrades, so review that ongoing
-authority before accepting. A daemon supporting `run --allow-privilege-escalation` is required;
+authority before accepting. A daemon supporting `run --sudo` is required;
 older daemons reject the proposal.
 
 For a fixed allowlist entry, assign this operation to a principal whose key

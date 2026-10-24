@@ -255,7 +255,7 @@ fn home_expansion_is_frozen_and_home_variable_paths_need_the_new_spelling() {
         1,
     )
     .unwrap();
-    assert_eq!(old.language_version, 4);
+    assert_eq!(old.language_version, libzond::rules::LANGUAGE_VERSION);
     assert!(
         serde_json::to_value(&old)
             .unwrap()

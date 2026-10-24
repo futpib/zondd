@@ -108,11 +108,7 @@ pub(super) fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
     };
     source.push_str(&format!(
         "{indent}run {}{}",
-        if rule.sudo_password {
-            "--allow-privilege-escalation "
-        } else {
-            ""
-        },
+        if rule.sudo_password { "--sudo " } else { "" },
         source_word_mode(&Word(vec![Part::Literal(rule.program.clone())]), home)
     ));
     for arg in &rule.args {
@@ -271,7 +267,7 @@ mod tests {
             "# caller says this is harmless\nrule clone(x: repository-name) {\n require is-directory \"~/code\"\n create-new-directory \"~/code/$x\" as dest {\n run /usr/bin/git clone -- \"git@github.com:futpib/$x.git\" \"$dest\"\n }\n}",
             r##"rule literals(x: repository-name) { run printf "" '$x' '${x}' '$(whoami)' "a\"b" "a\\b" "$x.txt" "a'x" "# comment" }"##,
             "rule whitespace() { run printf \"a\tb\" }",
-            "rule privileged() { run --allow-privilege-escalation /usr/bin/paru -Syu --noconfirm }",
+            "rule privileged() { run --sudo /usr/bin/paru -Syu --noconfirm }",
             "rule service(name: repository-name) {\n require user-service-active-or-enabled \"$name.service\"\n run /usr/bin/systemctl --user restart -- \"$name.service\"\n}",
         ] {
             let rule = libzond::rules::parse(source).unwrap();

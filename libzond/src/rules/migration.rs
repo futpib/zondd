@@ -1,5 +1,5 @@
-//! One-time conversion of persisted v1–v3 rules; never used for new proposals.
-use super::{LANGUAGE_VERSION, Part, Rule, Token, Word, lex, validate_rule};
+//! One-time conversion of persisted v1–v4 rules; never used for new proposals.
+use super::{LANGUAGE_VERSION, Part, Rule, Token, Word, lex, parse_tokens, validate_rule};
 use anyhow::{Context, Result, ensure};
 use num_bigint::BigInt;
 use serde_json::Value;
@@ -24,10 +24,21 @@ fn upper(kind: &str, min: &str, max: &str) -> Result<BigInt> {
 
 pub fn source(source: &str, version: u32) -> Result<Rule> {
     ensure!(
-        matches!(version, 1..=3),
+        matches!(version, 1..=4),
         "unsupported previous rule language"
     );
     let mut tokens = lex(source, version)?;
+    if version == 4 {
+        for index in 1..tokens.len().saturating_sub(1) {
+            if matches!(tokens[index - 1], Token::Newline | Token::Symbol('{'))
+                && matches!(&tokens[index], Token::Word(word) if word.literal() == Some("run"))
+                && matches!(&tokens[index + 1], Token::Word(word) if word.literal() == Some("--allow-privilege-escalation"))
+            {
+                tokens[index + 1] = Token::Word(Word(vec![Part::Literal("--sudo".into())]));
+            }
+        }
+        return parse_tokens(tokens);
+    }
     let (starts, header) = definitions(&tokens);
     let names: Vec<_> = starts
         .iter()
@@ -160,9 +171,13 @@ pub fn compiled(mut rule: Value) -> Result<Rule> {
         .and_then(Value::as_u64)
         .unwrap_or(1);
     ensure!(
-        matches!(version, 1..=3),
+        matches!(version, 1..=4),
         "unsupported previous rule language"
     );
+    if version == 4 {
+        rule["language_version"] = LANGUAGE_VERSION.into();
+        return validate_rule(serde_json::from_value(rule)?);
+    }
     let names: Vec<_> = rule["types"]
         .as_array()
         .into_iter()

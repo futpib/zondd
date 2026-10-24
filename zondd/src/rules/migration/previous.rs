@@ -1,10 +1,17 @@
-//! Persisted v1–v3 serialization, used only to verify digests during migration.
+//! Persisted v1–v4 serialization, used only to verify digests during migration.
 use libzond::rules::{CreateNew, Parameter, Requirement, Word};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Deserialize, Serialize)]
-pub(super) struct Bound {
+#[serde(untagged)]
+pub(super) enum Bound {
+    Previous(PreviousBound),
+    VersionFour(libzond::rules::BoundRule),
+}
+
+#[derive(Deserialize, Serialize)]
+pub(super) struct PreviousBound {
     rule: Rule,
     home: String,
     cwd: PathBuf,

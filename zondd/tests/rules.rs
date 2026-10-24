@@ -60,7 +60,10 @@ rule typed(v: selected, n: count) {
  run printf "%s:%s:%s" "${v.resource}" "${v.market}" "$n"
 }"#;
     let proposal = propose(&env, source);
-    assert_eq!(proposal["bound"]["rule"]["language_version"], 4);
+    assert_eq!(
+        proposal["bound"]["rule"]["language_version"],
+        libzond::rules::LANGUAGE_VERSION
+    );
     let review = proposal["review"].to_string();
     assert!(
         review.contains("Local type definitions")
@@ -258,7 +261,10 @@ fn upgrading_migrates_home_syntax_and_preserves_literal_tildes() {
     env.start_daemon();
     let restored = &states(&env, "exec")[0];
     assert_eq!(restored["status"], "active", "{restored}");
-    assert_eq!(restored["proposal"]["bound"]["rule"]["language_version"], 4);
+    assert_eq!(
+        restored["proposal"]["bound"]["rule"]["language_version"],
+        libzond::rules::LANGUAGE_VERSION
+    );
     assert_ne!(restored["proposal"]["digest"], state["proposal"]["digest"]);
     let output = format!("{}:~", libzond::paths::home_dir().join("code").display());
     assert_eq!(
@@ -1250,7 +1256,7 @@ fn migration_includes_records_outside_the_recent_history_page() {
     }
     env.start_daemon_with_timeout(std::time::Duration::from_secs(30));
     let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
-    let migrated: i64 = db.query_row("SELECT count(*) FROM rule_states WHERE status='revoked' AND json_extract(record,'$.proposal.bound.rule.language_version')=4", [], |r| r.get(0)).unwrap();
+    let migrated: i64 = db.query_row("SELECT count(*) FROM rule_states WHERE status='revoked' AND json_extract(record,'$.proposal.bound.rule.language_version')=?1", [libzond::rules::LANGUAGE_VERSION], |r| r.get(0)).unwrap();
     assert_eq!(migrated, 260);
 }
 
@@ -1272,7 +1278,10 @@ fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
             previous["grant_expires_unix_ms"]
         );
         let proposal = &migrated["proposal"];
-        assert_eq!(proposal["bound"]["rule"]["language_version"], 4);
+        assert_eq!(
+            proposal["bound"]["rule"]["language_version"],
+            libzond::rules::LANGUAGE_VERSION
+        );
         assert!(
             proposal["source"]
                 .as_str()
@@ -1350,5 +1359,73 @@ fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
             )
             .unwrap();
         assert_eq!(migrations, 1);
+    }
+}
+
+#[test]
+fn version_four_sudo_spelling_migrates_without_changing_grants_or_arguments() {
+    for status in ["active", "pending"] {
+        let env = TestEnv::new();
+        let seed = approve(&env, "rule seed() { run true }");
+        let mut previous = previous_fixture(&seed, include_str!("fixtures/sudo-v4.json"));
+        previous["status"] = status.into();
+        previous["grant_expires_unix_ms"] = (libzond::history::now() + 60000).into();
+        env.stop_daemon();
+        store_previous(&env, &mut previous);
+        env.start_daemon();
+        let migrated = states(&env, "exec")[0].clone();
+        assert_eq!(migrated["status"], status, "{migrated}");
+        assert_eq!(
+            migrated["grant_expires_unix_ms"],
+            previous["grant_expires_unix_ms"]
+        );
+        let proposal = &migrated["proposal"];
+        assert_eq!(
+            proposal["bound"]["rule"]["language_version"],
+            libzond::rules::LANGUAGE_VERSION
+        );
+        assert_eq!(proposal["bound"]["rule"]["sudo_password"], true);
+        assert!(
+            proposal["source"]
+                .as_str()
+                .unwrap()
+                .contains("run --sudo /usr/bin/printf")
+        );
+        assert_ne!(proposal["digest"], previous["proposal"]["digest"]);
+        if status == "pending" {
+            assert_eq!(
+                resolve(&env, &previous["proposal"], true, None)["type"],
+                "error"
+            );
+            assert_eq!(
+                resolve(&env, proposal, true, None)["rule"]["status"],
+                "active"
+            );
+        }
+        for literal in ["--allow-privilege-escalation", "--sudo"] {
+            let result = invoke(&env, "previous-sudo", &["9", literal]);
+            assert_eq!(result["type"], "completed", "{result}");
+            assert_eq!(
+                decoded(&result, "stdout"),
+                format!("9:{literal}:run --sudo").as_bytes()
+            );
+        }
+        assert_eq!(
+            invoke(&env, "previous-sudo", &["10", "--sudo"])["type"],
+            "error"
+        );
+        let before = states(&env, "exec");
+        env.stop_daemon();
+        env.start_daemon();
+        assert_eq!(states(&env, "exec"), before);
+        let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM actions WHERE action='rule_migrated'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
