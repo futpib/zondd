@@ -1261,11 +1261,11 @@ fn migration_includes_records_outside_the_recent_history_page() {
 }
 
 #[test]
-fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
+fn version_two_constructor_migration_preserves_grants_and_exact_arguments() {
     for status in ["active", "pending"] {
         let env = TestEnv::new();
         let seed = approve(&env, "rule seed() { run true }");
-        let mut previous = previous_fixture(&seed, include_str!("fixtures/types-v3.json"));
+        let mut previous = previous_fixture(&seed, include_str!("fixtures/types-v2.json"));
         previous["status"] = status.into();
         previous["grant_expires_unix_ms"] = (libzond::history::now() + 60000).into();
         env.stop_daemon();
@@ -1298,6 +1298,13 @@ fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
             proposal["bound"]["rule"]["types"][3]["definition"]["maximum_bytes_exclusive"],
             21
         );
+        assert_eq!(proposal["bound"]["rule"]["sudo_password"], true);
+        assert!(
+            proposal["source"]
+                .as_str()
+                .unwrap()
+                .contains("run --sudo /usr/bin/printf")
+        );
         assert_ne!(proposal["digest"], previous["proposal"]["digest"]);
         if status == "pending" {
             assert_eq!(
@@ -1318,16 +1325,13 @@ fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
                     "kmux",
                     "positions",
                     &symbol,
-                    "340282366920938463463374607431768211455",
+                    "18446744073709551615",
                 ],
             );
             assert_eq!(result["type"], "completed", "{result}");
             assert_eq!(
                 decoded(&result, "stdout"),
-                format!(
-                    "daily:kmux:positions:usdm:{symbol}:340282366920938463463374607431768211455"
-                )
-                .as_bytes()
+                format!("daily:kmux:positions:usdm:{symbol}:18446744073709551615").as_bytes()
             );
         }
         for arguments in [
@@ -1336,13 +1340,7 @@ fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
             vec!["daily", "kmux", "unknown", "AB", "1"],
             vec!["monthly", "kmux", "positions", "AB", "1"],
             vec!["daily", "../kmux", "positions", "AB", "1"],
-            vec![
-                "daily",
-                "kmux",
-                "positions",
-                "AB",
-                "340282366920938463463374607431768211456",
-            ],
+            vec!["daily", "kmux", "positions", "AB", "18446744073709551616"],
         ] {
             assert_eq!(invoke(&env, "previous-types", &arguments)["type"], "error");
         }
@@ -1359,73 +1357,5 @@ fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
             )
             .unwrap();
         assert_eq!(migrations, 1);
-    }
-}
-
-#[test]
-fn version_four_sudo_spelling_migrates_without_changing_grants_or_arguments() {
-    for status in ["active", "pending"] {
-        let env = TestEnv::new();
-        let seed = approve(&env, "rule seed() { run true }");
-        let mut previous = previous_fixture(&seed, include_str!("fixtures/sudo-v4.json"));
-        previous["status"] = status.into();
-        previous["grant_expires_unix_ms"] = (libzond::history::now() + 60000).into();
-        env.stop_daemon();
-        store_previous(&env, &mut previous);
-        env.start_daemon();
-        let migrated = states(&env, "exec")[0].clone();
-        assert_eq!(migrated["status"], status, "{migrated}");
-        assert_eq!(
-            migrated["grant_expires_unix_ms"],
-            previous["grant_expires_unix_ms"]
-        );
-        let proposal = &migrated["proposal"];
-        assert_eq!(
-            proposal["bound"]["rule"]["language_version"],
-            libzond::rules::LANGUAGE_VERSION
-        );
-        assert_eq!(proposal["bound"]["rule"]["sudo_password"], true);
-        assert!(
-            proposal["source"]
-                .as_str()
-                .unwrap()
-                .contains("run --sudo /usr/bin/printf")
-        );
-        assert_ne!(proposal["digest"], previous["proposal"]["digest"]);
-        if status == "pending" {
-            assert_eq!(
-                resolve(&env, &previous["proposal"], true, None)["type"],
-                "error"
-            );
-            assert_eq!(
-                resolve(&env, proposal, true, None)["rule"]["status"],
-                "active"
-            );
-        }
-        for literal in ["--allow-privilege-escalation", "--sudo"] {
-            let result = invoke(&env, "previous-sudo", &["9", literal]);
-            assert_eq!(result["type"], "completed", "{result}");
-            assert_eq!(
-                decoded(&result, "stdout"),
-                format!("9:{literal}:run --sudo").as_bytes()
-            );
-        }
-        assert_eq!(
-            invoke(&env, "previous-sudo", &["10", "--sudo"])["type"],
-            "error"
-        );
-        let before = states(&env, "exec");
-        env.stop_daemon();
-        env.start_daemon();
-        assert_eq!(states(&env, "exec"), before);
-        let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
-        let count: i64 = db
-            .query_row(
-                "SELECT count(*) FROM actions WHERE action='rule_migrated'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
     }
 }

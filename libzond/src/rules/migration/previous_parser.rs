@@ -1,4 +1,4 @@
-//! Grammar used only when migrating persisted language versions 1–3.
+//! Grammar used only when migrating persisted language versions 1/2.
 use crate::rules::{
     CreateNew, LANGUAGE_VERSION, Parameter, Part, Requirement, Rule, Token, TypeDefinition,
     TypeKind, Word, integer, types,
@@ -64,13 +64,7 @@ fn integer_type(input: &mut Input<'_>) -> winnow::ModalResult<TypeKind> {
     }))
     .try_map(|source| {
         source
-            .map(|source| {
-                integer::bounds(
-                    &source
-                        .replace("min_inclusive", "minimum_inclusive")
-                        .replace("max_exclusive", "maximum_exclusive"),
-                )
-            })
+            .map(|source| integer::bounds(&source))
             .unwrap_or(Ok((None, None)))
             .map_err(|error| std::io::Error::other(error.to_string()))
     })

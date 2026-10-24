@@ -253,29 +253,3 @@ fn service_names_cannot_select_patterns_paths_options_or_templates() {
         assert!(!valid_service_unit(invalid), "{invalid:?}");
     }
 }
-
-#[test]
-fn version_four_migration_changes_only_the_run_capability() {
-    for source in [
-        r#"rule old() { run --allow-privilege-escalation printf 'run --sudo' '--allow-privilege-escalation' }"#,
-        r#"rule old(x: repository-name) {
- create-new-directory "~/$x" as destination {
-  run --allow-privilege-escalation mkdir "$destination"
- }
-}"#,
-    ] {
-        let migrated = libzond::rules::migration::source(source, 4).unwrap();
-        let expected =
-            parse(&source.replacen("run --allow-privilege-escalation", "run --sudo", 1)).unwrap();
-        assert_eq!(migrated, expected);
-        assert!(migrated.sudo_password);
-    }
-    for source in [
-        "rule ordinary() { run printf '--allow-privilege-escalation' }",
-        "rule ordinary() { run run --allow-privilege-escalation }",
-    ] {
-        let migrated = libzond::rules::migration::source(source, 4).unwrap();
-        assert_eq!(migrated, parse(source).unwrap());
-        assert!(!migrated.sudo_password);
-    }
-}

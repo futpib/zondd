@@ -1,5 +1,5 @@
-//! One-time conversion of persisted v1–v4 rules; never used for new proposals.
-use super::{LANGUAGE_VERSION, Part, Rule, Token, Word, lex, parse_tokens, validate_rule};
+//! One-time conversion of persisted v1/v2 rules; never used for new proposals.
+use super::{LANGUAGE_VERSION, Part, Rule, Token, Word, lex, validate_rule};
 use anyhow::{Context, Result, ensure};
 use num_bigint::BigInt;
 use serde_json::Value;
@@ -24,21 +24,10 @@ fn upper(kind: &str, min: &str, max: &str) -> Result<BigInt> {
 
 pub fn source(source: &str, version: u32) -> Result<Rule> {
     ensure!(
-        matches!(version, 1..=4),
+        matches!(version, 1 | 2),
         "unsupported previous rule language"
     );
     let mut tokens = lex(source, version)?;
-    if version == 4 {
-        for index in 1..tokens.len().saturating_sub(1) {
-            if matches!(tokens[index - 1], Token::Newline | Token::Symbol('{'))
-                && matches!(&tokens[index], Token::Word(word) if word.literal() == Some("run"))
-                && matches!(&tokens[index + 1], Token::Word(word) if word.literal() == Some("--allow-privilege-escalation"))
-            {
-                tokens[index + 1] = Token::Word(Word(vec![Part::Literal("--sudo".into())]));
-            }
-        }
-        return parse_tokens(tokens);
-    }
     let (starts, header) = definitions(&tokens);
     let names: Vec<_> = starts
         .iter()
@@ -47,7 +36,7 @@ pub fn source(source: &str, version: u32) -> Result<Rule> {
             _ => None,
         })
         .collect();
-    let renames = renamed_types(&names, version);
+    let renames = renamed_types(&names);
     let mut position = header;
     while position + 1 < tokens.len() && tokens[position] != Token::Symbol('{') {
         if tokens[position] == Token::Symbol(':') {
@@ -72,7 +61,7 @@ pub fn source(source: &str, version: u32) -> Result<Rule> {
             Some(Token::Word(w)) => w.literal().unwrap_or_default().to_owned(),
             _ => String::new(),
         };
-        if version < 3 && matches!(kind.as_str(), "uint" | "int") {
+        if matches!(kind.as_str(), "uint" | "int") {
             let literal = |index| match tokens.get(index) {
                 Some(Token::Word(w)) => w.literal().context("expected previous integer bound"),
                 _ => anyhow::bail!("expected previous integer bound"),
@@ -110,10 +99,10 @@ pub fn source(source: &str, version: u32) -> Result<Rule> {
     validate_rule(rule)
 }
 
-fn renamed_types(names: &[&str], version: u32) -> BTreeMap<String, String> {
+fn renamed_types(names: &[&str]) -> BTreeMap<String, String> {
     let mut renames = BTreeMap::new();
     for old in ["integer", "enumeration", "repository-name"] {
-        if (old == "integer" && version >= 3) || !names.contains(&old) {
+        if !names.contains(&old) {
             continue;
         }
         for suffix in 1.. {
@@ -171,20 +160,16 @@ pub fn compiled(mut rule: Value) -> Result<Rule> {
         .and_then(Value::as_u64)
         .unwrap_or(1);
     ensure!(
-        matches!(version, 1..=4),
+        matches!(version, 1 | 2),
         "unsupported previous rule language"
     );
-    if version == 4 {
-        rule["language_version"] = LANGUAGE_VERSION.into();
-        return validate_rule(serde_json::from_value(rule)?);
-    }
     let names: Vec<_> = rule["types"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|ty| ty["name"].as_str())
         .collect();
-    let renames = renamed_types(&names, version as u32);
+    let renames = renamed_types(&names);
     for parameter in rule["parameters"]
         .as_array_mut()
         .context("invalid previous parameters")?
@@ -211,7 +196,7 @@ pub fn compiled(mut rule: Value) -> Result<Rule> {
                         definition["target"] = name.clone().into();
                     }
                 }
-                Some(kind @ ("uint" | "int")) if version < 3 => {
+                Some(kind @ ("uint" | "int")) => {
                     let min = definition["min"]
                         .as_str()
                         .context("invalid previous minimum")?;
@@ -223,17 +208,6 @@ pub fn compiled(mut rule: Value) -> Result<Rule> {
                             .context("invalid previous maximum")?,
                     )?;
                     *definition = serde_json::json!({"kind":"integer", "minimum_inclusive":min, "maximum_exclusive":max.to_string()});
-                }
-                Some("integer") if version == 3 => {
-                    let object = definition.as_object_mut().unwrap();
-                    for (old, new) in [
-                        ("min_inclusive", "minimum_inclusive"),
-                        ("max_exclusive", "maximum_exclusive"),
-                    ] {
-                        if let Some(value) = object.remove(old) {
-                            object.insert(new.into(), value);
-                        }
-                    }
                 }
                 Some("enum") => {
                     definition["kind"] = "enumeration".into();

@@ -88,19 +88,6 @@ fn previous_type_source(ty: &Value, current: &libzond::rules::TypeDefinition) ->
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Some("integer") => {
-            let mut bounds = Vec::new();
-            for key in ["min_inclusive", "max_exclusive"] {
-                if let Some(value) = definition[key].as_str() {
-                    bounds.push(format!("{key}={value}"));
-                }
-            }
-            if bounds.is_empty() {
-                "integer".into()
-            } else {
-                format!("integer({})", bounds.join(", "))
-            }
-        }
         Some("text") => format!(
             "text({}, {}, {})",
             previous_literal(definition["pattern"].as_str().unwrap()),
@@ -167,25 +154,6 @@ fn previous_review_matches(
     old_bound.rule.language_version = version;
     let mut current = review::describe(&old_bound)?;
     let source = review::normalized_source(&old_bound);
-    if version == 4 {
-        let source = source
-            .lines()
-            .map(|line| {
-                let text = line.trim_start();
-                if let Some(command) = text.strip_prefix("run --sudo ") {
-                    format!(
-                        "{}run --allow-privilege-escalation {command}",
-                        &line[..line.len() - text.len()]
-                    )
-                } else {
-                    line.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        current["sections"][0]["fields"][0]["value"] = source.into();
-        return Ok(saved == Some(&current));
-    }
     let prefix = bound
         .rule
         .types
@@ -305,7 +273,7 @@ pub(super) fn migrate(record: &str) -> Result<Option<RuleState>> {
         return Ok(None);
     }
     ensure!(
-        matches!(version, 1..=4),
+        matches!(version, 1 | 2),
         "unsupported stored rule language {version}"
     );
     let mut previous: PreviousProposal = serde_json::from_value(value["proposal"].clone())?;
@@ -354,8 +322,11 @@ mod tests {
     use super::*;
 
     fn fixture() -> PreviousProposal {
-        let state: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/integer-v2.json")).unwrap();
+        captured_fixture(include_str!("../../tests/fixtures/integer-v2.json"))
+    }
+
+    fn captured_fixture(record: &str) -> PreviousProposal {
+        let state: Value = serde_json::from_str(record).unwrap();
         let mut proposal: PreviousProposal =
             serde_json::from_value(state["proposal"].clone()).unwrap();
         let digest = std::mem::take(&mut proposal.digest);
@@ -395,29 +366,17 @@ mod tests {
     }
 
     #[test]
-    fn captured_v4_digest_is_verified_using_its_original_serialization() {
-        let state: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/sudo-v4.json")).unwrap();
-        let mut previous: PreviousProposal =
-            serde_json::from_value(state["proposal"].clone()).unwrap();
-        let digest = std::mem::take(&mut previous.digest);
-        assert_eq!(revision(&serde_json::to_string(&previous).unwrap()), digest);
-    }
-
-    #[test]
-    fn captured_v3_fixture_retains_its_original_digest_and_review() {
-        let record = include_str!("../../tests/fixtures/types-v3.json");
-        let value: Value = serde_json::from_str(record).unwrap();
-        let mut previous: PreviousProposal =
-            serde_json::from_value(value["proposal"].clone()).unwrap();
-        let digest = std::mem::take(&mut previous.digest);
-        assert_eq!(revision(&serde_json::to_string(&previous).unwrap()), digest);
-        let migrated = migrate(record).unwrap().unwrap();
-        assert_eq!(migrated.status, "pending", "{}", migrated.reason);
+    fn captured_v2_types_retain_their_original_digest_and_review() {
+        let old = record(captured_fixture(include_str!(
+            "../../tests/fixtures/types-v2.json"
+        )));
+        let migrated = migrate(&old).unwrap().unwrap();
+        assert_eq!(migrated.status, "active", "{}", migrated.reason);
         assert_eq!(
             migrated.proposal.bound.rule.language_version,
             LANGUAGE_VERSION
         );
+        assert!(migrated.proposal.bound.rule.sudo_password);
         check_stored(&migrated.proposal).unwrap();
     }
 

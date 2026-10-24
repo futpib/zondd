@@ -611,19 +611,16 @@ Integer bounds use decimal strings in JSON (`minimum_inclusive`, `maximum_exclus
 so Android and audit exports retain exact values. Approval reviews display the
 evaluated bounds and explicitly show the inclusive/exclusive inequality.
 
-On startup, saved version-1 through version-4 rules are migrated transactionally to
-language version 5, including inactive records. Old inclusive `uint`/`int` upper
+On startup, saved version-1 and version-2 rules are migrated transactionally to
+language version 3, including inactive records. Old inclusive `uint`/`int` upper
 bounds increase by one using arbitrary-precision arithmetic; their accepted
 values, grant status and expiry remain unchanged. Old inclusive text maxima also
 increase by one. Constructor arguments and choice rows gain explicit keywords;
-`enum`, `repo-name`, `is-dir`, `create-new-dir`/`create-new`, `min_inclusive`,
-and `max_exclusive` migrate to `enumeration`, `repository-name`, `is-directory`,
-`create-new-directory`, `minimum_inclusive`, and `maximum_exclusive`. Local type
+`enum`, `repo-name`, `is-dir`, and `create-new-dir`/`create-new` migrate to
+`enumeration`, `repository-name`, `is-directory`, and `create-new-directory`. Local type
 names that collide with newly reserved names are renamed consistently, including
-their aliases and parameters. Version-4 rules using `run --allow-privilege-escalation`
-migrate to `run --sudo`, preserving their privileges and literal command arguments.
-New proposals accept only `run --sudo`.
-Home expansion and literal
+their aliases and parameters. The `run --sudo` capability retains its spelling
+and privileges. Home expansion and literal
 tildes retain their meanings in normalized current syntax. The migration checks
 old digests, compiled definitions and reviews, regenerates source/review/digests,
 and appends `rule_migrated` audit events containing the previous and current

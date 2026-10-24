@@ -10,7 +10,7 @@ mod integer;
 pub mod migration;
 mod parser;
 mod types;
-pub const LANGUAGE_VERSION: u32 = 5;
+pub const LANGUAGE_VERSION: u32 = 3;
 pub use types::{TypeDefinition, TypeKind};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -399,7 +399,7 @@ fn lex(source: &str, version: u32) -> Result<Vec<Token>> {
                 ensure!(depth == 0, "unclosed integer bounds");
                 tokens.push(Token::IntegerBounds(expression));
             }
-            '=' if definition && version >= 4 => {
+            '=' if definition && version >= 3 => {
                 chars.next();
                 tokens.push(Token::Symbol('='));
             }
@@ -421,7 +421,7 @@ fn lex(source: &str, version: u32) -> Result<Vec<Token>> {
                     if quote.is_none()
                         && (c.is_ascii_whitespace()
                             || "(){}:,".contains(c)
-                            || (c == '=' && definition && version >= 4))
+                            || (c == '=' && definition && version >= 3))
                     {
                         break;
                     }

@@ -1,17 +1,10 @@
-//! Persisted v1–v4 serialization, used only to verify digests during migration.
+//! Persisted v1/v2 serialization, used only to verify digests during migration.
 use libzond::rules::{CreateNew, Parameter, Requirement, Word};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Deserialize, Serialize)]
-#[serde(untagged)]
-pub(super) enum Bound {
-    Previous(PreviousBound),
-    VersionFour(libzond::rules::BoundRule),
-}
-
-#[derive(Deserialize, Serialize)]
-pub(super) struct PreviousBound {
+pub(super) struct Bound {
     rule: Rule,
     home: String,
     cwd: PathBuf,
@@ -69,12 +62,6 @@ enum Kind {
         min: i64,
         #[serde(with = "decimal")]
         max: i64,
-    },
-    Integer {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        min_inclusive: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_exclusive: Option<String>,
     },
     Text {
         pattern: String,
