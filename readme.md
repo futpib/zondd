@@ -380,9 +380,9 @@ A caller can propose a small declarative rule for administrator review. Save thi
 as `clone-futpib.zond` on the caller:
 
 ```text
-rule clone-futpib(x: repo-name) {
-  require is-dir "~/code"
-  create-new-dir "~/code/$x" as dest {
+rule clone-futpib(x: repository-name) {
+  require is-directory "~/code"
+  create-new-directory "~/code/$x" as dest {
     run git clone -- "https://github.com/futpib/$x.git" "$dest"
   }
 }
@@ -402,7 +402,7 @@ Inline proposals also work as one quoted argument; preserve `$variables` from
 expansion by the caller's shell:
 
 ```sh
-zondctl --principal default propose-rule 'rule echo-repo(x: repo-name) { run printf "%s" "$x" }'
+zondctl --principal default propose-rule 'rule echo-repo(x: repository-name) { run printf "%s" "$x" }'
 ```
 
 `propose-rule` returns the immutable proposal ID, digest, original source, and
@@ -518,19 +518,19 @@ grants. The caller cannot approve, revoke, change the principal, or broaden an
 approved definition. Replacing a rule requires revoking it and reviewing a new
 proposal; a changed digest cannot reuse an approval. These rules are invoked by
 name and do not add raw `exec` allowlist entries. Commands retain `no_new_privs`
-unless the proposed definition explicitly uses `run --sudo PROGRAM ...`.
+unless the proposed definition explicitly uses `run --allow-privilege-escalation PROGRAM ...`.
 That flag enables sudo password challenges and permits privilege escalation by
 child processes, subject to sudoers. The receiver describes this authority in
 the review and includes it in the approval digest. It does not run the program
 as root or store passwords. Existing grants keep their original privileges.
 
-The language supports one `run`, optional `require is-dir`, `require absent` and
+The language supports one `run`, optional `require is-directory`, `require absent` and
 `require user-service-active-or-enabled` checks before it, and an optional
-`create-new-dir PATH as VARIABLE { ... }` block.
-`create-new` remains an alias for older rule source.
+`create-new-directory PATH as VARIABLE { ... }` block.
+Older spellings are accepted only by the stored-rule migration.
 Each check occupies its own line. Parameters are positional, with up to 16
-declarations of `name: TYPE`. Types are `integer`, `repo-name` or a local definition.
-`repo-name` requires a full match of
+declarations of `name: TYPE`. Types are `integer`, `repository-name` or a local definition.
+`repository-name` requires a full match of
 `[A-Za-z0-9][A-Za-z0-9._-]{0,99}`: bounded ASCII, no slash, leading hyphen,
 whitespace, control characters, or Unicode. It validates syntax, not remote
 repository existence. Every invocation is checked on the receiver, including
@@ -539,16 +539,16 @@ requests made directly through the protocol.
 Local definitions precede the single rule and belong only to that proposal:
 
 ```text
-type repository = repo-name
-type connection = enum { binance, ibkr }
-type cursor = integer(min_inclusive=0, max_exclusive=2**64)
-type job-id = integer(min_inclusive=1, max_exclusive=2**64)
-type adjustment = integer(min_inclusive=-100, max_exclusive=101)
-type symbol = text('[A-Z0-9]+', 2, 20)
-type live-view = choice(resource, market) {
-  balances = ("balances", "portfolio")
-  accounts = ("accounts", "portfolio")
-  positions = ("positions", "usdm")
+type repository = repository-name
+type connection = enumeration(values=(binance, ibkr))
+type cursor = integer(minimum_inclusive=0, maximum_exclusive=2**64)
+type job-id = integer(minimum_inclusive=1, maximum_exclusive=2**64)
+type adjustment = integer(minimum_inclusive=-100, maximum_exclusive=101)
+type symbol = text(pattern='[A-Z0-9]+', minimum_bytes_inclusive=2, maximum_bytes_exclusive=21)
+type live-view = choice(fields=(resource, market)) {
+  balances = (resource="balances", market="portfolio")
+  accounts = (resource="accounts", market="portfolio")
+  positions = (resource="positions", market="usdm")
 }
 
 rule binance-live(view: live-view) {
@@ -556,12 +556,12 @@ rule binance-live(view: live-view) {
 }
 ```
 
-- An alias names `integer`, `repo-name` or another local type. Forward references work;
+- An alias names `integer`, `repository-name` or another local type. Forward references work;
   unknown references, cycles, duplicate names and builtin shadowing are rejected.
-- An enum accepts exactly one of its listed literal strings. Quotes preserve
+- An enumeration accepts exactly one of its listed literal strings. Quotes preserve
   spaces and special characters. No normalization or recursive expansion occurs.
 - `integer` accepts arbitrary-precision integers. Bounds are optional and always
-  keyword-only: `integer(min_inclusive=0, max_exclusive=2**32)` means
+  keyword-only: `integer(minimum_inclusive=0, maximum_exclusive=2**32)` means
   `0 <= value < 4294967296`. Either bound may be omitted; bare `integer` has
   neither bound. Positional, duplicate and unknown bound arguments are rejected.
   Bounds accept decimal literals, parentheses, unary `+`/`-`, and `+`, `-`, `*`,
@@ -574,9 +574,17 @@ rule binance-live(view: live-view) {
   intermediate values; expensive powers are rejected before allocation.
   Invocation values must be canonical decimal strings, at most 4096 bytes: no
   leading zeros except `0`, plus signs, whitespace or negative zero.
-- `text(PATTERN, MIN_BYTES, MAX_BYTES)` accepts printable ASCII strings whose
-  length is in the inclusive range and whose entire value matches the Rust regex
-  pattern. Patterns cannot select arbitrary code or invoke a validator program.
+- `text(pattern=PATTERN, minimum_bytes_inclusive=MINIMUM, maximum_bytes_exclusive=MAXIMUM)`
+  requires all three keywords, in any order. It accepts printable ASCII strings
+  with `MINIMUM <= byte length < MAXIMUM` whose entire value matches the Rust
+  regex pattern. Length bounds are decimal byte counts; the exclusive maximum
+  may be 4097 to allow 4096-byte values. Patterns cannot invoke code or a validator.
+- `enumeration(values=(VALUE, ...))` requires the `values` keyword and a nonempty
+  tuple of distinct literal strings.
+- `choice(fields=(FIELD, ...)) { CASE = (FIELD=VALUE, ...) }` requires `fields`
+  and a nonempty block of named cases. Each row names every field exactly once,
+  in any order. Missing, duplicate and unknown keywords are rejected throughout
+  the constructors. There are no positional constructor arguments.
 - A choice accepts one case name, supplied as one positional argument. Its fields
   expand through braced projections such as `${view.market}`. All fields come
   from the selected row together; callers cannot supply or mix them separately.
@@ -585,13 +593,13 @@ rule binance-live(view: live-view) {
 
 The example permits exactly the three resource/market pairs shown. Invoke it
 with `zondctl invoke binance-live positions`; there is no separate market argument.
-Unlike independent enums, it cannot grant a Cartesian product of those pairs.
+Unlike independent enumerations, it cannot grant a Cartesian product of those pairs.
 See [the complete merged rule](examples/rules/binance-live.zond),
 [typed trade-history rule](examples/rules/binance-history.zond), and
 [typed GitHub job rule](examples/rules/read-github-failure.zond). These are templates
 for new proposals; installing this language support does not replace existing grants.
 
-There are at most 32 local definitions, 64 values/cases per enum or choice, and
+There are at most 32 local definitions, 64 values/cases per enumeration or choice, and
 16 fields per choice. Text lengths are at most 4096 bytes and patterns at most
 1024 bytes, with bounded regex compilation. The whole source remains limited to
 16 KiB; the compiled proposal, including its review, must fit within 12 KiB.
@@ -599,21 +607,28 @@ Constraints, aliases and every correlated row appear in the receiver's
 review and normalized source and are covered by the immutable approval digest.
 Every invocation, including raw protocol requests and resumed jobs, is checked
 on the receiver. Definitions have no imports, global registry or ambient state.
-Integer bounds use decimal strings in JSON (`min_inclusive`, `max_exclusive`)
+Integer bounds use decimal strings in JSON (`minimum_inclusive`, `maximum_exclusive`)
 so Android and audit exports retain exact values. Approval reviews display the
 evaluated bounds and explicitly show the inclusive/exclusive inequality.
 
-On startup, saved version-1 and version-2 rules are migrated transactionally to
-language version 3, including inactive records. Old inclusive `uint`/`int` upper
+On startup, saved version-1 through version-3 rules are migrated transactionally to
+language version 4, including inactive records. Old inclusive `uint`/`int` upper
 bounds increase by one using arbitrary-precision arithmetic; their accepted
-values, grant status and expiry remain unchanged. Home expansion and literal
+values, grant status and expiry remain unchanged. Old inclusive text maxima also
+increase by one. Constructor arguments and choice rows gain explicit keywords;
+`enum`, `repo-name`, `is-dir`, `create-new-dir`/`create-new`, `min_inclusive`,
+`max_exclusive`, and `run --sudo` migrate to `enumeration`, `repository-name`,
+`is-directory`, `create-new-directory`, `minimum_inclusive`, `maximum_exclusive`,
+and `run --allow-privilege-escalation`. Local type names that collide with newly
+reserved names are renamed consistently, including their aliases and parameters.
+Home expansion and literal
 tildes retain their meanings in normalized current syntax. The migration checks
 old digests, compiled definitions and reviews, regenerates source/review/digests,
 and appends `rule_migrated` audit events containing the previous and current
 records. Existing audit entries remain unchanged. Inconsistent live records are
 invalidated. Pending proposals require the new digest; an approval using an old
 digest fails. New proposals have no `uint` or `int` builtins and reject positional
-integer bounds. The grammar and integer expressions use Winnow parser combinators.
+constructor arguments or abbreviated language names. The grammar and integer expressions use Winnow parser combinators.
 
 Double quotes group arguments and allow `$name` or `${name}` substitution;
 single quotes preserve literal text. Backslash can quote a backslash, quote,
@@ -652,7 +667,7 @@ The target is one explicit `.service` name, up to 255 ASCII characters, starting
 with a letter or digit and containing only letters, digits, dots, underscores,
 hyphens and optionally one `@` with a nonempty instance. Paths, glob patterns,
 options and bare templates are rejected. Substitution works here too, for example
-`"my-app-$x.service"` with `x: repo-name`. Review the permitted names and the full
+`"my-app-$x.service"` with `x: repository-name`. Review the permitted names and the full
 `run` command together; a state check does not select or restrict its arguments.
 Services launched through systemd use their own unit settings and do not inherit
 the command's `no_new_privs` restriction.
@@ -664,7 +679,7 @@ Service state can change between checking and running the command; this is an
 observed precondition, not an atomic conditional systemd operation.
 
 `require` checks run again immediately before execution. They observe state at
-that moment; another process can change it afterward. Use `create-new-dir` for the
+that moment; another process can change it afterward. Use `create-new-directory` for the
 stronger directory-publication guarantee. It requires an absent destination
 (including no dangling symlink), creates private staging on the same filesystem,
 and binds the output variable to a staging path. On exit status zero, the command
@@ -677,7 +692,7 @@ Parent directories must already exist, be trusted, and contain no symlinks.
 As with ordinary commands, this is not filesystem isolation: the approved
 executable runs as the daemon's Unix user, can access that user's other files,
 and follows its own program configuration. For example, Git can honor URL
-rewrites in its configuration. `create-new-dir` protects the publication performed
+rewrites in its configuration. `create-new-directory` protects the publication performed
 by zondd; it does not sandbox arbitrary writes performed by an approved program.
 Review the full command and use a separate Unix account for isolation.
 
@@ -749,7 +764,7 @@ To approve repeated repository and AUR upgrades, save this as `system-upgrade.zo
 
 ```sh
 rule system-upgrade() {
-  run --sudo /usr/bin/paru -Syu --devel --noconfirm --skipreview --noupgrademenu --sudoflags=-A
+  run --allow-privilege-escalation /usr/bin/paru -Syu --devel --noconfirm --skipreview --noupgrademenu --sudoflags=-A
 }
 ```
 
@@ -759,7 +774,7 @@ use `zondctl invoke system-upgrade` without another command approval. Sudo may
 still ask for a password. The executable and all arguments are fixed; the
 caller cannot add flags or package names. The grant also authorizes future AUR
 build scripts and package hooks run by these upgrades, so review that ongoing
-authority before accepting. A daemon supporting `run --sudo` is required;
+authority before accepting. A daemon supporting `run --allow-privilege-escalation` is required;
 older daemons reject the proposal.
 
 For a fixed allowlist entry, assign this operation to a principal whose key

@@ -131,12 +131,14 @@ fn bound(input: &mut Input<'_>) -> winnow::ModalResult<(Bound, usize)> {
     let name = delimited(
         multispace0,
         alt((
-            "min_inclusive".value(Bound::Min),
-            "max_exclusive".value(Bound::Max),
+            "minimum_inclusive".value(Bound::Min),
+            "maximum_exclusive".value(Bound::Max),
         )),
         multispace0,
     )
-    .context(StrContext::Label("min_inclusive= or max_exclusive= bound"))
+    .context(StrContext::Label(
+        "minimum_inclusive= or maximum_exclusive= bound",
+    ))
     .parse_next(input)?;
     let value = preceded('=', cut_err(expression)).parse_next(input)?;
     Ok((name, value))

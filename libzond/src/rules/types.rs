@@ -21,20 +21,23 @@ pub enum TypeKind {
     Alias {
         target: String,
     },
+    #[serde(rename = "enumeration")]
     Enum {
         values: Vec<String>,
     },
     Integer {
         #[serde(default, with = "decimal", skip_serializing_if = "Option::is_none")]
-        #[serde(rename = "min_inclusive")]
+        #[serde(rename = "minimum_inclusive")]
         min: Option<BigInt>,
         #[serde(default, with = "decimal", skip_serializing_if = "Option::is_none")]
-        #[serde(rename = "max_exclusive")]
+        #[serde(rename = "maximum_exclusive")]
         max: Option<BigInt>,
     },
     Text {
         pattern: String,
+        #[serde(rename = "minimum_bytes_inclusive")]
         min: usize,
+        #[serde(rename = "maximum_bytes_exclusive")]
         max: usize,
     },
     Choice {
@@ -106,7 +109,7 @@ impl TypeDefinition {
         let value = match &self.definition {
             TypeKind::Alias { target } => target.clone(),
             TypeKind::Enum { values } => format!(
-                "enum {{ {} }}",
+                "enumeration(values=({}))",
                 values
                     .iter()
                     .map(|v| quoted(v))
@@ -120,26 +123,30 @@ impl TypeDefinition {
             TypeKind::Integer { min, max } => {
                 let mut bounds = Vec::new();
                 if let Some(min) = min {
-                    bounds.push(format!("min_inclusive={min}"));
+                    bounds.push(format!("minimum_inclusive={min}"));
                 }
                 if let Some(max) = max {
-                    bounds.push(format!("max_exclusive={max}"));
+                    bounds.push(format!("maximum_exclusive={max}"));
                 }
                 format!("integer({})", bounds.join(", "))
             }
             TypeKind::Text { pattern, min, max } => {
-                format!("text({}, {min}, {max})", quoted(pattern))
+                format!(
+                    "text(pattern={}, minimum_bytes_inclusive={min}, maximum_bytes_exclusive={max})",
+                    quoted(pattern)
+                )
             }
             TypeKind::Choice { fields, cases } => format!(
-                "choice({}) {{\n{}\n}}",
+                "choice(fields=({})) {{\n{}\n}}",
                 fields.join(", "),
                 cases
                     .iter()
                     .map(|(name, values)| format!(
                         "  {name} = ({})",
-                        values
+                        fields
                             .iter()
-                            .map(|v| quoted(v))
+                            .zip(values)
+                            .map(|(field, value)| format!("{field}={}", quoted(value)))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ))
@@ -161,7 +168,7 @@ impl Rule {
                     max: None,
                 }));
             }
-            if name == "repo-name" {
+            if name == "repository-name" {
                 return Ok(None);
             }
             let definition = &self
@@ -170,7 +177,7 @@ impl Rule {
                 .find(|t| t.name == name)
                 .with_context(|| {
                     format!(
-                        "unknown type '{name}'; supported types: integer, repo-name or a local definition"
+                        "unknown type '{name}'; supported types: integer, repository-name or a local definition"
                     )
                 })?
                 .definition;
@@ -190,7 +197,7 @@ impl Rule {
                 crate::config::valid_name(&ty.name)
                     && !matches!(
                         ty.name.as_str(),
-                        "repo-name" | "enum" | "integer" | "text" | "choice"
+                        "repository-name" | "enumeration" | "integer" | "text" | "choice"
                     )
                     && names.insert(&ty.name),
                 "invalid, reserved or duplicate local type"
@@ -204,7 +211,7 @@ impl Rule {
                             && values.len() <= MAX_CHOICES
                             && values.iter().all(|v| literal(v))
                             && values.iter().collect::<BTreeSet<_>>().len() == values.len(),
-                        "enum needs 1–64 distinct bounded ASCII literals"
+                        "enumeration needs 1–64 distinct bounded ASCII literals"
                     );
                 }
                 TypeKind::Integer { min, max } => {
@@ -217,8 +224,8 @@ impl Rule {
                 }
                 TypeKind::Text { pattern, min, max } => {
                     ensure!(
-                        min <= max && *max <= 4096,
-                        "text length range must be within 0–4096 bytes"
+                        min < max && *max <= 4097,
+                        "text requires 0 <= minimum_bytes_inclusive < maximum_bytes_exclusive <= 4097"
                     );
                     regex(pattern)?;
                 }
@@ -267,7 +274,7 @@ impl Rule {
             }
             Some(TypeKind::Text { pattern, min, max }) => {
                 literal(value)
-                    && (*min..=*max).contains(&value.len())
+                    && (*min..*max).contains(&value.len())
                     && regex(pattern)?.is_match(value)
             }
             Some(TypeKind::Choice { fields, cases }) => {
@@ -309,7 +316,7 @@ impl Rule {
                 };
                 format!("Arbitrary-precision decimal integer: {range}. Canonical digits with optional minus: no plus, leading zeros, negative zero or whitespace. At most 4096 bytes per argument.")
             }
-            Some(TypeKind::Text { pattern, min, max }) => format!("Printable ASCII text, {min}–{max} bytes, matching the entire regular expression {}. Validated on every invocation; values are never expanded again.", serde_json::to_string(pattern)?),
+            Some(TypeKind::Text { pattern, min, max }) => format!("Printable ASCII text, {min} <= byte length < {max} (minimum inclusive, maximum exclusive), matching the entire regular expression {}. Validated on every invocation; values are never expanded again.", serde_json::to_string(pattern)?),
             Some(TypeKind::Choice { fields, cases }) => {
                 let rows = cases.iter().map(|(name, row)| {
                     format!("{} -> {}", serde_json::to_string(name).unwrap(), fields.iter().zip(row)

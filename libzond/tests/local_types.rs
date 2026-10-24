@@ -1,12 +1,12 @@
 use libzond::rules::{BoundRule, TypeKind, parse};
 
-const CHOICES: &str = r#"type view = choice(resource, market) {
-  balances = ("balances", "portfolio")
-  accounts = ("accounts", "portfolio")
-  positions = ("positions", "usdm")
+const CHOICES: &str = r#"type view = choice(fields=(resource, market)) {
+  balances = (resource="balances", market="portfolio")
+  accounts = (resource="accounts", market="portfolio")
+  positions = (resource="positions", market="usdm")
 }
 type selected = view
-type count = integer(min_inclusive=0, max_exclusive=1001)
+type count = integer(minimum_inclusive=0, maximum_exclusive=1001)
 rule query(v: selected, n: count) {
   run /usr/bin/printf "%s" "${v.resource}" "${v.market}" "$n"
 }"#;
@@ -67,10 +67,10 @@ fn correlated_rows_supply_exact_pairs_and_aliases_keep_their_fields() {
 
 #[test]
 fn integer_ranges_are_canonical_and_do_not_overflow() {
-    let unsigned = "type n = integer(min_inclusive=0, max_exclusive=2**64)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
+    let unsigned = "type n = integer(minimum_inclusive=0, maximum_exclusive=2**64)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
     let serialized = serde_json::to_value(parse(unsigned).unwrap()).unwrap();
     assert_eq!(
-        serialized["types"][0]["definition"]["max_exclusive"],
+        serialized["types"][0]["definition"]["maximum_exclusive"],
         "18446744073709551616"
     );
     assert_eq!(
@@ -96,7 +96,7 @@ fn integer_ranges_are_canonical_and_do_not_overflow() {
     ] {
         assert!(expand(unsigned, &[value]).is_err(), "{value}");
     }
-    let signed = "type n = integer(min_inclusive=-2**63, max_exclusive=2**63)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
+    let signed = "type n = integer(minimum_inclusive=-2**63, maximum_exclusive=2**63)\nrule integer(x: n) { run /usr/bin/printf '%s' \"$x\" }";
     for value in ["-9223372036854775808", "-1", "0", "9223372036854775807"] {
         assert!(expand(signed, &[value]).is_ok());
     }
@@ -110,8 +110,8 @@ fn integer_ranges_are_canonical_and_do_not_overflow() {
         assert!(expand(signed, &[value]).is_err());
     }
     let bounded = unsigned.replace(
-        "min_inclusive=0, max_exclusive=2**64",
-        "min_inclusive=10, max_exclusive=13",
+        "minimum_inclusive=0, maximum_exclusive=2**64",
+        "minimum_inclusive=10, maximum_exclusive=13",
     );
     for value in ["10", "11", "12"] {
         assert!(expand(&bounded, &[value]).is_ok());
@@ -123,8 +123,8 @@ fn integer_ranges_are_canonical_and_do_not_overflow() {
 
 #[test]
 fn enums_and_patterns_validate_literal_values_without_recursive_expansion() {
-    let source = r#"type connection = enum { binance, ibkr }
-type symbol = text('[A-Z0-9]+', 2, 20)
+    let source = r#"type connection = enumeration(values=(binance, ibkr))
+type symbol = text(pattern='[A-Z0-9]+', minimum_bytes_inclusive=2, maximum_bytes_exclusive=21)
 rule read(c: connection, s: symbol) { run /usr/bin/printf "%s" "$c" "$s" }"#;
     assert_eq!(
         expand(source, &["binance", "ETHUSDT"]).unwrap(),
@@ -139,14 +139,14 @@ rule read(c: connection, s: symbol) { run /usr/bin/printf "%s" "$c" "$s" }"#;
     ] {
         assert!(expand(source, &args).is_err(), "{args:?}");
     }
-    let literal = r#"type value = enum { '$HOME', '~/path', '$(id)', '`id`', 'a b', '' }
+    let literal = r#"type value = enumeration(values=('$HOME', '~/path', '$(id)', '`id`', 'a b', ''))
 rule literal(x: value) { run /usr/bin/printf "%s" "$x" }"#;
     for value in ["$HOME", "~/path", "$(id)", "`id`", "a b", ""] {
         assert_eq!(expand(literal, &[value]).unwrap()[1], value);
     }
     let anchored = source
         .replace("'[A-Z0-9]+'", "'(?m:A|B)'")
-        .replace("2, 20", "1, 20");
+        .replace("minimum_bytes_inclusive=2", "minimum_bytes_inclusive=1");
     assert!(expand(&anchored, &["ibkr", "A"]).is_ok());
     assert!(expand(&anchored, &["ibkr", "AB"]).is_err());
 }
@@ -156,24 +156,24 @@ fn malformed_or_ambiguous_definitions_and_bindings_are_rejected() {
     for definition in [
         "type a = b\ntype b = a",
         "type a = missing",
-        "type repo-name = enum { x }",
-        "type a = enum { x }\ntype a = enum { y }",
-        "type a = enum {}",
-        "type a = enum { x, x }",
+        "type repository-name = enumeration(values=(x))",
+        "type a = enumeration(values=(x))\ntype a = enumeration(values=(y))",
+        "type a = enumeration(values=())",
+        "type a = enumeration(values=(x, x))",
         "type a = uint(3, 2)",
         "type a = uint(-1, 2)",
         "type a = uint(0, 18446744073709551616)",
         "type a = int(0, 9223372036854775808)",
-        "type a = text('[', 0, 10)",
-        "type a = text('.*', 0, 4097)",
-        "type a = text('(a{1000000}){1000000}', 0, 10)",
-        "type a = choice(x, x) { row = (a, b) }",
-        "type a = choice(x) {}",
-        "type a = choice(x, y) { row = (a) }",
-        "type a = choice(x) {\n row = (a)\n row = (b)\n}",
-        "type a = choice(HOME.field) { row = (a) }",
-        "type a = enum { \"$x\" }",
-        "type a = enum { ~/x }",
+        "type a = text(pattern='[', minimum_bytes_inclusive=0, maximum_bytes_exclusive=11)",
+        "type a = text(pattern='.*', minimum_bytes_inclusive=0, maximum_bytes_exclusive=4098)",
+        "type a = text(pattern='(a{1000000}){1000000}', minimum_bytes_inclusive=0, maximum_bytes_exclusive=11)",
+        "type a = choice(fields=(x, x)) { row = (x=a, x=b) }",
+        "type a = choice(fields=(x)) {}",
+        "type a = choice(fields=(x, y)) { row = (x=a) }",
+        "type a = choice(fields=(x)) {\n row = (x=a)\n row = (x=b)\n}",
+        "type a = choice(fields=(HOME.field)) { row = (HOME.field=a) }",
+        "type a = enumeration(values=(\"$x\"))",
+        "type a = enumeration(values=(~/x))",
     ] {
         assert!(
             parse(&format!(
@@ -189,19 +189,19 @@ fn malformed_or_ambiguous_definitions_and_bindings_are_rejected() {
         CHOICES.replace("run /usr/bin/printf", "run ${v.resource}"),
         CHOICES.replace("run /usr/bin/printf", "run ~/bin/$v"),
         CHOICES.replace("v: selected", "v: missing"),
-        format!("{CHOICES}\ntype later = repo-name"),
+        format!("{CHOICES}\ntype later = repository-name"),
     ] {
         assert!(parse(&source).is_err(), "{source}");
     }
     let many = (0..33)
-        .map(|i| format!("type t{i} = repo-name\n"))
+        .map(|i| format!("type t{i} = repository-name\n"))
         .collect::<String>();
     assert!(parse(&format!("{many}rule test() {{ run true }}")).is_err());
 }
 
 #[test]
 fn home_expansion_is_frozen_and_home_variable_paths_need_the_new_spelling() {
-    let source = r#"rule home(x: repo-name) { run /usr/bin/printf "%s" ~ ~/code "$HOME-suffix" "~/code/$x" '~' "\~" "file~old" }"#;
+    let source = r#"rule home(x: repository-name) { run /usr/bin/printf "%s" ~ ~/code "$HOME-suffix" "~/code/$x" '~' "\~" "file~old" }"#;
     assert_eq!(
         expand(source, &["repo"]).unwrap(),
         [
@@ -226,7 +226,12 @@ fn home_expansion_is_frozen_and_home_variable_paths_need_the_new_spelling() {
         }
     }
     for value in ["~root/path", "~$x"] {
-        assert!(parse(&format!("rule bad(x: repo-name) {{ run printf {value} }}")).is_err());
+        assert!(
+            parse(&format!(
+                "rule bad(x: repository-name) {{ run printf {value} }}"
+            ))
+            .is_err()
+        );
     }
     for word in [
         "$HOME'/code'",
@@ -250,7 +255,7 @@ fn home_expansion_is_frozen_and_home_variable_paths_need_the_new_spelling() {
         1,
     )
     .unwrap();
-    assert_eq!(old.language_version, 3);
+    assert_eq!(old.language_version, 4);
     assert!(
         serde_json::to_value(&old)
             .unwrap()
@@ -282,8 +287,7 @@ fn local_definitions_round_trip_and_do_not_leak_between_rules() {
     .unwrap();
     assert_eq!(rule.types, reparsed.types);
     assert!(parse("rule other(v: view) { run true }").is_err());
-    let alias =
-        "type repository = repo-name\nrule repo(x: repository) { run /usr/bin/printf '%s' \"$x\" }";
+    let alias = "type repository = repository-name\nrule repo(x: repository) { run /usr/bin/printf '%s' \"$x\" }";
     assert!(expand(alias, &["folio"]).is_ok());
     assert!(expand(alias, &["../folio"]).is_err());
 }
@@ -349,7 +353,7 @@ fn arbitrary_integers_keyword_bounds_and_expression_precedence() {
         ("(-1)**(2**100)", "1"),
     ] {
         let source = format!(
-            "type n = integer(max_exclusive=({expression}) + 1, min_inclusive={expression})\nrule value(x: n) {{ run /usr/bin/printf '%s' \"$x\" }}"
+            "type n = integer(maximum_exclusive=({expression}) + 1, minimum_inclusive={expression})\nrule value(x: n) {{ run /usr/bin/printf '%s' \"$x\" }}"
         );
         assert_eq!(
             expand(&source, &[expected]).unwrap()[1],
@@ -361,7 +365,7 @@ fn arbitrary_integers_keyword_bounds_and_expression_precedence() {
         assert!(
             definition
                 .source()
-                .contains(&format!("min_inclusive={expected}"))
+                .contains(&format!("minimum_inclusive={expected}"))
         );
         let round_trip = parse(&format!(
             "{}\nrule value(x: n) {{ run /usr/bin/printf '%s' \"$x\" }}",
@@ -381,14 +385,14 @@ fn arbitrary_integers_keyword_bounds_and_expression_precedence() {
             assert!(expand(&source, &[invalid, "0"]).is_err(), "{invalid}");
         }
     }
-    let named = "type uint = integer(min_inclusive=0, max_exclusive=2**32)\nrule n(x: uint) { run /usr/bin/printf '%s' \"$x\" }";
+    let named = "type uint = integer(minimum_inclusive=0, maximum_exclusive=2**32)\nrule n(x: uint) { run /usr/bin/printf '%s' \"$x\" }";
     assert!(expand(named, &["4294967295"]).is_ok());
     assert!(expand(named, &["4294967296"]).is_err());
     let lower =
-        "type n = integer(min_inclusive=0)\nrule n(x: n) { run /usr/bin/printf '%s' \"$x\" }";
+        "type n = integer(minimum_inclusive=0)\nrule n(x: n) { run /usr/bin/printf '%s' \"$x\" }";
     assert!(expand(lower, &["0"]).is_ok());
     assert!(expand(lower, &["-1"]).is_err());
-    let upper = lower.replace("min_inclusive=0", "max_exclusive=0");
+    let upper = lower.replace("minimum_inclusive=0", "maximum_exclusive=0");
     assert!(expand(&upper, &["-1"]).is_ok());
     assert!(expand(&upper, &["0"]).is_err());
 }
@@ -399,26 +403,26 @@ fn integer_expression_errors_and_budgets_fail_closed() {
         "0, 10",
         "min=0",
         "max=10",
-        "min_inclusive=0, min_inclusive=1",
-        "min_inclusive=1, max_exclusive=1",
-        "min_inclusive=2, max_exclusive=1",
-        "max_exclusive=2**-1",
-        "max_exclusive=1/0",
-        "max_exclusive=1//0",
-        "max_exclusive=1%0",
-        "max_exclusive=3/2",
-        "max_exclusive=2**(2**32)",
-        "max_exclusive=2**65536",
-        "max_exclusive=",
-        "max_exclusive=1 2",
-        "max_exclusive=1+",
-        "max_exclusive=1,",
-        "max_exclusive=foo()",
-        "max_exclusive=$HOME",
-        "max_exclusive=$(id)",
-        "max_exclusive=2;id",
-        "max_exclusive=2|id",
-        "max_exclusive=0x100",
+        "minimum_inclusive=0, minimum_inclusive=1",
+        "minimum_inclusive=1, maximum_exclusive=1",
+        "minimum_inclusive=2, maximum_exclusive=1",
+        "maximum_exclusive=2**-1",
+        "maximum_exclusive=1/0",
+        "maximum_exclusive=1//0",
+        "maximum_exclusive=1%0",
+        "maximum_exclusive=3/2",
+        "maximum_exclusive=2**(2**32)",
+        "maximum_exclusive=2**65536",
+        "maximum_exclusive=",
+        "maximum_exclusive=1 2",
+        "maximum_exclusive=1+",
+        "maximum_exclusive=1,",
+        "maximum_exclusive=foo()",
+        "maximum_exclusive=$HOME",
+        "maximum_exclusive=$(id)",
+        "maximum_exclusive=2;id",
+        "maximum_exclusive=2|id",
+        "maximum_exclusive=0x100",
     ] {
         let source = format!(
             "type n = integer({bounds})\nrule n(x: n) {{ run /usr/bin/printf '%s' \"$x\" }}"
@@ -432,7 +436,7 @@ fn integer_expression_errors_and_budgets_fail_closed() {
     ] {
         assert!(
             parse(&format!(
-                "type n = integer(max_exclusive={expression})\nrule n() {{ run true }}"
+                "type n = integer(maximum_exclusive={expression})\nrule n() {{ run true }}"
             ))
             .is_err()
         );
@@ -445,4 +449,81 @@ fn integer_expression_errors_and_budgets_fail_closed() {
     ] {
         assert!(parse(source).is_err(), "{source}");
     }
+}
+
+#[test]
+fn constructor_keywords_are_required_distinct_and_order_independent() {
+    let arguments = [
+        "pattern='[A-Z]+'",
+        "minimum_bytes_inclusive=2",
+        "maximum_bytes_exclusive=4",
+    ];
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let arguments = order.map(|i| arguments[i]).join(",\n  ");
+        let source = format!(
+            "type value = text(\n  {arguments}\n)\nrule text(x: value) {{ run /usr/bin/printf '%s' \"$x\" }}"
+        );
+        for value in ["AB", "ABC"] {
+            assert!(expand(&source, &[value]).is_ok());
+        }
+        for value in ["A", "ABCD", "ab"] {
+            assert!(expand(&source, &[value]).is_err());
+        }
+    }
+    for definition in [
+        "text('[A-Z]+', 2, 3)",
+        "text(pattern='.*', minimum_bytes_inclusive=0)",
+        "text(pattern='.*', maximum_bytes_exclusive=10)",
+        "text(minimum_bytes_inclusive=0, maximum_bytes_exclusive=10)",
+        "text(pattern='.*', pattern='[A-Z]+', maximum_bytes_exclusive=10)",
+        "text(pattern='.*', min=0, max=10)",
+        "text(pattern='.*', minimum_bytes_inclusive=0, maximum_bytes_exclusive=0)",
+        "integer(min_inclusive=0, max_exclusive=10)",
+        "enumeration((a, b))",
+        "enumeration(values=(a), values=(b))",
+        "enumeration()",
+        "enum { a, b }",
+        "choice(x) { a = (x='a') }",
+        "choice(fields=(x, y)) { a = (x='a') }",
+        "choice(fields=(x)) { a = (x='a', x='b') }",
+        "choice(fields=(x)) { a = (unknown='a') }",
+        "choice(fields=(x)) { a = ('a') }",
+    ] {
+        assert!(
+            parse(&format!(
+                "type value = {definition}\nrule bad(x: value) {{ run true }}"
+            ))
+            .is_err(),
+            "{definition}"
+        );
+    }
+    let choice = r#"type value = choice(fields=(first, second)) {
+ row = (second='b=c', first='a')
+}
+rule row(x: value) { run /usr/bin/printf '%s' "${x.first}" "${x.second}" "--argument=$x" }"#;
+    assert_eq!(
+        expand(choice, &["row"]).unwrap(),
+        ["%s", "a", "b=c", "--argument=row"]
+    );
+    let enumeration = "type value=enumeration(values=('a=b', 'type', 'rule'))\nrule words(x: value) { run /usr/bin/printf '%s' \"$x\" }";
+    for value in ["a=b", "type", "rule"] {
+        assert_eq!(expand(enumeration, &[value]).unwrap()[1], value);
+    }
+}
+
+#[test]
+fn text_half_open_bounds_include_empty_and_maximum_sized_values() {
+    let source = "type value=text(pattern='.*', minimum_bytes_inclusive=0, maximum_bytes_exclusive=1)\nrule text(x: value) { run /usr/bin/printf '%s' \"$x\" }";
+    assert!(expand(source, &[""]).is_ok());
+    assert!(expand(source, &["a"]).is_err());
+    let source = source.replace("maximum_bytes_exclusive=1", "maximum_bytes_exclusive=4097");
+    assert!(expand(&source, &[&"a".repeat(4096)]).is_ok());
+    assert!(expand(&source, &[&"a".repeat(4097)]).is_err());
 }

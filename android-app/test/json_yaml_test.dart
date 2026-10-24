@@ -81,7 +81,7 @@ void main() {
   );
 
   test('ordinary strings are plain and multiline source uses a block', () {
-    const source = 'rule clone(x: repo-name) {\n  run git clone "\$x"\n}';
+    const source = 'rule clone(x: repository-name) {\n  run git clone "\$x"\n}';
     final value = {
       'name': 'clone-futpib',
       'source': source,

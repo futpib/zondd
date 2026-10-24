@@ -44,30 +44,118 @@ fn previous_description(rule: &Value, mut name: String) -> Option<String> {
                     "Signed decimal integer from {min} through {max}, inclusive. Canonical digits with optional minus: no plus, leading zeros, negative zero, whitespace or overflow."
                 ));
             }
+            "text" => {
+                return Some(format!(
+                    "Printable ASCII text, {}–{} bytes, matching the entire regular expression {}. Validated on every invocation; values are never expanded again.",
+                    definition["min"], definition["max"], definition["pattern"]
+                ));
+            }
             _ => return None,
         }
     }
     None
 }
 
+fn previous_literal(value: &str) -> String {
+    let mut text = String::from("\"");
+    for c in value.chars() {
+        if matches!(c, '\\' | '"' | '$' | '~' | '`') {
+            text.push('\\');
+        }
+        text.push(c);
+    }
+    text.push('"');
+    text
+}
+
 fn previous_type_source(ty: &Value, current: &libzond::rules::TypeDefinition) -> String {
     let definition = &ty["definition"];
-    let mut current = current.clone();
-    current.name = ty["name"].as_str().unwrap().into();
-    match definition["kind"].as_str() {
+    let name = ty["name"].as_str().unwrap();
+    let value = match definition["kind"].as_str() {
         Some(kind @ ("uint" | "int")) => format!(
-            "type {} = {kind}({}, {})",
-            current.name,
+            "{kind}({}, {})",
             definition["min"].as_str().unwrap(),
             definition["max"].as_str().unwrap()
         ),
-        Some("alias") => format!(
-            "type {} = {}",
-            current.name,
-            definition["target"].as_str().unwrap()
+        Some("alias") => definition["target"].as_str().unwrap().into(),
+        Some("enum") => format!(
+            "enum {{ {} }}",
+            definition["values"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| previous_literal(v.as_str().unwrap()))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
-        _ => current.source(),
-    }
+        Some("integer") => {
+            let mut bounds = Vec::new();
+            for key in ["min_inclusive", "max_exclusive"] {
+                if let Some(value) = definition[key].as_str() {
+                    bounds.push(format!("{key}={value}"));
+                }
+            }
+            if bounds.is_empty() {
+                "integer".into()
+            } else {
+                format!("integer({})", bounds.join(", "))
+            }
+        }
+        Some("text") => format!(
+            "text({}, {}, {})",
+            previous_literal(definition["pattern"].as_str().unwrap()),
+            definition["min"],
+            definition["max"]
+        ),
+        Some("choice") => format!(
+            "choice({}) {{\n{}\n}}",
+            definition["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(", "),
+            definition["cases"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(name, row)| format!(
+                    "  {name} = ({})",
+                    row.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| previous_literal(v.as_str().unwrap()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+        _ => return current.source(),
+    };
+    format!("type {name} = {value}")
+}
+
+fn previous_body(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            let text = line.trim_start();
+            for (current, previous) in [
+                ("require is-directory ", "require is-dir "),
+                ("create-new-directory ", "create-new-dir "),
+                ("run --allow-privilege-escalation ", "run --sudo "),
+            ] {
+                if let Some(rest) = text.strip_prefix(current) {
+                    return format!("{indent}{previous}{rest}");
+                }
+            }
+            line.into()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn previous_review_matches(
@@ -116,7 +204,8 @@ fn previous_review_matches(
         &header(&old_parameters),
         1,
     );
-    current["sections"][0]["fields"][0]["value"] = format!("{old_prefix}{body}").into();
+    current["sections"][0]["fields"][0]["value"] =
+        format!("{old_prefix}{}", previous_body(&body)).into();
     for section in current["sections"].as_array_mut().unwrap() {
         if section["title"] == "Parameters (positional order)" {
             for (field, parameter) in section["fields"]
@@ -130,6 +219,14 @@ fn previous_review_matches(
                     field["value"] = description.into();
                 }
             }
+        } else if section["title"] == "Checks" {
+            for field in section["fields"].as_array_mut().unwrap() {
+                if field["label"] == "is-directory" {
+                    field["label"] = "is-dir".into();
+                }
+            }
+        } else if section["title"] == "Effects" {
+            section["fields"][0]["label"] = "create-new-dir".into();
         } else if section["title"] == "Local type definitions" {
             for ((field, ty), previous) in section["fields"]
                 .as_array_mut()
@@ -154,7 +251,7 @@ fn previous_review_matches(
                 continue;
             }
             candidate["sections"][0]["fields"][0]["value"] =
-                review::normalized_source_mode(&old_bound, false).into();
+                previous_body(&review::normalized_source_mode(&old_bound, false)).into();
         }
         if !saved.is_some_and(|r| {
             r["sections"]
@@ -190,7 +287,7 @@ pub(super) fn migrate(record: &str) -> Result<Option<RuleState>> {
         return Ok(None);
     }
     ensure!(
-        matches!(version, 1 | 2),
+        matches!(version, 1..=3),
         "unsupported stored rule language {version}"
     );
     let mut previous: PreviousProposal = serde_json::from_value(value["proposal"].clone())?;
@@ -277,6 +374,23 @@ mod tests {
             r#"{{"proposal":{},"status":"active","reason":"approved","grant_expires_unix_ms":null}}"#,
             serde_json::to_string(&proposal).unwrap()
         )
+    }
+
+    #[test]
+    fn captured_v3_fixture_retains_its_original_digest_and_review() {
+        let record = include_str!("../../tests/fixtures/types-v3.json");
+        let value: Value = serde_json::from_str(record).unwrap();
+        let mut previous: PreviousProposal =
+            serde_json::from_value(value["proposal"].clone()).unwrap();
+        let digest = std::mem::take(&mut previous.digest);
+        assert_eq!(revision(&serde_json::to_string(&previous).unwrap()), digest);
+        let migrated = migrate(record).unwrap().unwrap();
+        assert_eq!(migrated.status, "pending", "{}", migrated.reason);
+        assert_eq!(
+            migrated.proposal.bound.rule.language_version,
+            LANGUAGE_VERSION
+        );
+        check_stored(&migrated.proposal).unwrap();
     }
 
     #[test]

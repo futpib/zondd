@@ -409,7 +409,7 @@ void main() {
         );
         expect(find.textContaining('require on-branch:'), findsOneWidget);
         expect(find.textContaining('publish-file:'), findsOneWidget);
-        expect(find.textContaining('repo-name'), findsNothing);
+        expect(find.textContaining('repository-name'), findsNothing);
         expect(
           find.textContaining('including every assigned key'),
           findsOneWidget,

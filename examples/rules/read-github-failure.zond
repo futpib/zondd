@@ -1,6 +1,6 @@
-type owner = repo-name
-type repository = repo-name
-type job-id = integer(min_inclusive=1, max_exclusive=2**64)
+type owner = repository-name
+type repository = repository-name
+type job-id = integer(minimum_inclusive=1, maximum_exclusive=2**64)
 
 rule read-github-failure(owner: owner, repo: repository, job: job-id) {
   run gh run view "--repo=github.com/$owner/$repo" "--job=$job" --log-failed

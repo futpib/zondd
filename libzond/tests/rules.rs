@@ -1,14 +1,14 @@
 use libzond::rules::{BoundRule, parse, valid_repo_name, valid_service_unit};
 
-const SOURCE: &str = r#"rule clone-futpib(x: repo-name) {
-  require is-dir "~/code"
-  create-new-dir "~/code/$x" as dest {
+const SOURCE: &str = r#"rule clone-futpib(x: repository-name) {
+  require is-directory "~/code"
+  create-new-directory "~/code/$x" as dest {
     run git clone -- "https://github.com/futpib/${x}.git" "$dest"
   }
 }"#;
 
 #[test]
-fn sudo_is_an_explicit_run_capability_and_preserves_ordinary_rule_digests() {
+fn privilege_escalation_is_explicit_and_preserves_ordinary_authority() {
     let ordinary = parse("rule test() { run paru --sudo }").unwrap();
     assert!(!ordinary.sudo_password);
     let serialized = serde_json::to_value(&ordinary).unwrap();
@@ -17,7 +17,7 @@ fn sudo_is_an_explicit_run_capability_and_preserves_ordinary_rule_digests() {
         serde_json::from_value::<libzond::rules::Rule>(serialized).unwrap(),
         ordinary
     );
-    let privileged = parse("rule test() { run --sudo paru -Syu }").unwrap();
+    let privileged = parse("rule test() { run --allow-privilege-escalation paru -Syu }").unwrap();
     assert!(privileged.sudo_password);
     assert_eq!(privileged.program, "paru");
     assert_eq!(
@@ -25,21 +25,20 @@ fn sudo_is_an_explicit_run_capability_and_preserves_ordinary_rule_digests() {
         true
     );
     for source in [
-        "rule test() { run --sudo }",
-        "rule test() { run --sudo --sudo paru }",
-        "rule test(x: repo-name) { run $x paru }",
-        "rule test(x: repo-name) { run --sudo $x }",
+        "rule test() { run --allow-privilege-escalation }",
+        "rule test() { run --allow-privilege-escalation --allow-privilege-escalation paru }",
+        "rule test() { run --sudo paru }",
+        "rule test(x: repository-name) { run $x paru }",
+        "rule test(x: repository-name) { run --allow-privilege-escalation $x }",
     ] {
         assert!(parse(source).is_err(), "{source}");
     }
 }
 
 #[test]
-fn directory_effect_keeps_the_old_spelling_as_an_alias() {
-    assert_eq!(
-        parse(SOURCE).unwrap(),
-        parse(&SOURCE.replace("create-new-dir", "create-new")).unwrap()
-    );
+fn directory_effect_requires_the_expanded_spelling() {
+    assert!(parse(&SOURCE.replace("create-new-directory", "create-new")).is_err());
+    assert!(parse(&SOURCE.replace("create-new-directory", "create-new-dir")).is_err());
 }
 
 #[test]
@@ -126,9 +125,12 @@ fn one_binding_builds_the_url_and_destination_without_shell_expansion() {
 #[test]
 fn reject_shell_code_unknown_variables_types_and_ambiguous_bindings() {
     for source in [
-        SOURCE.replace("repo-name", "string"),
-        SOURCE.replace("x: repo-name", "HOME: repo-name"),
-        SOURCE.replace("x: repo-name", "x: repo-name, x: repo-name"),
+        SOURCE.replace("repository-name", "string"),
+        SOURCE.replace("x: repository-name", "HOME: repository-name"),
+        SOURCE.replace(
+            "x: repository-name",
+            "x: repository-name, x: repository-name",
+        ),
         SOURCE.replace("as dest", "as x"),
         SOURCE.replace("$dest", "$unknown"),
         SOURCE.replace("run git", "run $x"),
@@ -152,7 +154,7 @@ fn reject_shell_code_unknown_variables_types_and_ambiguous_bindings() {
 #[test]
 fn quotes_and_escapes_preserve_literal_arguments() {
     let rule = parse(
-        r#"rule literal(x: repo-name) {
+        r#"rule literal(x: repository-name) {
   run /usr/bin/printf "%s" '$x $(id) ; | *' "\$x" "" "a b" "$x"
 }"#,
     )
@@ -174,7 +176,7 @@ fn quotes_and_escapes_preserve_literal_arguments() {
 fn service_checks_expand_one_explicit_unit_and_keep_the_wire_shape() {
     let bound = BoundRule {
         rule: parse(
-            r#"rule restart-app(x: repo-name) {
+            r#"rule restart-app(x: repository-name) {
   require user-service-active-or-enabled "app-$x.service"
   run /usr/bin/systemctl --user restart -- "app-$x.service"
 }"#,

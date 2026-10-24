@@ -49,18 +49,18 @@ fn no_staging(root: &Path) -> bool {
 #[test]
 fn local_types_are_reviewed_bound_to_the_digest_and_enforced_after_restart() {
     let env = TestEnv::new();
-    let source = r#"type view = choice(resource, market) {
- balances = ("balances", "portfolio")
- accounts = ("accounts", "portfolio")
- positions = ("positions", "usdm")
+    let source = r#"type view = choice(fields=(resource, market)) {
+ balances = (resource="balances", market="portfolio")
+ accounts = (resource="accounts", market="portfolio")
+ positions = (resource="positions", market="usdm")
 }
 type selected = view
-type count = integer(min_inclusive=0, max_exclusive=1001)
+type count = integer(minimum_inclusive=0, maximum_exclusive=1001)
 rule typed(v: selected, n: count) {
  run printf "%s:%s:%s" "${v.resource}" "${v.market}" "$n"
 }"#;
     let proposal = propose(&env, source);
-    assert_eq!(proposal["bound"]["rule"]["language_version"], 3);
+    assert_eq!(proposal["bound"]["rule"]["language_version"], 4);
     let review = proposal["review"].to_string();
     assert!(
         review.contains("Local type definitions")
@@ -258,7 +258,7 @@ fn upgrading_migrates_home_syntax_and_preserves_literal_tildes() {
     env.start_daemon();
     let restored = &states(&env, "exec")[0];
     assert_eq!(restored["status"], "active", "{restored}");
-    assert_eq!(restored["proposal"]["bound"]["rule"]["language_version"], 3);
+    assert_eq!(restored["proposal"]["bound"]["rule"]["language_version"], 4);
     assert_ne!(restored["proposal"]["digest"], state["proposal"]["digest"]);
     let output = format!("{}:~", libzond::paths::home_dir().join("code").display());
     assert_eq!(
@@ -322,11 +322,11 @@ fn upgrading_migrates_inclusive_bounds_and_all_statuses_once() {
             previous["grant_expires_unix_ms"]
         );
         assert_eq!(
-            current["proposal"]["bound"]["rule"]["types"][0]["definition"]["max_exclusive"],
+            current["proposal"]["bound"]["rule"]["types"][0]["definition"]["maximum_exclusive"],
             "18446744073709551616"
         );
         assert_eq!(
-            current["proposal"]["bound"]["rule"]["types"][1]["definition"]["max_exclusive"],
+            current["proposal"]["bound"]["rule"]["types"][1]["definition"]["maximum_exclusive"],
             "9223372036854775808"
         );
         assert_ne!(
@@ -496,10 +496,10 @@ fn rule_wait_can_retrieve_an_outcome_outside_the_recent_rules_page() {
 #[test]
 fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
     let env = TestEnv::new();
-    let source = r#"rule reviewed(x: repo-name) {
-  require is-dir "~/code"
+    let source = r#"rule reviewed(x: repository-name) {
+  require is-directory "~/code"
   require absent "~/code/$x"
-  create-new-dir "~/code/$x" as dest {
+  create-new-directory "~/code/$x" as dest {
     run mkdir "$dest" '$x'
   }
 }"#;
@@ -543,12 +543,12 @@ fn review_is_generated_by_the_receiver_and_included_in_the_approval_digest() {
             .unwrap()
     };
     assert!(
-        field("Parameters (positional order)", "x: repo-name")
+        field("Parameters (positional order)", "x: repository-name")
             .contains("[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
     );
-    assert!(field("Checks", "is-dir").contains("without following symlinks"));
+    assert!(field("Checks", "is-directory").contains("without following symlinks"));
     assert!(field("Checks", "absent").contains("no dangling symlink"));
-    assert!(field("Effects", "create-new-dir").contains("atomically"));
+    assert!(field("Effects", "create-new-directory").contains("atomically"));
     assert_eq!(
         field("Effects", "Destination"),
         "${HOME} + \"/code/\" + ${x}"
@@ -675,9 +675,9 @@ fn approved_clone_runs_offline_survives_restart_and_is_observable_only_to_its_ca
         0,
     );
     let source = format!(
-        r#"rule clone-local(x: repo-name) {{
-  require is-dir "{root}"
-  create-new-dir "{root}/$x" as dest {{
+        r#"rule clone-local(x: repository-name) {{
+  require is-directory "{root}"
+  create-new-directory "{root}/$x" as dest {{
     run git clone -- "{root}/source/$x.git" "$dest"
   }}
 }}"#,
@@ -709,7 +709,7 @@ fn approved_clone_runs_offline_survives_restart_and_is_observable_only_to_its_ca
     );
     assert_eq!(
         permissions["permissions"]["rules"][0]["proposal"]["bound"]["rule"]["parameters"][0]["kind"],
-        "repo-name"
+        "repository-name"
     );
     let check = env.request("exec", json!({"method":"check","input":{"method":"invoke","operation":"clone-local","args":["repo"]}}));
     assert_eq!(check["check"]["decision"], "allow", "{check}");
@@ -859,7 +859,7 @@ fn stored_source_ast_and_digest_must_agree_before_restoring_authority() {
 #[test]
 fn raw_protocol_cannot_bypass_types_approval_digest_or_principal_scope() {
     let env = TestEnv::new();
-    let source = r#"rule echo-name(x: repo-name) { run printf "%s" "$x" }"#;
+    let source = r#"rule echo-name(x: repository-name) { run printf "%s" "$x" }"#;
     let proposal = propose(&env, source);
     let approval = json!({"method":"resolve_rule","proposal_id":proposal["id"],"digest":proposal["digest"],"approve":true});
     assert_eq!(env.request("exec", approval.clone())["type"], "rejected");
@@ -884,7 +884,10 @@ fn raw_protocol_cannot_bypass_types_approval_digest_or_principal_scope() {
         let event = invoke(&env, "echo-name", &[value]);
         assert_eq!(event["type"], "error", "{event}");
         assert!(
-            event["message"].as_str().unwrap().contains("repo-name"),
+            event["message"]
+                .as_str()
+                .unwrap()
+                .contains("repository-name"),
             "{event}"
         );
     }
@@ -976,9 +979,9 @@ fn preconditions_are_checked_at_execution_and_existing_entries_are_never_replace
     let env = TestEnv::new();
     let root = env.owned_workdir();
     let source = format!(
-        r#"rule guarded(x: repo-name) {{
+        r#"rule guarded(x: repository-name) {{
   require absent "{root}/blocked"
-  create-new-dir "{root}/$x" as dest {{ run mkdir "$dest" }}
+  create-new-directory "{root}/$x" as dest {{ run mkdir "$dest" }}
 }}"#,
         root = root.display()
     );
@@ -1008,7 +1011,7 @@ fn gate(env: &TestEnv, root: &Path, outcome: &str) -> (Session, std::path::PathB
     let gate = root.join("gate");
     mkfifo(&gate, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
     let source = format!(
-        r#"rule gated() {{ create-new-dir "{root}/target" as dest {{
+        r#"rule gated() {{ create-new-directory "{root}/target" as dest {{
   run "{probe}" create_new_gate "$dest" "{ready}" "{gate}" "{outcome}"
 }} }}"#,
         root = root.display(),
@@ -1247,6 +1250,105 @@ fn migration_includes_records_outside_the_recent_history_page() {
     }
     env.start_daemon_with_timeout(std::time::Duration::from_secs(30));
     let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
-    let migrated: i64 = db.query_row("SELECT count(*) FROM rule_states WHERE status='revoked' AND json_extract(record,'$.proposal.bound.rule.language_version')=3", [], |r| r.get(0)).unwrap();
+    let migrated: i64 = db.query_row("SELECT count(*) FROM rule_states WHERE status='revoked' AND json_extract(record,'$.proposal.bound.rule.language_version')=4", [], |r| r.get(0)).unwrap();
     assert_eq!(migrated, 260);
+}
+
+#[test]
+fn version_three_constructor_migration_preserves_grants_and_exact_arguments() {
+    for status in ["active", "pending"] {
+        let env = TestEnv::new();
+        let seed = approve(&env, "rule seed() { run true }");
+        let mut previous = previous_fixture(&seed, include_str!("fixtures/types-v3.json"));
+        previous["status"] = status.into();
+        previous["grant_expires_unix_ms"] = (libzond::history::now() + 60000).into();
+        env.stop_daemon();
+        store_previous(&env, &mut previous);
+        env.start_daemon();
+        let migrated = states(&env, "exec")[0].clone();
+        assert_eq!(migrated["status"], status, "{migrated}");
+        assert_eq!(
+            migrated["grant_expires_unix_ms"],
+            previous["grant_expires_unix_ms"]
+        );
+        let proposal = &migrated["proposal"];
+        assert_eq!(proposal["bound"]["rule"]["language_version"], 4);
+        assert!(
+            proposal["source"]
+                .as_str()
+                .unwrap()
+                .contains("type enumeration-local-1 = enumeration(values=")
+        );
+        assert!(
+            proposal["source"]
+                .as_str()
+                .unwrap()
+                .contains("type repository-name-local-1 = repository-name")
+        );
+        assert_eq!(
+            proposal["bound"]["rule"]["types"][3]["definition"]["maximum_bytes_exclusive"],
+            21
+        );
+        assert_ne!(proposal["digest"], previous["proposal"]["digest"]);
+        if status == "pending" {
+            assert_eq!(
+                resolve(&env, &previous["proposal"], true, None)["type"],
+                "error"
+            );
+            assert_eq!(
+                resolve(&env, proposal, true, None)["rule"]["status"],
+                "active"
+            );
+        }
+        for symbol in ["AB".to_owned(), "A".repeat(20)] {
+            let result = invoke(
+                &env,
+                "previous-types",
+                &[
+                    "daily",
+                    "kmux",
+                    "positions",
+                    &symbol,
+                    "340282366920938463463374607431768211455",
+                ],
+            );
+            assert_eq!(result["type"], "completed", "{result}");
+            assert_eq!(
+                decoded(&result, "stdout"),
+                format!(
+                    "daily:kmux:positions:usdm:{symbol}:340282366920938463463374607431768211455"
+                )
+                .as_bytes()
+            );
+        }
+        for arguments in [
+            vec!["daily", "kmux", "positions", "A", "1"],
+            vec!["daily", "kmux", "positions", "ABCDEFGHIJKLMNOPQRSTU", "1"],
+            vec!["daily", "kmux", "unknown", "AB", "1"],
+            vec!["monthly", "kmux", "positions", "AB", "1"],
+            vec!["daily", "../kmux", "positions", "AB", "1"],
+            vec![
+                "daily",
+                "kmux",
+                "positions",
+                "AB",
+                "340282366920938463463374607431768211456",
+            ],
+        ] {
+            assert_eq!(invoke(&env, "previous-types", &arguments)["type"], "error");
+        }
+        let before = states(&env, "exec");
+        env.stop_daemon();
+        env.start_daemon();
+        assert_eq!(states(&env, "exec"), before);
+        let db = rusqlite::Connection::open(env.config.with_extension("history.sqlite3")).unwrap();
+        let migrations: i64 = db
+            .query_row(
+                "SELECT count(*) FROM actions WHERE action='rule_migrated'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(migrations, 1);
+    }
 }

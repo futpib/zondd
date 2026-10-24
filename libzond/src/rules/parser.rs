@@ -73,18 +73,32 @@ fn integer_type(input: &mut Input<'_>) -> winnow::ModalResult<TypeKind> {
         max: bounds.1,
     })
 }
-fn enum_type(input: &mut Input<'_>) -> winnow::ModalResult<TypeKind> {
+fn named<'a, O>(
+    name: &'static str,
+    parser: impl Parser<Input<'a>, O, winnow::error::ErrMode<winnow::error::ContextError>>,
+) -> impl Parser<Input<'a>, O, winnow::error::ErrMode<winnow::error::ContextError>> {
+    preceded((keyword(name), symbol('=')), parser)
+}
+
+fn tuple<'a, O>(
+    parser: impl Parser<Input<'a>, O, winnow::error::ErrMode<winnow::error::ContextError>>,
+    maximum: usize,
+) -> impl Parser<Input<'a>, Vec<O>, winnow::error::ErrMode<winnow::error::ContextError>> {
     delimited(
-        (symbol('{'), lines),
+        (symbol('('), lines),
         terminated(
-            separated(
-                1..=types::MAX_CHOICES,
-                terminated(literal, lines),
-                (symbol(','), lines),
-            ),
+            separated(1..=maximum, terminated(parser, lines), (symbol(','), lines)),
             opt((symbol(','), lines)),
         ),
-        symbol('}'),
+        symbol(')'),
+    )
+}
+
+fn enum_type(input: &mut Input<'_>) -> winnow::ModalResult<TypeKind> {
+    delimited(
+        (symbol('('), lines),
+        terminated(named("values", tuple(literal, types::MAX_CHOICES)), lines),
+        symbol(')'),
     )
     .map(|values| TypeKind::Enum { values })
     .parse_next(input)
@@ -95,29 +109,49 @@ fn length(input: &mut Input<'_>) -> winnow::ModalResult<usize> {
         .parse_next(input)
 }
 fn text_type(input: &mut Input<'_>) -> winnow::ModalResult<TypeKind> {
-    delimited(
-        symbol('('),
-        (
-            literal,
-            preceded(symbol(','), length),
-            preceded(symbol(','), length),
-        ),
-        symbol(')'),
+    enum Argument {
+        Pattern(String),
+        Minimum(usize),
+        Maximum(usize),
+    }
+    tuple(
+        alt((
+            named("pattern", literal).map(Argument::Pattern),
+            named("minimum_bytes_inclusive", length).map(Argument::Minimum),
+            named("maximum_bytes_exclusive", length).map(Argument::Maximum),
+        )),
+        3,
     )
-    .map(|(pattern, min, max)| TypeKind::Text { pattern, min, max })
+    .verify_map(|arguments| {
+        let (mut pattern, mut min, mut max) = (None, None, None);
+        for argument in arguments {
+            let duplicate = match argument {
+                Argument::Pattern(value) => pattern.replace(value).is_some(),
+                Argument::Minimum(value) => min.replace(value).is_some(),
+                Argument::Maximum(value) => max.replace(value).is_some(),
+            };
+            if duplicate {
+                return None;
+            }
+        }
+        Some(TypeKind::Text {
+            pattern: pattern?,
+            min: min?,
+            max: max?,
+        })
+    })
+    .context(StrContext::Label(
+        "text requires pattern, minimum_bytes_inclusive and maximum_bytes_exclusive exactly once",
+    ))
     .parse_next(input)
 }
-fn choice_row(input: &mut Input<'_>) -> winnow::ModalResult<(String, Vec<String>)> {
+fn choice_row(input: &mut Input<'_>) -> winnow::ModalResult<(String, Vec<(String, String)>)> {
     terminated(
         (
             literal,
             preceded(
-                keyword("="),
-                delimited(
-                    symbol('('),
-                    separated(1..=types::MAX_FIELDS, literal, symbol(',')),
-                    symbol(')'),
-                ),
+                symbol('='),
+                tuple((literal, preceded(symbol('='), literal)), types::MAX_FIELDS),
             ),
         ),
         end_line,
@@ -126,25 +160,41 @@ fn choice_row(input: &mut Input<'_>) -> winnow::ModalResult<(String, Vec<String>
 }
 fn choice_type(input: &mut Input<'_>) -> winnow::ModalResult<TypeKind> {
     let fields = delimited(
-        symbol('('),
-        separated(1..=types::MAX_FIELDS, literal, symbol(',')),
+        (symbol('('), lines),
+        terminated(named("fields", tuple(literal, types::MAX_FIELDS)), lines),
         symbol(')'),
     )
     .parse_next(input)?;
-    let rows: Vec<_> = delimited(
+    delimited(
         (symbol('{'), lines),
         repeat(1..=types::MAX_CHOICES, choice_row),
         symbol('}'),
     )
-    .parse_next(input)?;
-    let cases: BTreeMap<_, _> = rows.iter().cloned().collect();
-    if rows.len() != cases.len() {
-        return cut_err(
-            winnow::combinator::fail.context(StrContext::Label("distinct choice cases")),
-        )
-        .parse_next(input);
-    }
-    Ok(TypeKind::Choice { fields, cases })
+    .verify_map(|rows: Vec<(String, Vec<(String, String)>)>| {
+        let mut cases = BTreeMap::new();
+        for (name, values) in rows {
+            let count = values.len();
+            let mut values: BTreeMap<_, _> = values.into_iter().collect();
+            if count != fields.len() || count != values.len() {
+                return None;
+            }
+            let values = fields
+                .iter()
+                .map(|field| values.remove(field))
+                .collect::<Option<Vec<_>>>()?;
+            if cases.insert(name, values).is_some() {
+                return None;
+            }
+        }
+        Some(TypeKind::Choice {
+            fields: fields.clone(),
+            cases,
+        })
+    })
+    .context(StrContext::Label(
+        "distinct choice cases with every declared field named exactly once",
+    ))
+    .parse_next(input)
 }
 fn definition(input: &mut Input<'_>) -> winnow::ModalResult<TypeDefinition> {
     preceded(
@@ -152,10 +202,10 @@ fn definition(input: &mut Input<'_>) -> winnow::ModalResult<TypeDefinition> {
         cut_err((
             literal,
             preceded(
-                keyword("="),
+                symbol('='),
                 alt((
                     preceded(keyword("integer"), cut_err(integer_type)),
-                    preceded(keyword("enum"), cut_err(enum_type)),
+                    preceded(keyword("enumeration"), cut_err(enum_type)),
                     preceded(keyword("text"), cut_err(text_type)),
                     preceded(keyword("choice"), cut_err(choice_type)),
                     literal.map(|target| TypeKind::Alias { target }),
@@ -214,7 +264,11 @@ fn run(input: &mut Input<'_>) -> winnow::ModalResult<Run> {
     preceded(
         keyword("run"),
         cut_err(terminated(
-            (opt(keyword("--sudo")), executable, repeat(0..=256, word)),
+            (
+                opt(keyword("--allow-privilege-escalation")),
+                executable,
+                repeat(0..=256, word),
+            ),
             end_line,
         )),
     )
@@ -227,7 +281,7 @@ fn run(input: &mut Input<'_>) -> winnow::ModalResult<Run> {
 }
 fn create(input: &mut Input<'_>) -> winnow::ModalResult<(Option<CreateNew>, Run)> {
     preceded(
-        alt((keyword("create-new-dir"), keyword("create-new"))),
+        keyword("create-new-directory"),
         cut_err((
             word,
             preceded(keyword("as"), literal),

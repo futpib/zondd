@@ -10,7 +10,7 @@ mod integer;
 pub mod migration;
 mod parser;
 mod types;
-pub const LANGUAGE_VERSION: u32 = 3;
+pub const LANGUAGE_VERSION: u32 = 4;
 pub use types::{TypeDefinition, TypeKind};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,7 +173,7 @@ impl BoundRule {
                 validate_cwd(&path)?;
                 ensure!(
                     !destination || path.file_name().is_some(),
-                    "create-new-dir needs a child path"
+                    "create-new-directory needs a child path"
                 );
             }
         }
@@ -236,7 +236,7 @@ impl BoundRule {
                 validate_cwd(&path)?;
                 ensure!(
                     path.file_name().is_some(),
-                    "create-new-dir needs a child path"
+                    "create-new-directory needs a child path"
                 );
                 Ok(path)
             })
@@ -343,7 +343,7 @@ fn flush_literal(parts: &mut Vec<Part>, text: &mut String) {
     }
 }
 
-fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
+fn lex(source: &str, version: u32) -> Result<Vec<Token>> {
     ensure!(source.len() <= MAX_SOURCE_BYTES, "rule exceeds 16 KiB");
     ensure!(
         source
@@ -351,6 +351,9 @@ fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
             .all(|b| b.is_ascii_graphic() || b" \n\r\t".contains(&b)),
         "rules must use printable ASCII text"
     );
+    let stored = version == 1;
+    let mut definition = false;
+    let mut depth: usize = 0;
     let mut chars = source.chars().peekable();
     let mut tokens = Vec::new();
     while let Some(&c) = chars.peek() {
@@ -361,6 +364,9 @@ fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
             '\n' => {
                 chars.next();
                 tokens.push(Token::Newline);
+                if depth == 0 {
+                    definition = false;
+                }
             }
             '#' => {
                 while chars.peek().is_some_and(|c| *c != '\n') {
@@ -372,7 +378,8 @@ fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
                 .is_some_and(|t| matches!(t, Token::Word(w) if w.literal() == Some("integer")))
                 && tokens.len() >= 4
                 && matches!(&tokens[tokens.len() - 4], Token::Word(w) if w.literal() == Some("type"))
-                && matches!(&tokens[tokens.len() - 2], Token::Word(w) if w.literal() == Some("=")) =>
+                && (matches!(&tokens[tokens.len() - 2], Token::Word(w) if w.literal() == Some("="))
+                    || tokens[tokens.len() - 2] == Token::Symbol('=')) =>
             {
                 chars.next();
                 let mut expression = String::new();
@@ -392,9 +399,18 @@ fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
                 ensure!(depth == 0, "unclosed integer bounds");
                 tokens.push(Token::IntegerBounds(expression));
             }
+            '=' if definition && version >= 4 => {
+                chars.next();
+                tokens.push(Token::Symbol('='));
+            }
             '(' | ')' | '{' | '}' | ':' | ',' => {
                 chars.next();
                 tokens.push(Token::Symbol(c));
+                match c {
+                    '(' | '{' => depth += 1,
+                    ')' | '}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
             }
             _ => {
                 let mut parts = Vec::new();
@@ -402,7 +418,11 @@ fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
                 let mut quote = None;
                 let mut leading_home_variable = false;
                 while let Some(&c) = chars.peek() {
-                    if quote.is_none() && (c.is_ascii_whitespace() || "(){}:,".contains(c)) {
+                    if quote.is_none()
+                        && (c.is_ascii_whitespace()
+                            || "(){}:,".contains(c)
+                            || (c == '=' && definition && version >= 4))
+                    {
                         break;
                     }
                     chars.next();
@@ -492,6 +512,12 @@ fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
                             || matches!(parts.get(1), Some(Part::Literal(value)) if value.starts_with('/'))),
                     "use ~ or ~/path instead of $HOME or a braced HOME variable at the start of a word"
                 );
+                if depth == 0
+                    && parts == [Part::Literal("type".into())]
+                    && (tokens.is_empty() || tokens.last() == Some(&Token::Newline))
+                {
+                    definition = true;
+                }
                 tokens.push(Token::Word(Word(parts)));
             }
         }
@@ -500,11 +526,14 @@ fn lex(source: &str, stored: bool) -> Result<Vec<Token>> {
 }
 
 pub fn parse(source: &str) -> Result<Rule> {
-    parse_tokens(lex(source, false)?)
+    parse_tokens(lex(source, LANGUAGE_VERSION)?)
 }
 
 fn parse_tokens(tokens: Vec<Token>) -> Result<Rule> {
-    let rule = parser::parse(&tokens)?;
+    validate_rule(parser::parse(&tokens)?)
+}
+
+fn validate_rule(rule: Rule) -> Result<Rule> {
     ensure!(crate::config::valid_name(&rule.name), "invalid rule name");
     let mut parameters = std::collections::BTreeSet::new();
     for parameter in &rule.parameters {
@@ -519,7 +548,7 @@ fn parse_tokens(tokens: Vec<Token>) -> Result<Rule> {
         ensure!(
             matches!(
                 requirement.kind.as_str(),
-                "is-dir" | "absent" | "user-service-active-or-enabled"
+                "is-directory" | "absent" | "user-service-active-or-enabled"
             ),
             "unknown check '{}'",
             requirement.kind

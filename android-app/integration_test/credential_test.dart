@@ -94,7 +94,7 @@ void main() {
                     '${jsonEncode({
                       'version': 1,
                       'id': 6,
-                      'body': {'method': 'propose_rule', 'source': 'rule persistent-sudo() { run --sudo "${fixture['probe']}" askpass }'},
+                      'body': {'method': 'propose_rule', 'source': 'rule persistent-sudo() { run --allow-privilege-escalation "${fixture['probe']}" askpass }'},
                     })}\n',
                   ),
                 ),

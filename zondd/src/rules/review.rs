@@ -98,7 +98,7 @@ pub(super) fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
     }
     let indent = if let Some(new) = &rule.create_new {
         source.push_str(&format!(
-            "  create-new-dir {} as {} {{\n",
+            "  create-new-directory {} as {} {{\n",
             source_word_mode(&new.path, home),
             new.variable
         ));
@@ -108,7 +108,11 @@ pub(super) fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
     };
     source.push_str(&format!(
         "{indent}run {}{}",
-        if rule.sudo_password { "--sudo " } else { "" },
+        if rule.sudo_password {
+            "--allow-privilege-escalation "
+        } else {
+            ""
+        },
         source_word_mode(&Word(vec![Part::Literal(rule.program.clone())]), home)
     ));
     for arg in &rule.args {
@@ -210,7 +214,7 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
         )];
         for requirement in &rule.requirements {
             let description = match requirement.kind.as_str() {
-                "is-dir" => {
+                "is-directory" => {
                     "Must be an existing trusted directory, reached without following symlinks."
                 }
                 "absent" => {
@@ -230,7 +234,7 @@ pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {
     }
     if let Some(new) = &rule.create_new {
         sections.push(section("Effects", vec![
-            field("create-new-dir", "Publishes a directory only after exit status zero, atomically and only if the destination is still absent. Never replaces an existing file, directory or symlink. Failure or cancellation discards staging; other command side effects are not rolled back."),
+            field("create-new-directory", "Publishes a directory only after exit status zero, atomically and only if the destination is still absent. Never replaces an existing file, directory or symlink. Failure or cancellation discards staging; other command side effects are not rolled back."),
             field("Destination", word(&new.path)),
             field("Output binding", format!("${{{}}} is a private staging path on the destination filesystem, not the final destination.", new.variable)),
             field("Parent directory", "Must already exist, be trusted and contain no symlinks. Publication fails if the filesystem cannot guarantee no replacement."),
@@ -263,12 +267,12 @@ mod tests {
             include_str!("../../../examples/rules/binance-live.zond"),
             include_str!("../../../examples/rules/binance-history.zond"),
             include_str!("../../../examples/rules/read-github-failure.zond"),
-            "type literal = enum { '$HOME', '~/path', '`id`', '' }\nrule typed(x: literal) { run printf '`id`' \"$x\" }",
-            "# caller says this is harmless\nrule clone(x: repo-name) {\n require is-dir \"~/code\"\n create-new \"~/code/$x\" as dest {\n run /usr/bin/git clone -- \"git@github.com:futpib/$x.git\" \"$dest\"\n }\n}",
-            r##"rule literals(x: repo-name) { run printf "" '$x' '${x}' '$(whoami)' "a\"b" "a\\b" "$x.txt" "a'x" "# comment" }"##,
+            "type literal = enumeration(values=('$HOME', '~/path', '`id`', ''))\nrule typed(x: literal) { run printf '`id`' \"$x\" }",
+            "# caller says this is harmless\nrule clone(x: repository-name) {\n require is-directory \"~/code\"\n create-new-directory \"~/code/$x\" as dest {\n run /usr/bin/git clone -- \"git@github.com:futpib/$x.git\" \"$dest\"\n }\n}",
+            r##"rule literals(x: repository-name) { run printf "" '$x' '${x}' '$(whoami)' "a\"b" "a\\b" "$x.txt" "a'x" "# comment" }"##,
             "rule whitespace() { run printf \"a\tb\" }",
-            "rule privileged() { run --sudo /usr/bin/paru -Syu --noconfirm }",
-            "rule service(name: repo-name) {\n require user-service-active-or-enabled \"$name.service\"\n run /usr/bin/systemctl --user restart -- \"$name.service\"\n}",
+            "rule privileged() { run --allow-privilege-escalation /usr/bin/paru -Syu --noconfirm }",
+            "rule service(name: repository-name) {\n require user-service-active-or-enabled \"$name.service\"\n run /usr/bin/systemctl --user restart -- \"$name.service\"\n}",
         ] {
             let rule = libzond::rules::parse(source).unwrap();
             let bound = BoundRule {
@@ -325,8 +329,8 @@ mod tests {
     fn current_reviews_require_the_current_directory_effect() {
         let bound = BoundRule {
             rule: libzond::rules::parse(
-                r#"rule directory(x: repo-name) {
-  create-new-dir "~/$x" as dest { run mkdir "$dest" }
+                r#"rule directory(x: repository-name) {
+  create-new-directory "~/$x" as dest { run mkdir "$dest" }
 }"#,
             )
             .unwrap(),

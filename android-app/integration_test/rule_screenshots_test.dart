@@ -82,9 +82,9 @@ void main() {
 
     Map<String, dynamic>? proposal;
     try {
-      const source = r'''rule clone-futpib(x: repo-name) {
-  require is-dir "$HOME/code"
-  create-new-dir "$HOME/code/$x" as dest {
+      const source = r'''rule clone-futpib(x: repository-name) {
+  require is-directory "$HOME/code"
+  create-new-directory "$HOME/code/$x" as dest {
     run git clone -- "https://github.com/futpib/$x.git" "$dest"
   }
 }''';
@@ -181,7 +181,10 @@ void main() {
         'review': {
           'version': 2,
           'title': 'clone-futpib',
-          'checks': {'destination': 'must not exist', 'parameter': 'repo-name'},
+          'checks': {
+            'destination': 'must not exist',
+            'parameter': 'repository-name',
+          },
         },
       };
       bool? approved;

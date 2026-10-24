@@ -1,5 +1,5 @@
-type symbol = text('[A-Z0-9]+', 2, 20)
-type cursor = integer(min_inclusive=0, max_exclusive=2**64)
+type symbol = text(pattern='[A-Z0-9]+', minimum_bytes_inclusive=2, maximum_bytes_exclusive=21)
+type cursor = integer(minimum_inclusive=0, maximum_exclusive=2**64)
 
 rule binance-history(symbol: symbol, cursor: cursor) {
   run uv run --no-sync --frozen --directory "~/code/folio" folio read binance trades --live --market usdm --account-mode portfolio --symbol "$symbol" --from-id "$cursor" --limit 1000

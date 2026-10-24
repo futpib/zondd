@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-const RULE: &str = r#"rule echo-rule(x: repo-name) { run printf "%s" "$x" }"#;
+const RULE: &str = r#"rule echo-rule(x: repository-name) { run printf "%s" "$x" }"#;
 
 fn parse(output: std::process::Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
@@ -44,11 +44,11 @@ fn cli_leaves_rule_language_validation_to_the_receiver() {
 #[test]
 fn cli_forwards_local_definitions_and_invokes_correlated_choices_with_exact_bounds() {
     let env = TestEnv::new();
-    let source = r#"type view = choice(resource, market) {
- balances = ("balances", "portfolio")
- positions = ("positions", "usdm")
+    let source = r#"type view = choice(fields=(resource, market)) {
+ balances = (resource="balances", market="portfolio")
+ positions = (resource="positions", market="usdm")
 }
-type cursor = integer(min_inclusive=0, max_exclusive=2**128)
+type cursor = integer(minimum_inclusive=0, maximum_exclusive=2**128)
 rule typed(v: view, n: cursor) {
  run printf "%s:%s:%s" "${v.resource}" "${v.market}" "$n"
 }"#;
@@ -70,7 +70,7 @@ rule typed(v: view, n: cursor) {
     let proposal = &event["proposal"];
     assert_eq!(proposal["source"], source);
     assert_eq!(
-        proposal["bound"]["rule"]["types"][1]["definition"]["max_exclusive"],
+        proposal["bound"]["rule"]["types"][1]["definition"]["maximum_exclusive"],
         "340282366920938463463374607431768211456"
     );
     checked(
@@ -233,7 +233,7 @@ fn interactive_review_distinguishes_reusable_grants_from_one_time_approval() {
     let text = String::from_utf8(read_until(&mut master, b"quit [q]: ")).unwrap();
     assert!(
         text.contains("repeated invocations")
-            && text.contains("repo-name")
+            && text.contains("repository-name")
             && text.contains("approve until revoked"),
         "{text}"
     );

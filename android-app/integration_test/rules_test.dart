@@ -92,23 +92,23 @@ void main() {
                 ? 'service'
                 : 'rule'}-${iroh ? 'iroh' : 'ssh'}';
         final source = scenario.typed
-            ? r'''type view = choice(resource, market) {
-  balances = ("balances", "portfolio")
-  accounts = ("accounts", "portfolio")
-  positions = ("positions", "usdm")
+            ? r'''type view = choice(fields=(resource, market)) {
+  balances = (resource="balances", market="portfolio")
+  accounts = (resource="accounts", market="portfolio")
+  positions = (resource="positions", market="usdm")
 }
 type selected = view
-type number = integer(min_inclusive=1, max_exclusive=11)
-type big-count = integer(min_inclusive=0, max_exclusive=2**128)
-type category = enum { daily, weekly }
-type symbol = text('[A-Z]+', 2, 10)
+type number = integer(minimum_inclusive=1, maximum_exclusive=11)
+type big-count = integer(minimum_inclusive=0, maximum_exclusive=2**128)
+type category = enumeration(values=(daily, weekly))
+type symbol = text(pattern='[A-Z]+', minimum_bytes_inclusive=2, maximum_bytes_exclusive=11)
 rule RULE_NAME(v: selected, n: number, c: category, s: symbol, b: big-count) {
   run printf "%s:%s:%s:%s:%s:%s" "${v.resource}" "${v.market}" "$n" "$c" "$s" "$b"
 }'''
                   .replaceAll('RULE_NAME', name)
             : scenario.service
-            ? 'rule $name(x: repo-name) {\n  require user-service-active-or-enabled "zond-test-\$x.service"\n  run systemctl --user restart -- "zond-test-\$x.service"\n}'
-            : 'rule $name(x: repo-name) {\n  create-new-dir "${fixture['runtime']}/\$x" as dest {\n    run mkdir "\$dest"\n  }\n}';
+            ? 'rule $name(x: repository-name) {\n  require user-service-active-or-enabled "zond-test-\$x.service"\n  run systemctl --user restart -- "zond-test-\$x.service"\n}'
+            : 'rule $name(x: repository-name) {\n  create-new-directory "${fixture['runtime']}/\$x" as dest {\n    run mkdir "\$dest"\n  }\n}';
         String? proposalId;
         try {
           final proposed = await request({
@@ -150,7 +150,7 @@ rule RULE_NAME(v: selected, n: number, c: category, s: symbol, b: big-count) {
           if (scenario.typed) {
             expect(find.text('Local type definitions'), findsOneWidget);
             expect(
-              proposal['bound']['rule']['types'][3]['definition']['max_exclusive'],
+              proposal['bound']['rule']['types'][3]['definition']['maximum_exclusive'],
               '340282366920938463463374607431768211456',
             );
             expect(
@@ -165,7 +165,7 @@ rule RULE_NAME(v: selected, n: number, c: category, s: symbol, b: big-count) {
             );
           } else {
             expect(
-              find.textContaining('repo-name: 1–100 ASCII'),
+              find.textContaining('repository-name: 1–100 ASCII'),
               findsOneWidget,
             );
           }

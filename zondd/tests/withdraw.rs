@@ -5,7 +5,7 @@ use libzondtest::{
 };
 use std::fs;
 
-const RULE: &str = "rule echo-rule(x: repo-name) { run printf '%s' \"$x\" }";
+const RULE: &str = "rule echo-rule(x: repository-name) { run printf '%s' \"$x\" }";
 
 fn env() -> TestEnv {
     let env = TestEnv::new();

@@ -1,7 +1,7 @@
-type live-view = choice(resource, market) {
-  balances = ("balances", "portfolio")
-  accounts = ("accounts", "portfolio")
-  positions = ("positions", "usdm")
+type live-view = choice(fields=(resource, market)) {
+  balances = (resource="balances", market="portfolio")
+  accounts = (resource="accounts", market="portfolio")
+  positions = (resource="positions", market="usdm")
 }
 
 rule binance-live(view: live-view) {
