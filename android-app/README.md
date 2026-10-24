@@ -78,10 +78,11 @@ and imported keys remain separate from this credential vault.
 
 ## Connect
 
-Iroh connections use the same pinned bridge as `iroh-ssh-android`:
+Iroh connections use the pinned bridge:
 `futpib/iroh-ssh` at `f7e04ea411b198a334d118675de5e015ae527dae`
-(`iroh-ssh` 0.2.12, Iroh 1.3.0). The receiving Iroh SSH server must use a
-compatible wire version; CI tests the server built from this same revision.
+(`iroh-ssh` 0.2.12), with Iroh 1.4.1 in the app's native lockfile. The receiving
+Iroh SSH server must use a compatible wire version; CI tests the server built
+from this same revision.
 Plain SSH connections do not depend on Iroh versions.
 
 1. Install current `zondd`, `zondctl`, and the user service on the receiving host
@@ -264,9 +265,10 @@ app intentionally has the same rights as that login's general-purpose shell.
 
 ## Build
 
-Requires Flutter 3.47.5 (Dart 3.13.4), Rust, Android SDK, JDK 25,
-NDK 28.2.13676358, and `cargo-ndk`. The app supports Android API 24+ on ARM64 and
-x86-64. Gradle builds the native adapter automatically, with its committed lockfile.
+Requires Flutter 3.47.7 (Dart 3.13.5), Rust, Android SDK, JDK 27,
+Build Tools 37.0.0, NDK 30.0.16248370, and `cargo-ndk`. The app supports Android
+API 24+ on ARM64 and x86-64. Gradle builds the native adapter automatically,
+with its committed lockfile.
 
 ```sh
 rustup target add aarch64-linux-android x86_64-linux-android

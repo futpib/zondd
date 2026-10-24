@@ -5,7 +5,7 @@ publish_to: 'none'
 version: 0.1.0+1
 
 environment:
-  sdk: ^3.12.1
+  sdk: ^3.13.5
 
 dependencies:
   flutter:
@@ -15,7 +15,7 @@ dependencies:
   openkeychain_ssh:
     git:
       url: https://github.com/futpib/iroh-ssh-android.git
-      ref: fa6e0cf0a6be499e778f93cf77483c6c7ee1fcef
+      ref: d7aa5f94d316d19522202f73ca3566ef9df94e59
       path: packages/openkeychain_ssh
   flutter_secure_storage: ^11.2.0
   ffi: ^2.2.0
@@ -23,7 +23,7 @@ dependencies:
   pinenacl: ^0.6.0
   crypto: ^3.0.7
   toml: ^0.18.0
-  flutter_zxing: ^2.2.1
+  flutter_zxing: ^3.1.0
   yaml: ^3.1.4
   yaml_edit: ^2.2.4
 

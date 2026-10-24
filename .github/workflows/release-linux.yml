@@ -21,7 +21,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Require a version tag
         run: |
           if [[ $GITHUB_REF_TYPE != tag || ! $GITHUB_REF_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -34,7 +34,7 @@ jobs:
       - run: cargo test --locked --release --workspace -- --test-threads=1
       - name: Package binaries and user service
         run: scripts/package-linux.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/linux-dist"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.runner }}
           path: ${{ runner.temp }}/linux-dist/*
@@ -48,7 +48,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: linux-*
           path: dist
@@ -58,7 +58,7 @@ jobs:
         run: |
           cat ./*.sha256 > SHA256SUMS
           sha256sum --check SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Linux ${{ github.ref_name }}
