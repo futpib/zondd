@@ -37,7 +37,8 @@ while verified < 2:
         nodes = list(ET.fromstring(xml.stdout).iter("node"))
     except ET.ParseError:
         continue
-    names = [n.get("text", "") for n in nodes if re.fullmatch(r"zond-audit-\d+\.json", n.get("text", ""))]
+    # The folder listing can retain earlier exports after their files are removed.
+    names = [n.get("text", "") for n in nodes if n.get("class") == "android.widget.EditText" and re.fullmatch(r"zond-audit-\d+\.json", n.get("text", ""))]
     saves = [n for n in nodes if (n.get("resource-id", "").endswith("action_menu_save") or (n.get("resource-id") == "android:id/button1" and n.get("text", "").upper() == "SAVE")) and n.get("enabled") == "true"]
     if not names or not saves or names[0] in seen:
         continue
