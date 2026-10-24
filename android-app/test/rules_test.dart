@@ -47,6 +47,8 @@ Map<String, dynamic> reviewDocument() => {
 
 class RuleControl implements ControlApi {
   Map<String, dynamic>? resolution;
+  String? resolutionError, pendingError;
+  int resolutionAttempts = 0;
   int revocations = 0;
   final revokedIds = <String>{};
   final extraRules = <Map<String, dynamic>>[];
@@ -64,12 +66,15 @@ class RuleControl implements ControlApi {
   @override
   Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
     if (body['method'] == 'pending') {
+      if (pendingError != null) throw StateError(pendingError!);
       return {
         'requests': [],
         'proposals': resolution == null ? [proposal] : [],
       };
     }
     if (body['method'] == 'resolve_rule') {
+      resolutionAttempts++;
+      if (resolutionError != null) throw StateError(resolutionError!);
       resolution = body;
       return {'type': 'rule_resolved'};
     }
@@ -122,6 +127,59 @@ class LostRevokeReply implements ControlApi {
 }
 
 void main() {
+  for (final approve in [true, false]) {
+    testWidgets('rule decision $approve keeps failures visible across polls', (
+      tester,
+    ) async {
+      final api = RuleControl()..resolutionError = 'Rule decision failed';
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Dashboard(api: api, name: 'Review'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final decision = find.text(approve ? 'Approve rule' : 'Reject rule');
+      await tester.ensureVisible(decision);
+      await tester.pumpAndSettle();
+      await tester.tap(decision);
+      await tester.pumpAndSettle();
+      expect(api.resolutionAttempts, 1);
+      expect(find.textContaining('Rule decision failed'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Rule decision failed'), findsOneWidget);
+      expect(api.resolution, isNull);
+      api.resolutionError = null;
+      await tester.ensureVisible(decision);
+      await tester.pumpAndSettle();
+      await tester.tap(decision);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Rule decision failed'), findsNothing);
+      expect(api.resolution?['approve'], approve);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('a recovered approvals poll clears its own error', (
+    tester,
+  ) async {
+    final api = RuleControl()..pendingError = 'Pending requests unavailable';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Dashboard(api: api, name: 'Review'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Pending requests unavailable'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    api.pendingError = null;
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Pending requests unavailable'), findsNothing);
+    expect(find.text('Reusable rule proposal'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'rules recover a lost revoke reply without losing the filter or replaying',
     (tester) async {

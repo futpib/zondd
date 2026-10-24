@@ -10,6 +10,23 @@ import 'package:yaml/yaml.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
 
+// Force one real daemon rejection while retaining the reviewed pending rule.
+class StaleDigestOnce implements ControlApi {
+  StaleDigestOnce(this.transport);
+  final SshControl transport;
+  bool failed = false;
+  @override
+  Future<void> close() => transport.close();
+  @override
+  Future<Map<String, dynamic>> request(Map<String, dynamic> body) {
+    if (body['method'] == 'resolve_rule' && !failed) {
+      failed = true;
+      return transport.request({...body, 'digest': 'stale-reviewed-digest'});
+    }
+    return transport.request(body);
+  }
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   final fixture =
@@ -132,7 +149,12 @@ rule RULE_NAME(v: selected, n: number, c: category, s: symbol, b: big-count) {
           );
           await tester.pumpWidget(
             MaterialApp(
-              home: Dashboard(api: api, name: 'Rule review'),
+              home: Dashboard(
+                api: !scenario.typed && !scenario.service
+                    ? StaleDigestOnce(api)
+                    : api,
+                name: 'Rule review',
+              ),
             ),
           );
           await visible(find.text('Reusable rule proposal'));
@@ -188,6 +210,16 @@ rule RULE_NAME(v: selected, n: number, c: category, s: symbol, b: big-count) {
           );
           await visible(find.text('Approve rule'));
           await tester.tap(find.text('Approve rule'));
+          if (!scenario.typed && !scenario.service) {
+            final failure = find.textContaining(
+              'rule digest changed; review the exact proposal',
+            );
+            await visible(failure);
+            await tester.pump(const Duration(seconds: 3));
+            expect(failure, findsOneWidget);
+            await visible(find.text('Approve rule'));
+            await tester.tap(find.text('Approve rule'));
+          }
           await visible(
             find.text(
               'Rule approved. Matching invocations can run without another prompt.',

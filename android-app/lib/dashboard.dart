@@ -89,7 +89,8 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   List<dynamic> interactions = [];
   List<dynamic> recipients = [];
   List<dynamic> proposals = [];
-  String? error, message;
+  String? actionError, pollingError, message;
+  String? get error => actionError ?? (tab == 0 ? pollingError : null);
   bool polling = false, acting = false;
   int tab = 0;
   String? revision;
@@ -145,12 +146,12 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
           recipients = result['recipients'] as List? ?? [];
           proposals = result['proposals'] as List? ?? [];
           loaded = true;
-          error = null;
+          pollingError = null;
         });
       }
     } catch (e) {
       if (mounted && generation == fetchGeneration) {
-        setState(() => error = '$e');
+        setState(() => pollingError = '$e');
       }
     } finally {
       if (generation == fetchGeneration) polling = false;
@@ -161,13 +162,13 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     if (acting) return;
     setState(() {
       acting = true;
-      error = null;
+      actionError = null;
       message = null;
     });
     try {
       await work();
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted) setState(() => actionError = '$e');
     } finally {
       if (mounted) {
         setState(() => acting = false);
@@ -511,7 +512,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
         onDestinationSelected: (value) {
           setState(() {
             tab = value;
-            error = null;
+            actionError = null;
             message = null;
           });
           if (value == 1 && revision == null) loadConfig();
@@ -856,7 +857,7 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
     if (content != loadedConfig && content != attemptedSave) {
       if (!reviewConflict) {
         setState(
-          () => error =
+          () => actionError =
               'The server policy changed. Your draft is preserved. '
               'Save to review the server version before replacing it.',
         );
