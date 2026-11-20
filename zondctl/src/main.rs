@@ -961,24 +961,50 @@ async fn review(cli: &Cli) -> Result<u8> {
             continue;
         }
         for proposal in proposals {
-            println!("{}", serde_json::to_string_pretty(&proposal)?);
-            print!(
-                "Approve for 1 hour [a], approve until revoked [p], deny [d], skip [s], quit [q]: "
-            );
-            std::io::stdout().flush()?;
-            let answer = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line)?;
-                Ok(line)
-            })
-            .await
-            .context("read rule approval answer")??;
-            let (approve, expires_in_secs) = match answer.trim() {
-                "a" => (true, Some(3600)),
-                "p" => (true, None),
-                "d" => (false, None),
-                "q" | "" => return Ok(0),
-                _ => continue,
+            if proposal.replaces.is_some()
+                && let Some(review) = proposal.review.as_ref()
+                && let Ok(review) = serde_json::from_value::<libzond::rules::Review>(review.clone())
+                && review.version == 1
+                && let Some(comparison) = review.sections.first()
+            {
+                println!(
+                    "Rule {} for {}",
+                    serde_json::to_string(&review.title)?,
+                    serde_json::to_string(&proposal.principal)?
+                );
+                println!("{}", serde_json::to_string(&comparison.title)?);
+                for field in &comparison.fields {
+                    println!("{}:", serde_json::to_string(&field.label)?);
+                    for line in field.value.lines() {
+                        println!("  {}", serde_json::to_string(line)?);
+                    }
+                }
+            } else {
+                println!("{}", serde_json::to_string_pretty(&proposal)?);
+            }
+            let decision = loop {
+                print!(
+                    "Approve for 1 hour [a], approve until revoked [p], deny [d], skip [s], view full proposal [v], quit [q]: "
+                );
+                std::io::stdout().flush()?;
+                let answer = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    Ok(line)
+                })
+                .await
+                .context("read rule approval answer")??;
+                match answer.trim() {
+                    "a" => break Some((true, Some(3600))),
+                    "p" => break Some((true, None)),
+                    "d" => break Some((false, None)),
+                    "v" => println!("{}", serde_json::to_string_pretty(&proposal)?),
+                    "q" | "" => return Ok(0),
+                    _ => break None,
+                }
+            };
+            let Some((approve, expires_in_secs)) = decision else {
+                continue;
             };
             let event = cli
                 .connect()

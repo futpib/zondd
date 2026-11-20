@@ -130,6 +130,57 @@ class RuleDefinition extends StatelessWidget {
       key: ValueKey('rule-yaml-${proposal['id']}'),
       style: mono,
     );
+    List<Widget> sections(Iterable<dynamic> items) => [
+      for (final section in items) ...[
+        const SizedBox(height: 12),
+        Text(
+          section['title'] as String,
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        for (final field in section['fields'] as List)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: SelectableText('${field['label']}: ${field['value']}'),
+          ),
+      ],
+    ];
+    final replacement = proposal['replaces'] != null && review != null;
+    final details = <Widget>[
+      if (source is String && source.isNotEmpty) ...[
+        Text('Rule source', style: Theme.of(context).textTheme.titleSmall),
+        const Text('As received by the daemon'),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerLowest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: SelectableText(
+            source,
+            key: ValueKey('rule-source-${proposal['id']}'),
+            style: mono,
+            textDirection: TextDirection.ltr,
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+      if (review == null) ...[
+        Text(
+          'Complete rule data (YAML)',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 8),
+        yaml,
+      ] else ...[
+        ...sections((review['sections'] as List).skip(replacement ? 1 : 0)),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: const Text('Rule details (YAML)'),
+          children: [yaml],
+        ),
+      ],
+    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -138,51 +189,16 @@ class RuleDefinition extends StatelessWidget {
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 12),
-        if (source is String && source.isNotEmpty) ...[
-          Text('Rule source', style: Theme.of(context).textTheme.titleSmall),
-          const Text('As received by the daemon'),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerLowest,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: SelectableText(
-              source,
-              key: ValueKey('rule-source-${proposal['id']}'),
-              style: mono,
-              textDirection: TextDirection.ltr,
-            ),
-          ),
-          const SizedBox(height: 12),
-        ],
-        if (review == null) ...[
-          Text(
-            'Complete rule data (YAML)',
-            style: Theme.of(context).textTheme.titleSmall,
-          ),
-          const SizedBox(height: 8),
-          yaml,
-        ] else
-          for (final section in review['sections'] as List) ...[
-            const SizedBox(height: 12),
-            Text(
-              section['title'] as String,
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            for (final field in section['fields'] as List)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: SelectableText('${field['label']}: ${field['value']}'),
-              ),
-          ],
-        if (review != null)
+        if (replacement) ...[
+          ...sections((review['sections'] as List).take(1)),
           ExpansionTile(
+            key: ValueKey('rule-full-${proposal['id']}'),
             tilePadding: EdgeInsets.zero,
-            title: const Text('Rule details (YAML)'),
-            children: [yaml],
+            title: const Text('Full proposed rule'),
+            children: details,
           ),
+        ] else
+          ...details,
       ],
     );
   }

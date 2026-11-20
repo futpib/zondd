@@ -912,9 +912,15 @@ fn raw_protocol_cannot_bypass_types_approval_digest_or_principal_scope() {
         env.request("admin", json!({"method":"propose_rule","source":source}))["type"],
         "rejected"
     );
+    let replacement = propose(&env, source);
+    assert_eq!(replacement["replaces"]["id"], proposal["id"]);
     assert_eq!(
         env.request("exec", json!({"method":"propose_rule","source":source}))["type"],
         "error"
+    );
+    assert_eq!(
+        resolve(&env, &replacement, false, None)["rule"]["status"],
+        "denied"
     );
     let source = format!(
         "rule restricted() {{ run {} no_new_privs }}",

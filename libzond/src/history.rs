@@ -415,10 +415,14 @@ impl History {
         rules: &[crate::rules::RuleState],
         action: &str,
     ) -> Result<()> {
+        self.save_rule_changes(&rules.iter().map(|rule| (rule, action)).collect::<Vec<_>>())
+    }
+
+    pub fn save_rule_changes(&mut self, rules: &[(&crate::rules::RuleState, &str)]) -> Result<()> {
         let tx = self
             .0
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        for rule in rules {
+        for (rule, action) in rules {
             tx.execute("INSERT INTO rule_states(id,principal,status,updated,record) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated=excluded.updated,record=excluded.record", params![rule.proposal.id, rule.proposal.principal, rule.status, now() as i64, serde_json::to_string(rule)?])?;
             Self::insert_action(&tx, None, action, serde_json::to_value(rule)?)?;
         }

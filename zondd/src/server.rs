@@ -1161,7 +1161,15 @@ async fn wait_rule(
                 rule: Box::new(rule),
             });
         }
-        let remaining = rule.proposal.expires_unix_ms.saturating_sub(now());
+        let expiry = rule
+            .proposal
+            .replaces
+            .as_ref()
+            .and_then(|baseline| baseline.grant_expires_unix_ms)
+            .map_or(rule.proposal.expires_unix_ms, |expiry| {
+                expiry.min(rule.proposal.expires_unix_ms)
+            });
+        let remaining = expiry.saturating_sub(now());
         if !notified {
             wire::write(
                 write,
@@ -1850,6 +1858,7 @@ async fn admin_request(state: &State, request: Request, actor: serde_json::Value
             expires_in_secs,
         } => {
             let mut active = state.active.lock().unwrap();
+            refresh_rules(&mut active)?;
             let Active { rules, history, .. } = &mut *active;
             let rule = rules.resolve(&proposal_id, &digest, approve, expires_in_secs, history)?;
             state.changed.send_replace(());

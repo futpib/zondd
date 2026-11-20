@@ -298,6 +298,15 @@ pub struct ReviewField {
     pub value: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuleBaseline {
+    pub id: String,
+    pub digest: String,
+    pub bound: BoundRule,
+    pub grant_expires_unix_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Proposal {
     pub id: String,
@@ -307,6 +316,8 @@ pub struct Proposal {
     // Keep the review opaque in transports so older bridges preserve future formats.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<RuleBaseline>,
     pub digest: String,
     pub revision: String,
     pub principal_revision: String,

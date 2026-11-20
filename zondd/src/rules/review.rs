@@ -1,5 +1,9 @@
 use anyhow::{Result, bail};
-use libzond::rules::{BoundRule, Part, Review, ReviewField, ReviewSection, Word};
+use libzond::rules::{
+    BoundRule, Part, Proposal, Review, ReviewField, ReviewSection, RuleBaseline, Word,
+};
+
+mod diff;
 
 fn field(label: impl Into<String>, value: impl Into<String>) -> ReviewField {
     ReviewField {
@@ -123,8 +127,39 @@ pub(super) fn normalized_source_mode(bound: &BoundRule, home: bool) -> String {
     source
 }
 
+#[cfg(test)]
 pub(super) fn is_current(bound: &BoundRule, review: Option<&serde_json::Value>) -> bool {
     describe(bound).is_ok_and(|current| review == Some(&current))
+}
+
+pub(super) fn is_proposal_current(proposal: &Proposal) -> bool {
+    describe_proposal(&proposal.bound, proposal.replaces.as_ref())
+        .is_ok_and(|current| proposal.review.as_ref() == Some(&current))
+}
+
+pub(super) fn describe_proposal(
+    bound: &BoundRule,
+    baseline: Option<&RuleBaseline>,
+) -> Result<serde_json::Value> {
+    let mut review = describe(bound)?;
+    if let Some(baseline) = baseline {
+        let comparison = diff::describe(&baseline.bound, bound);
+        let mut fields = comparison.fields;
+        fields.push(field("Replaces grant", &baseline.id));
+        fields.push(field("Baseline digest", &baseline.digest));
+        fields.push(field(
+            "Current grant expiry (Unix milliseconds)",
+            baseline
+                .grant_expires_unix_ms
+                .map_or_else(|| "Until revoked".into(), |expiry| expiry.to_string()),
+        ));
+        fields.push(field("Approval", "Approval atomically replaces this exact active grant for the selected new lifetime. Until then the existing grant remains active. A changed, expired or revoked baseline requires a new proposal."));
+        review["sections"].as_array_mut().unwrap().insert(
+            0,
+            serde_json::to_value(section("Changes from approved rule", fields))?,
+        );
+    }
+    Ok(review)
 }
 
 pub(super) fn describe(bound: &BoundRule) -> Result<serde_json::Value> {

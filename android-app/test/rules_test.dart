@@ -23,8 +23,7 @@ Map<String, dynamic> reviewDocument() => {
       'fields': [
         {
           'label': 'Grant',
-          'value':
-              'Repeated invocations by this principal (including every assigned key).',
+          'value': 'Repeated invocations by this principal (including every assigned key).',
         },
       ],
     },
@@ -127,6 +126,59 @@ class LostRevokeReply implements ControlApi {
 }
 
 void main() {
+  testWidgets(
+    'replacement diff is visible before unchanged choices and full rule expands',
+    (tester) async {
+      final api = RuleControl();
+      api.proposal['replaces'] = {
+        'id': 'previous',
+        'digest': 'previous-digest',
+      };
+      api.proposal['source'] =
+          'Full rule includes snakes-telegram, zondd and EKA2L1';
+      (api.proposal['review']['sections'] as List).insert(0, {
+        'title': 'Changes from approved rule',
+        'fields': [
+          {
+            'label': 'Summary',
+            'value':
+                '1 added, 0 removed, 0 changed. Unchanged entries are omitted.',
+          },
+          {
+            'label': 'Added Choice target.eka',
+            'value': 'repo="futpib/EKA2L1"\ndst="refs/heads/wasm-port"',
+          },
+        ],
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Dashboard(api: api, name: 'Review'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Changes from approved rule'), findsOneWidget);
+      expect(find.textContaining('Added Choice target.eka'), findsOneWidget);
+      expect(find.textContaining('refs/heads/wasm-port'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('rule-source-proposal-1')),
+        findsNothing,
+      );
+      expect(find.textContaining('snakes-telegram'), findsNothing);
+      await tester.ensureVisible(find.text('Full proposed rule'));
+      await tester.tap(find.text('Full proposed rule'));
+      await tester.pumpAndSettle();
+      expect(find.text(api.proposal['source']), findsOneWidget);
+      expect(find.text('Definition: $normalizedDefinition'), findsOneWidget);
+      await tester.ensureVisible(find.text('Approve rule'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Approve rule'));
+      await tester.pumpAndSettle();
+      expect(api.resolution?['proposal_id'], 'proposal-1');
+      expect(api.resolution?['digest'], 'exact-reviewed-digest');
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   for (final approve in [true, false]) {
     testWidgets('rule decision $approve keeps failures visible across polls', (
       tester,
@@ -223,8 +275,7 @@ void main() {
     'review shows received source before daemon definition and YAML details',
     (tester) async {
       final proposal = RuleControl().proposal;
-      proposal['source'] =
-          '# Keep source formatting\nrule deploy(ticket: ticket-id) {\n  run deploy\n}\n';
+      proposal['source'] = '# Keep source formatting\nrule deploy(ticket: ticket-id) {\n  run deploy\n}\n';
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(

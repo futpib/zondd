@@ -2,7 +2,7 @@ use crate::history::{History, now};
 use anyhow::{Context, Result, ensure};
 use libzond::{
     config::{Config, revision},
-    rules::{BoundRule, Invocation, Proposal, RuleState},
+    rules::{BoundRule, Invocation, Proposal, RuleBaseline, RuleState},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -70,6 +70,25 @@ fn check_stored(proposal: &Proposal) -> Result<()> {
 }
 
 impl Rules {
+    fn baseline_matches(&self, proposal: &Proposal) -> bool {
+        let active = self.0.values().find(|s| {
+            s.status == "active"
+                && s.proposal.principal == proposal.principal
+                && s.proposal.bound.rule.name == proposal.bound.rule.name
+        });
+        match (&proposal.replaces, active) {
+            (None, None) => true,
+            (Some(baseline), Some(active)) => {
+                baseline.id == active.proposal.id
+                    && baseline.digest == active.proposal.digest
+                    && baseline.bound == active.proposal.bound
+                    && baseline.grant_expires_unix_ms == active.grant_expires_unix_ms
+                    && active.grant_expires_unix_ms.is_none_or(|e| e > now())
+            }
+            _ => false,
+        }
+    }
+
     pub fn revision(&self, principal: Option<&str>) -> Result<String> {
         let states: Vec<_> = self
             .0
@@ -85,7 +104,7 @@ impl Rules {
         let mut invalid = Vec::new();
         for mut state in history.rule_states(None, true)? {
             // Review changes have their own invalidation reason during refresh.
-            if review::is_current(&state.proposal.bound, state.proposal.review.as_ref())
+            if review::is_proposal_current(&state.proposal)
                 && let Err(error) = check_stored(&state.proposal)
             {
                 state.status = "invalidated".into();
@@ -112,7 +131,7 @@ impl Rules {
             };
             let reason = if expiry.is_some_and(|e| e <= now()) {
                 Some(("expired", "rule or proposal expired"))
-            } else if !review::is_current(&proposal.bound, proposal.review.as_ref()) {
+            } else if !review::is_proposal_current(proposal) {
                 Some((
                     "invalidated",
                     "rule review changed or is missing; submit a new proposal",
@@ -138,6 +157,11 @@ impl Rules {
                     "invalidated",
                     "policy changed before rule approval; submit a new proposal",
                 ))
+            } else if state.status == "pending" && !self.baseline_matches(proposal) {
+                Some((
+                    "invalidated",
+                    "approved rule baseline changed; submit a new proposal",
+                ))
             } else {
                 None
             };
@@ -145,6 +169,22 @@ impl Rules {
                 let mut state = state.clone();
                 state.status = status.into();
                 state.reason = reason.into();
+                changed.push(state);
+            }
+        }
+        let invalid_ids: std::collections::BTreeSet<_> =
+            changed.iter().map(|s| s.proposal.id.clone()).collect();
+        for state in self.0.values().filter(|s| s.status == "pending") {
+            if !invalid_ids.contains(&state.proposal.id)
+                && state
+                    .proposal
+                    .replaces
+                    .as_ref()
+                    .is_some_and(|b| invalid_ids.contains(&b.id))
+            {
+                let mut state = state.clone();
+                state.status = "invalidated".into();
+                state.reason = "approved rule baseline changed; submit a new proposal".into();
                 changed.push(state);
             }
         }
@@ -219,13 +259,25 @@ impl Rules {
             "rule name conflicts with configured operation"
         );
         ensure!(
-            !self
-                .0
-                .values()
-                .any(|s| s.proposal.principal == principal
-                    && s.proposal.bound.rule.name == rule.name),
-            "rule already active or pending; withdraw it before proposing a replacement"
+            !self.0.values().any(|s| s.status == "pending"
+                && s.proposal.principal == principal
+                && s.proposal.bound.rule.name == rule.name),
+            "rule proposal already pending; withdraw it before proposing another replacement"
         );
+        let replaces = self
+            .0
+            .values()
+            .find(|s| {
+                s.status == "active"
+                    && s.proposal.principal == principal
+                    && s.proposal.bound.rule.name == rule.name
+            })
+            .map(|s| RuleBaseline {
+                id: s.proposal.id.clone(),
+                digest: s.proposal.digest.clone(),
+                bound: s.proposal.bound.clone(),
+                grant_expires_unix_ms: s.grant_expires_unix_ms,
+            });
         let bound = BoundRule {
             rule,
             home: libzond::paths::home_dir()
@@ -244,7 +296,8 @@ impl Rules {
             id: uuid::Uuid::new_v4().to_string(),
             principal: principal.into(),
             source,
-            review: Some(review::describe(&bound)?),
+            review: Some(review::describe_proposal(&bound, replaces.as_ref())?),
+            replaces,
             bound,
             digest: String::new(),
             revision: current_revision.into(),
@@ -276,12 +329,13 @@ impl Rules {
         expires_in_secs: Option<u64>,
         history: &mut History,
     ) -> Result<RuleState> {
-        let mut state = self
-            .0
-            .get(id)
-            .filter(|s| s.status == "pending")
-            .context("rule proposal is no longer pending")?
-            .clone();
+        let Some(mut state) = self.0.get(id).filter(|s| s.status == "pending").cloned() else {
+            let reason = history
+                .rule_state(None, id)
+                .map(|s| s.reason)
+                .unwrap_or_default();
+            anyhow::bail!("rule proposal is no longer pending: {reason}");
+        };
         ensure!(
             state.proposal.digest == digest,
             "rule digest changed; review the exact proposal"
@@ -292,7 +346,12 @@ impl Rules {
         );
         if approve {
             ensure!(
-                self.0.values().filter(|s| s.status == "active").count() < 128,
+                self.baseline_matches(&state.proposal),
+                "approved rule baseline changed; submit a new proposal"
+            );
+            ensure!(
+                state.proposal.replaces.is_some()
+                    || self.0.values().filter(|s| s.status == "active").count() < 128,
                 "active rule limit reached"
             );
         }
@@ -316,15 +375,37 @@ impl Rules {
             "rule proposal denied"
         }
         .into();
-        history.save_rule_states(
-            std::slice::from_ref(&state),
-            if approve {
-                "rule_approved"
-            } else {
-                "rule_denied"
-            },
+        let mut changes = Vec::new();
+        if approve && let Some(baseline) = &state.proposal.replaces {
+            let mut previous = self
+                .0
+                .get(&baseline.id)
+                .context("replacement baseline missing")?
+                .clone();
+            previous.status = "revoked".into();
+            previous.reason = format!("replaced by approved rule {id}");
+            changes.push(previous);
+        }
+        changes.push(state.clone());
+        history.save_rule_changes(
+            &changes
+                .iter()
+                .map(|s| {
+                    (
+                        s,
+                        match s.status.as_str() {
+                            "revoked" => "rule_revoked",
+                            "active" => "rule_approved",
+                            _ => "rule_denied",
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
         )?;
         if approve {
+            if let Some(baseline) = &state.proposal.replaces {
+                self.0.remove(&baseline.id);
+            }
             self.0.insert(id.into(), state.clone());
         } else {
             self.0.remove(id);

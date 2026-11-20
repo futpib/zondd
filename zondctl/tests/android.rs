@@ -255,6 +255,7 @@ fn android_management_over_ssh_and_iroh() {
                     "integration_test/credential_test.dart".into(),
                     "integration_test/interaction_test.dart".into(),
                     "integration_test/rules_test.dart".into(),
+                    "integration_test/rule_replacements_test.dart".into(),
                     "integration_test/search_test.dart".into(),
                     "integration_test/workflow_test.dart".into(),
                 ]

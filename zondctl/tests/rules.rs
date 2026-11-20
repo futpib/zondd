@@ -247,6 +247,67 @@ fn interactive_review_distinguishes_reusable_grants_from_one_time_approval() {
 }
 
 #[test]
+fn interactive_replacement_review_leads_with_one_changed_choice_and_can_expand_full_rule() {
+    use libzondtest::nix::pty::openpty;
+    let env = TestEnv::new();
+    let source = r#"type repo = choice(fields=(name, branch)) {
+ snakes = (name="futpib/snakes-telegram", branch="refs/heads/master")
+ zond = (name="futpib/zondd", branch="refs/heads/master")
+}
+rule publish(r: repo) { run printf "%s:%s" "${r.name}" "${r.branch}" }"#;
+    let original =
+        env.request("exec", json!({"method":"propose_rule","source":source}))["proposal"].clone();
+    assert_eq!(env.request("admin", json!({"method":"resolve_rule","proposal_id":original["id"],"digest":original["digest"],"approve":true}))["type"], "rule_resolved");
+    let source = source.replace(
+        "\n}\n",
+        "\n eka = (name=\"futpib/EKA2L1\", branch=\"refs/heads/wasm-port\")\n}\n",
+    );
+    let replacement =
+        env.request("exec", json!({"method":"propose_rule","source":source}))["proposal"].clone();
+    let pty = openpty(None, None).unwrap();
+    let mut master = fs::File::from(pty.master);
+    let slave = fs::File::from(pty.slave);
+    let mut review = Process::spawn(
+        env.cli()
+            .arg("review")
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave),
+    );
+    let text = String::from_utf8(read_until(&mut master, b"quit [q]: ")).unwrap();
+    assert!(
+        text.contains("1 added, 0 removed, 0 changed.")
+            && text.contains("futpib/EKA2L1")
+            && text.contains("refs/heads/wasm-port"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("snakes-telegram") && !text.contains("futpib/zondd"),
+        "{text}"
+    );
+    master.write_all(b"v\n").unwrap();
+    let full = String::from_utf8(read_until(&mut master, b"quit [q]: ")).unwrap();
+    assert!(
+        full.contains("snakes-telegram")
+            && full.contains("futpib/zondd")
+            && full.contains(replacement["digest"].as_str().unwrap()),
+        "{full}"
+    );
+    master.write_all(b"a\n").unwrap();
+    read_until(&mut master, b"rule_resolved");
+    let rules = env.request("exec", json!({"method":"rules"}));
+    let active = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["status"] == "active")
+        .unwrap();
+    assert_eq!(active["proposal"], replacement);
+    review.stop();
+    review.wait(Duration::from_secs(2));
+}
+
+#[test]
 fn proposal_waits_by_default_and_json_streams_the_exact_approval() {
     let env = TestEnv::new();
     let path = env.dir.path().join("echo.zond");

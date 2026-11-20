@@ -123,7 +123,11 @@ Plain SSH connections do not depend on Iroh versions.
    daemon as selectable, monospaced text, followed by the resolved executable,
    working directory, and parameter constraints. **Approve rule**
    grants repeated invocations for the selected lifetime; it defaults to one
-   hour. **Caller rules** shows collapsed summaries with caller, status, and
+   hour. Replacement proposals lead with added, removed and changed authorization
+   entries, omitting unchanged choices. Expand **Full proposed rule** to inspect
+   the complete source and definition. Approval replaces the exact reviewed
+   active grant; a changed baseline requires a new proposal. **Caller rules**
+   shows collapsed summaries with caller, status, and
    lifetime. The default **Current** filter shows active rules first, followed by
    pending proposals. Choose **History** for previous rules, or **All** to search
    both current and historical entries. Search names, callers, status, or any

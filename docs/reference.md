@@ -484,8 +484,33 @@ The Android **Caller rules** screen also lists definitions and supports
 revocation. Approval grants repeated invocations to the proposing **principal**,
 including all SSH keys assigned to it. Use different principals for separate
 grants. The caller cannot approve, revoke, change the principal, or broaden an
-approved definition. Replacing a rule requires revoking it and reviewing a new
-proposal; a changed digest cannot reuse an approval. These rules are invoked by
+approved definition. Proposing the same rule name for the same principal creates
+a replacement for its current active grant. Only one pending proposal for that
+name is allowed. The old grant stays usable until the replacement is approved;
+denying, withdrawing or expiring the proposal leaves that grant unchanged.
+
+Replacement review starts with **Changes from approved rule**. It compares the
+resolved definitions: added, removed and changed choice rows, types, parameters,
+executable, arguments, checks, directory effects, privileges and execution
+bindings. Adding one repository/branch choice shows just that row; unchanged
+choices are omitted from the diff. A branch change shows the old and new row.
+Formatting-only edits are identified as having no authorization changes.
+First-time proposals show the complete rule without a replacement diff.
+Android offers **Full proposed rule**, including received source, normalized
+definition and YAML; interactive `zondctl review` offers **view full proposal [v]**.
+JSON responses retain the complete proposal and review.
+
+The receiver binds the comparison, proposed definition and exact baseline grant
+ID, digest, definition and expiry into the proposal digest. Approval rechecks
+that baseline under the same lock used for rule changes and execution admission,
+then atomically revokes the previous grant and activates the replacement with
+the newly selected lifetime, recording both transitions. If the baseline was
+revoked, withdrawn, expired or invalidated, the proposal becomes invalid and must
+be submitted again; it is never silently compared to another grant. Already
+admitted jobs continue under their admitted authority. Existing grants and their
+historical reviews remain inspectable after replacement and restart.
+
+A changed digest cannot reuse an approval. These rules are invoked by
 name and do not add raw `exec` allowlist entries. Commands retain `no_new_privs`
 unless the proposed definition explicitly uses `run --sudo PROGRAM ...`.
 That flag enables sudo password challenges and permits privilege escalation by
