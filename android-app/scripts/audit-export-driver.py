@@ -27,6 +27,13 @@ while verified < 2:
     if time.monotonic() >= next_report:
         print(f"Waiting for Android audit saver ({verified}/2): {focus}", flush=True)
         next_report = time.monotonic() + 60
+    # The Google APIs emulator's launcher can hang behind the test app and
+    # cover DocumentsUI with an ANR dialog. Stop only that launcher; ANRs in
+    # the app or document saver must still fail the test.
+    if "Application Not Responding: com.google.android.apps.nexuslauncher}" in focus:
+        print("Stopping unresponsive emulator launcher blocking the audit saver", flush=True)
+        subprocess.run(adb + ["shell", "am", "force-stop", "com.google.android.apps.nexuslauncher"], check=True, timeout=10)
+        continue
     if "documentsui" not in focus.lower():
         continue
     dumped = subprocess.run(adb + ["shell", "uiautomator", "dump", "/sdcard/zond-audit-window.xml"], capture_output=True, timeout=15)
