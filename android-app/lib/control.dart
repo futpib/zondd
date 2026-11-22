@@ -265,9 +265,8 @@ class ControlConnection extends ChangeNotifier
         _scheduleRetry(immediate: true);
       } else {
         // Detect a stale connection immediately after Android resumes the app.
-        request({
-          'method': 'status',
-        }).catchError((Object _) => <String, dynamic>{});
+        request({'method': 'status'})
+            .catchError((Object _) => <String, dynamic>{});
       }
     }
   }
@@ -366,8 +365,10 @@ class ControlConnection extends ChangeNotifier
   }
 }
 
-typedef AuthenticationRequest =
-    Future<List<String>?> Function(SSHUserInfoRequest request, bool retry);
+typedef AuthenticationRequest = Future<List<String>?> Function(
+  SSHUserInfoRequest request,
+  bool retry,
+);
 
 class PasswordChangeRequest extends SSHUserInfoRequest {
   PasswordChangeRequest(String instruction)

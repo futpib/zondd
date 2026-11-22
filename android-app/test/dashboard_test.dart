@@ -41,8 +41,7 @@ class EditableControl implements ControlApi {
       case 'read_config':
         return {
           'content': content,
-          'defaults':
-              '[principals.default]\ncwd = "/"\nallow_exec = true\ndefault = "ask"\n',
+          'defaults': '[principals.default]\ncwd = "/"\nallow_exec = true\ndefault = "ask"\n',
           'revision': 'before',
           'path': 'config.toml',
         };

@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -170,9 +171,8 @@ class _ConnectionsPageState extends State<ConnectionsPage> {
   }
 
   Future<void> manageKeys() async {
-    await Navigator.of(
-      context,
-    ).push<void>(MaterialPageRoute(builder: (_) => const KeysPage()));
+    await Navigator.of(context)
+        .push<void>(MaterialPageRoute(builder: (_) => const KeysPage()));
     await load();
   }
 
@@ -771,9 +771,10 @@ class _ProfilePageState extends State<ProfilePage> {
       executable: value('Executable').trim(),
       runtime: value('Runtime').trim(),
       config: value('Config').trim(),
-      relays: value(
-        'Relays',
-      ).split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList(),
+      relays: value('Relays')
+          .split(RegExp(r'\s+'))
+          .where((s) => s.isNotEmpty)
+          .toList(),
     );
     setState(() => leaving = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {

@@ -13,9 +13,9 @@ void main() {
   testWidgets('provider-held key authenticates over SSH and Iroh', (
     tester,
   ) async {
-    final fixture =
-        jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-            as Map<String, dynamic>;
+    final fixture = jsonDecode(
+      const String.fromEnvironment('ZONDD_FIXTURE'),
+    ) as Map<String, dynamic>;
     final store = IdentityStore();
     final previous = await store.load();
     try {

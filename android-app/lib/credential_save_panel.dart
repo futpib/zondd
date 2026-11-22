@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'saved_credentials.dart';
 
 class CredentialSavePanel extends StatefulWidget {
@@ -107,8 +108,7 @@ class CredentialSavePanelState extends State<CredentialSavePanel>
     } catch (_) {
       if (mounted) {
         setState(
-          () => error =
-              'Credentials were not saved. Try again, or turn off saving to send without saving.',
+          () => error = 'Credentials were not saved. Try again, or turn off saving to send without saving.',
         );
       }
       return false;
@@ -140,8 +140,7 @@ class CredentialSavePanelState extends State<CredentialSavePanel>
       }
       if (!widget.apply(values)) {
         setState(
-          () => error =
-              'Saved credentials do not match the entered account. Enter credentials manually, or clear the account field first.',
+          () => error = 'Saved credentials do not match the entered account. Enter credentials manually, or clear the account field first.',
         );
         return;
       }
@@ -149,8 +148,7 @@ class CredentialSavePanelState extends State<CredentialSavePanel>
     } catch (_) {
       if (mounted) {
         setState(
-          () => error =
-              'Saved credentials could not be unlocked. You can enter them manually.',
+          () => error = 'Saved credentials could not be unlocked. You can enter them manually.',
         );
       }
     } finally {

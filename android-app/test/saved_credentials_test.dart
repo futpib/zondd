@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zondd_control/control.dart';
@@ -156,83 +157,77 @@ void main() {
     },
   );
 
-  test(
-    'sudo cache isolates verified host, unix user, runtime, config, caller and exact command',
-    () {
-      String key(Map<String, dynamic> c) =>
-          CredentialBinding.sudo('verified-host', 'VM', c)!.id;
-      final id = key(sudo());
-      for (final change in <void Function(Map<String, dynamic>)>[
-        (c) => c['principal'] = 'another-caller',
-        (c) => c['operation'] = 'other-operation',
-        (c) => c['command']['program'] = '/usr/bin/other',
-        (c) => c['command']['args'] = ['-Syu', 'other-argument'],
-        (c) => c['prompt'] = '[sudo] password for bob:',
-      ]) {
-        final changed = sudo();
-        change(changed);
-        expect(key(changed), isNot(id));
-      }
-      final next = sudo();
-      next['request_id'] = 'next-job';
-      next['challenge_id'] = 'next-challenge';
-      expect(key(next), id);
-      final profile = Profile(name: 'VM', host: 'localhost', user: 'alice');
-      final scope = auditScopeFor(profile, 'fingerprint');
-      for (final other in [
-        Profile(name: 'VM', host: 'localhost', user: 'bob'),
-        Profile(
-          name: 'VM',
-          host: 'localhost',
-          user: 'alice',
-          runtime: '/other/runtime',
-        ),
-        Profile(
-          name: 'VM',
-          host: 'localhost',
-          user: 'alice',
-          config: '/other/config',
-        ),
-      ]) {
-        expect(auditScopeFor(other, 'fingerprint'), isNot(scope));
-      }
-      expect(auditScopeFor(profile, 'new-fingerprint'), isNot(scope));
-      expect(
-        credentialReceiverScope(scope, 'zondctl'),
-        isNot(credentialReceiverScope(scope, '/other/helper')),
-      );
-    },
-  );
+  test('sudo cache isolates verified host, unix user, runtime, config, caller and exact command', () {
+    String key(Map<String, dynamic> c) =>
+        CredentialBinding.sudo('verified-host', 'VM', c)!.id;
+    final id = key(sudo());
+    for (final change in <void Function(Map<String, dynamic>)>[
+      (c) => c['principal'] = 'another-caller',
+      (c) => c['operation'] = 'other-operation',
+      (c) => c['command']['program'] = '/usr/bin/other',
+      (c) => c['command']['args'] = ['-Syu', 'other-argument'],
+      (c) => c['prompt'] = '[sudo] password for bob:',
+    ]) {
+      final changed = sudo();
+      change(changed);
+      expect(key(changed), isNot(id));
+    }
+    final next = sudo();
+    next['request_id'] = 'next-job';
+    next['challenge_id'] = 'next-challenge';
+    expect(key(next), id);
+    final profile = Profile(name: 'VM', host: 'localhost', user: 'alice');
+    final scope = auditScopeFor(profile, 'fingerprint');
+    for (final other in [
+      Profile(name: 'VM', host: 'localhost', user: 'bob'),
+      Profile(
+        name: 'VM',
+        host: 'localhost',
+        user: 'alice',
+        runtime: '/other/runtime',
+      ),
+      Profile(
+        name: 'VM',
+        host: 'localhost',
+        user: 'alice',
+        config: '/other/config',
+      ),
+    ]) {
+      expect(auditScopeFor(other, 'fingerprint'), isNot(scope));
+    }
+    expect(auditScopeFor(profile, 'new-fingerprint'), isNot(scope));
+    expect(
+      credentialReceiverScope(scope, 'zondctl'),
+      isNot(credentialReceiverScope(scope, '/other/helper')),
+    );
+  });
 
-  test(
-    'OTPs, choices and unknown field kinds never enter saved answers or metadata',
-    () {
-      final c = application();
-      c['fields'].addAll([
-        {'id': 'security_code', 'kind': 'secret'},
-        {'id': 'input-1', 'label': 'Verification code', 'kind': 'secret'},
-        {'id': 'approval', 'kind': 'confirmation'},
-        {'id': 'future', 'kind': 'unknown-token'},
-      ]);
-      final b = CredentialBinding.application('receiver', 'VM', c)!;
-      expect(
-        b.select({
-          'username': 'alice',
-          'password': 'secret',
-          'otp': '123456',
-          'security_code': '456',
-          'approval': 'yes',
-          'future': 'token',
-        }),
-        {'username': 'alice', 'password': 'secret'},
-      );
-      expect(jsonEncode(b.metadata), isNot(contains('secret')));
-      c['fields'] = [
-        {'id': 'otp', 'kind': 'otp'},
-      ];
-      expect(CredentialBinding.application('receiver', 'VM', c), isNull);
-    },
-  );
+  test('OTPs, choices and unknown field kinds never enter saved answers or metadata', () {
+    final c = application();
+    c['fields'].addAll([
+      {'id': 'security_code', 'kind': 'secret'},
+      {'id': 'input-1', 'label': 'Verification code', 'kind': 'secret'},
+      {'id': 'approval', 'kind': 'confirmation'},
+      {'id': 'future', 'kind': 'unknown-token'},
+    ]);
+    final b = CredentialBinding.application('receiver', 'VM', c)!;
+    expect(
+      b.select({
+        'username': 'alice',
+        'password': 'secret',
+        'otp': '123456',
+        'security_code': '456',
+        'approval': 'yes',
+        'future': 'token',
+      }),
+      {'username': 'alice', 'password': 'secret'},
+    );
+    expect(jsonEncode(b.metadata), isNot(contains('secret')));
+    c['fields'] = [
+      {'id': 'otp', 'kind': 'otp'},
+    ];
+    expect(CredentialBinding.application('receiver', 'VM', c), isNull);
+  });
 
   testWidgets(
     'sudo offers timed saving by default and explicit biometric reuse',

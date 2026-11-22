@@ -12,11 +12,13 @@ import 'package:zondd_control/keys_page.dart';
 import 'package:zondd_control/main.dart';
 import 'package:zondd_control/ui.dart';
 
+import 'caller.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   for (final iroh in [false, true]) {
     testWidgets(
       'search saved lists, policy and older history over ${iroh ? 'Iroh' : 'SSH'}',
@@ -132,6 +134,7 @@ void main() {
           final marker = 'older-search-${iroh ? 'iroh' : 'ssh'}';
           for (var i = 0; i < 33; i++) {
             final session = await caller.execute('');
+            final events = await callerEvents(session);
             try {
               session.stdin.add(
                 Uint8List.fromList(
@@ -150,13 +153,11 @@ void main() {
                   ),
                 ),
               );
-              final response = await session.stdout
-                  .cast<List<int>>()
-                  .transform(utf8.decoder)
-                  .transform(const LineSplitter())
-                  .first;
+              expect(await events.moveNext(), isTrue);
+              final response = events.current;
               expect(jsonDecode(response)['body']['type'], 'rejected');
             } finally {
+              await events.cancel();
               session.close();
             }
           }

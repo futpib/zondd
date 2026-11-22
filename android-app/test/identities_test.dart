@@ -17,9 +17,8 @@ void main() {
     final restored = Profile.fromJson(profile.toJson());
     expect(restored.selectedKeyIds, ['primary', 'second', 'third']);
     expect(
-      Profile.fromJson(
-        {...profile.toJson()}..remove('additionalKeyIds'),
-      ).selectedKeyIds,
+      Profile.fromJson({...profile.toJson()}..remove('additionalKeyIds'))
+          .selectedKeyIds,
       ['primary'],
     );
   });

@@ -6,9 +6,9 @@ import 'package:zondd_control/control.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   for (final iroh in [false, true]) {
     testWidgets('reports installed app version over ${iroh ? 'Iroh' : 'SSH'}', (
       tester,

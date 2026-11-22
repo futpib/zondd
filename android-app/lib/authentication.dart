@@ -1,5 +1,6 @@
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
+
 import 'control.dart';
 
 class AuthenticationDialog {

@@ -9,9 +9,9 @@ import 'package:zondd_control/main.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
 
   Future<void> waitFor(WidgetTester tester, Finder finder) async {
     for (var i = 0; i < 400 && finder.evaluate().isEmpty; i++) {

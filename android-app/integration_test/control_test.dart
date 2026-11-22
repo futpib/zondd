@@ -11,6 +11,8 @@ import 'package:zondd_control/main.dart';
 import 'package:zondd_control/identities.dart';
 import 'package:zondd_control/history.dart';
 
+import 'caller.dart';
+
 // Let the real server commit, then lose the response before the UI receives it.
 class LostSaveReply implements ControlApi {
   LostSaveReply(this.transport);
@@ -30,9 +32,9 @@ class LostSaveReply implements ControlApi {
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   Profile profile(bool iroh, {bool restricted = false}) => Profile(
     name: iroh ? 'Iroh test' : 'SSH test',
     host: (iroh ? fixture['endpoint'] : fixture['host']) as String,
@@ -451,12 +453,7 @@ void main() {
             );
             try {
               final session = await caller.execute('');
-              final events = StreamIterator(
-                session.stdout
-                    .cast<List<int>>()
-                    .transform(utf8.decoder)
-                    .transform(const LineSplitter()),
-              );
+              final events = await callerEvents(session);
               session.stdin.add(
                 Uint8List.fromList(
                   utf8.encode(

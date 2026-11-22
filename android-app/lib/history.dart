@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+
 import 'control.dart';
 import 'ui.dart';
 import 'json_yaml.dart';
@@ -30,9 +32,12 @@ String statusLabel(String status) => switch (status) {
   'running' => 'Running',
   _ => 'Received',
 };
-String timestamp(dynamic value) => DateTime.fromMillisecondsSinceEpoch(
-  value as int,
-).toLocal().toString().split('.').first;
+String timestamp(dynamic value) =>
+    DateTime.fromMillisecondsSinceEpoch(value as int)
+        .toLocal()
+        .toString()
+        .split('.')
+        .first;
 String commandText(Map<String, dynamic> record) =>
     jsonAsYaml(record['command'] ?? record['input']);
 
@@ -409,9 +414,7 @@ class HistoryPageState extends State<HistoryPage> with WidgetsBindingObserver {
                 EmptyState(
                   Icons.history,
                   activity ? 'No activity yet' : 'No requests yet',
-                  activity
-                      ? 'Daemon actions are kept here.'
-                      : 'Requests and their outcomes are kept here, including rejected and expired requests.',
+                  activity ? 'Daemon actions are kept here.' : 'Requests and their outcomes are kept here, including rejected and expired requests.',
                 ),
               if (activity && grouped && !auditUnsupported)
                 ...activityGroups(rows, widget.api, includeReads),

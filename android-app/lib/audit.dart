@@ -3,10 +3,12 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:pinenacl/ed25519.dart' as ed25519;
 import 'package:pinenacl/tweetnacl.dart' show TweetNaClExt;
+
 import 'control.dart';
 import 'transport.dart';
 
@@ -322,9 +324,8 @@ void verifyAuditSignature(
       throw StateError('Weak audit signature point.');
     }
   }
-  ed25519.VerifyKey(
-    publicKey,
-  ).verify(signature: ed25519.Signature(signature), message: message);
+  ed25519.VerifyKey(publicKey)
+      .verify(signature: ed25519.Signature(signature), message: message);
   _rememberAuditSignature(cacheKey);
 }
 

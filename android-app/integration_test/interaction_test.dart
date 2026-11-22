@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,9 +9,9 @@ import 'package:zondd_control/main.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   for (final iroh in [false, true]) {
     testWidgets(
       'application form delivers secrets privately over ${iroh ? 'Iroh' : 'SSH'}',

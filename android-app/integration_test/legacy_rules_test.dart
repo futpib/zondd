@@ -1,12 +1,14 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
+
+import 'caller.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -40,12 +42,7 @@ void main() {
         );
         Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
           final session = await caller.execute('');
-          final responses = StreamIterator(
-            session.stdout
-                .cast<List<int>>()
-                .transform(utf8.decoder)
-                .transform(const LineSplitter()),
-          );
+          final responses = await callerEvents(session);
           try {
             session.stdin.add(
               Uint8List.fromList(

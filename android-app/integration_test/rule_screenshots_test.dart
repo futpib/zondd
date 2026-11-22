@@ -11,11 +11,13 @@ import 'package:zondd_control/main.dart';
 import 'package:zondd_control/rules.dart';
 import 'package:zondd_control/ui.dart';
 
+import 'caller.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   testWidgets('capture reusable rule review and YAML fallback', (tester) async {
     final api = await SshControl.connect(
       Profile(
@@ -89,6 +91,7 @@ void main() {
   }
 }''';
       final session = await caller.execute('');
+      final events = await callerEvents(session);
       try {
         session.stdin.add(
           Uint8List.fromList(
@@ -101,15 +104,13 @@ void main() {
             ),
           ),
         );
-        final response = await session.stdout
-            .cast<List<int>>()
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())
-            .first;
+        expect(await events.moveNext(), isTrue);
+        final response = events.current;
         final body = jsonDecode(response)['body'] as Map;
         expect(body['type'], 'rule_proposed');
         proposal = body['proposal'] as Map<String, dynamic>;
       } finally {
+        await events.cancel();
         session.close();
       }
 

@@ -275,7 +275,7 @@ fn android_management_over_ssh_and_iroh() {
             && transcript.contains("All tests passed!")
             && !transcript.contains("EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK")
             && !transcript.contains("This test failed after it had already completed"),
-        "Android integration failed or reported a late framework exception"
+        "Android integration failed or reported a late framework exception:\n{transcript}"
     );
     if let Some(driver) = &mut export_driver {
         assert!(

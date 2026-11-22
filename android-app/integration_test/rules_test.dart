@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -9,6 +8,8 @@ import 'package:integration_test/integration_test.dart';
 import 'package:yaml/yaml.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
+
+import 'caller.dart';
 
 // Force one real daemon rejection while retaining the reviewed pending rule.
 class StaleDigestOnce implements ControlApi {
@@ -29,9 +30,9 @@ class StaleDigestOnce implements ControlApi {
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   for (final scenario in [
     (iroh: false, service: false, typed: false),
     (iroh: true, service: false, typed: false),
@@ -71,12 +72,7 @@ void main() {
         );
         Future<Map<String, dynamic>> request(Map<String, dynamic> body) async {
           final session = await caller.execute('');
-          final events = StreamIterator(
-            session.stdout
-                .cast<List<int>>()
-                .transform(utf8.decoder)
-                .transform(const LineSplitter()),
-          );
+          final events = await callerEvents(session);
           try {
             session.stdin.add(
               Uint8List.fromList(

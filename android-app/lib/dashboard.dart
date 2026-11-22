@@ -1,9 +1,14 @@
 import 'policy_overview.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
+
 import 'search.dart';
+
 import 'package:toml/toml.dart';
+
 import 'control.dart';
 import 'ui.dart';
 import 'history.dart';
@@ -392,9 +397,8 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         defaultPrincipals =
-            TomlDocument.parse(
-                  result['defaults'] as String? ?? '',
-                ).toMap()['principals']
+            TomlDocument.parse(result['defaults'] as String? ?? '')
+                    .toMap()['principals']
                 as Map? ??
             {};
         config.text = result['content'] as String;
@@ -464,9 +468,8 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
             Text(widget.name, maxLines: 1, overflow: TextOverflow.ellipsis),
             Text(
               widget.connection,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: Theme.of(context).colorScheme.primary,
-              ),
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.primary),
             ),
           ],
         ),
@@ -1185,9 +1188,9 @@ class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
                                 contentPadding: EdgeInsets.zero,
                                 title: Text(
                                   '${rule['decision']}'.toUpperCase(),
-                                  style: Theme.of(
-                                    context,
-                                  ).textTheme.labelMedium,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelMedium,
                                 ),
                                 subtitle: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,

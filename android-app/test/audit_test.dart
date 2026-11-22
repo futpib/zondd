@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -209,11 +210,9 @@ class AuditControl implements ControlApi, AuditPeer {
 
 void main() {
   test('strict signature checks reject weak keys, weak R and unreduced S', () {
-    final vectors =
-        jsonDecode(
-              File('../testdata/audit-ed25519-strict.json').readAsStringSync(),
-            )
-            as Map;
+    final vectors = jsonDecode(
+      File('../testdata/audit-ed25519-strict.json').readAsStringSync(),
+    ) as Map;
     final message = Uint8List.fromList(
       utf8.encode(vectors['message'] as String),
     );
@@ -348,13 +347,16 @@ void main() {
         throwsA(isA<AuditHistoryPaused>()),
       );
       await api.legacyPageStarted!.future;
-      final preparation =
-          prepareAuditedRequest(api.historyVerifier, AuditDevice(storage), {
-            'method': 'resolve_rule',
-            'proposal_id': 'proposal-1',
-            'digest': 'digest-1',
-            'approve': true,
-          });
+      final preparation = prepareAuditedRequest(
+        api.historyVerifier,
+        AuditDevice(storage),
+        {
+          'method': 'resolve_rule',
+          'proposal_id': 'proposal-1',
+          'digest': 'digest-1',
+          'approve': true,
+        },
+      );
       api.holdLegacyPage!.complete();
       await browsing;
       expect((await preparation)['actor']['checkpoint']['sequence'], 207494);
@@ -405,13 +407,16 @@ void main() {
       }
       final api = AuditControl(bundle, storage, 'large-legacy')..pageSize = 100;
       final device = AuditDevice(storage);
-      final prepared =
-          await prepareAuditedRequest(api.historyVerifier, device, {
-            'method': 'resolve_rule',
-            'proposal_id': 'proposal-1',
-            'digest': 'digest-1',
-            'approve': true,
-          });
+      final prepared = await prepareAuditedRequest(
+        api.historyVerifier,
+        device,
+        {
+          'method': 'resolve_rule',
+          'proposal_id': 'proposal-1',
+          'digest': 'digest-1',
+          'approve': true,
+        },
+      );
       expect(prepared['actor']['checkpoint']['sequence'], 207544);
       expect(
         api.calls
@@ -432,63 +437,56 @@ void main() {
     },
   );
 
-  test(
-    'migration-tail decisions verify signatures and receipt binding',
-    () async {
-      final storage = MemoryAuditStorage();
-      final api = AuditControl(migratedFixture(), storage, 'legacy-signatures');
-      final device = AuditDevice(storage);
-      final body = {
-        'method': 'resolve',
-        'approval_id': 'approval-1',
-        'approve': true,
-      };
-      final prepared = await prepareAuditedRequest(
-        api.historyVerifier,
-        device,
-        body,
-      );
-      final proof = prepared['actor'] as Map;
-      final fingerprint =
-          'ed25519:SHA256:${base64Encode(sha256.convert(auditUnhex(proof['public_key'] as String, 32)).bytes).replaceAll('=', '')}';
-      final actor = {
-        'device_signing_key': fingerprint,
-        'device_key_evidence': 'signature_verified',
-        'receipt_id': proof['nonce'],
-      };
-      appendEvent(
-        api.bundle,
-        action: 'signed_decision',
-        detail: {'proof': proof, 'request': body, 'actor': actor},
-      );
-      appendEvent(
-        api.bundle,
-        action: 'approval_granted',
-        detail: {'approval_id': 'approval-1', 'actor': actor},
-      );
-      await api.historyVerifier.sync(includeLegacy: false);
-      expect(api.historyVerifier.unrecordedReceipts, 0);
-      final reopened = AuditVerifier(
+  test('migration-tail decisions verify signatures and receipt binding', () async {
+    final storage = MemoryAuditStorage();
+    final api = AuditControl(migratedFixture(), storage, 'legacy-signatures');
+    final device = AuditDevice(storage);
+    final body = {
+      'method': 'resolve',
+      'approval_id': 'approval-1',
+      'approve': true,
+    };
+    final prepared = await prepareAuditedRequest(
+      api.historyVerifier,
+      device,
+      body,
+    );
+    final proof = prepared['actor'] as Map;
+    final fingerprint =
+        'ed25519:SHA256:${base64Encode(sha256.convert(auditUnhex(proof['public_key'] as String, 32)).bytes).replaceAll('=', '')}';
+    final actor = {
+      'device_signing_key': fingerprint,
+      'device_key_evidence': 'signature_verified',
+      'receipt_id': proof['nonce'],
+    };
+    appendEvent(
+      api.bundle,
+      action: 'signed_decision',
+      detail: {'proof': proof, 'request': body, 'actor': actor},
+    );
+    appendEvent(
+      api.bundle,
+      action: 'approval_granted',
+      detail: {'approval_id': 'approval-1', 'actor': actor},
+    );
+    await api.historyVerifier.sync(includeLegacy: false);
+    expect(api.historyVerifier.unrecordedReceipts, 0);
+    final reopened = AuditVerifier(api, 'legacy-signatures', storage: storage);
+    await reopened.sync(includeLegacy: false);
+    expect(reopened.checkpoint!['sequence'], 207495);
+    final anchor = storage.values['audit:checkpoint:legacy-signatures'];
+    api.bundle['events'].last['detail']['approval_id'] = 'another-approval';
+    rehash(api.bundle);
+    await expectLater(
+      AuditVerifier(
         api,
         'legacy-signatures',
         storage: storage,
-      );
-      await reopened.sync(includeLegacy: false);
-      expect(reopened.checkpoint!['sequence'], 207495);
-      final anchor = storage.values['audit:checkpoint:legacy-signatures'];
-      api.bundle['events'].last['detail']['approval_id'] = 'another-approval';
-      rehash(api.bundle);
-      await expectLater(
-        AuditVerifier(
-          api,
-          'legacy-signatures',
-          storage: storage,
-        ).sync(includeLegacy: false),
-        throwsStateError,
-      );
-      expect(storage.values['audit:checkpoint:legacy-signatures'], anchor);
-    },
-  );
+      ).sync(includeLegacy: false),
+      throwsStateError,
+    );
+    expect(storage.values['audit:checkpoint:legacy-signatures'], anchor);
+  });
 
   test(
     'an imported-history verification failure still blocks decisions',
@@ -630,84 +628,78 @@ void main() {
     },
   );
 
-  test(
-    'rewritten, missing, rolled back and replaced history preserve the phone anchor',
-    () async {
-      for (final change in [
-        'bytes',
-        'recomputed',
-        'missing',
-        'rollback',
-        'replacement',
-        'migration',
-      ]) {
-        final storage = MemoryAuditStorage();
-        final api = AuditControl(auditFixture(), storage, change);
-        await api.historyVerifier.sync();
-        final preserved = storage.values['audit:checkpoint:$change'];
-        switch (change) {
-          case 'bytes':
-            api.bundle['events'][5]['detail']['reason'] = 'altered';
-          case 'recomputed':
-            api.bundle['events'][5]['detail']['reason'] = 'altered';
-            rehash(api.bundle);
-          case 'missing':
-            api.missingPage = true;
-          case 'rollback':
-            api.bundle['checkpoint']['sequence'] = 5;
-          case 'replacement':
-            api.bundle['checkpoint']['log_id'] = 'different log';
-          case 'migration':
-            api.bundle['legacy_through_sequence'] = 1;
-        }
-        final reopened = AuditVerifier(api, change, storage: storage);
-        await expectLater(reopened.sync(), throwsA(anything));
-        expect(storage.values['audit:checkpoint:$change'], preserved);
+  test('rewritten, missing, rolled back and replaced history preserve the phone anchor', () async {
+    for (final change in [
+      'bytes',
+      'recomputed',
+      'missing',
+      'rollback',
+      'replacement',
+      'migration',
+    ]) {
+      final storage = MemoryAuditStorage();
+      final api = AuditControl(auditFixture(), storage, change);
+      await api.historyVerifier.sync();
+      final preserved = storage.values['audit:checkpoint:$change'];
+      switch (change) {
+        case 'bytes':
+          api.bundle['events'][5]['detail']['reason'] = 'altered';
+        case 'recomputed':
+          api.bundle['events'][5]['detail']['reason'] = 'altered';
+          rehash(api.bundle);
+        case 'missing':
+          api.missingPage = true;
+        case 'rollback':
+          api.bundle['checkpoint']['sequence'] = 5;
+        case 'replacement':
+          api.bundle['checkpoint']['log_id'] = 'different log';
+        case 'migration':
+          api.bundle['legacy_through_sequence'] = 1;
       }
-    },
-  );
+      final reopened = AuditVerifier(api, change, storage: storage);
+      await expectLater(reopened.sync(), throwsA(anything));
+      expect(storage.values['audit:checkpoint:$change'], preserved);
+    }
+  });
 
-  test(
-    'a recomputed forged decision or actor cannot pass a fresh baseline',
-    () async {
-      for (final change in [
-        'signature',
-        'weak_key',
-        'actor',
-        'approval',
-        'gap',
-      ]) {
-        final bundle = auditFixture();
-        switch (change) {
-          case 'signature':
-            bundle['events'][2]['detail']['proof']['signature'] = '00' * 64;
-          case 'weak_key':
-            final key = "01${'00' * 31}";
-            final fingerprint =
-                'ed25519:SHA256:${base64Encode(sha256.convert(auditUnhex(key, 32)).bytes).replaceAll('=', '')}';
-            bundle['events'][2]['detail']['proof']['public_key'] = key;
-            bundle['events'][2]['detail']['proof']['signature'] =
-                "01${'00' * 63}";
-            bundle['events'][2]['detail']['actor']['device_signing_key'] =
-                fingerprint;
-            bundle['events'][4]['detail']['actor']['device_signing_key'] =
-                fingerprint;
-          case 'actor':
-            bundle['events'][4]['detail']['actor']['device_signing_key'] =
-                'impostor';
-          case 'approval':
-            bundle['events'][4]['detail']['approval_id'] = 'another approval';
-          case 'gap':
-            (bundle['events'] as List).removeAt(3);
-        }
-        rehash(bundle);
-        final storage = MemoryAuditStorage();
-        final api = AuditControl(bundle, storage, 'forged-$change');
-        await expectLater(api.historyVerifier.sync(), throwsA(anything));
-        expect(storage.values, isEmpty);
+  test('a recomputed forged decision or actor cannot pass a fresh baseline', () async {
+    for (final change in [
+      'signature',
+      'weak_key',
+      'actor',
+      'approval',
+      'gap',
+    ]) {
+      final bundle = auditFixture();
+      switch (change) {
+        case 'signature':
+          bundle['events'][2]['detail']['proof']['signature'] = '00' * 64;
+        case 'weak_key':
+          final key = "01${'00' * 31}";
+          final fingerprint =
+              'ed25519:SHA256:${base64Encode(sha256.convert(auditUnhex(key, 32)).bytes).replaceAll('=', '')}';
+          bundle['events'][2]['detail']['proof']['public_key'] = key;
+          bundle['events'][2]['detail']['proof']['signature'] =
+              "01${'00' * 63}";
+          bundle['events'][2]['detail']['actor']['device_signing_key'] =
+              fingerprint;
+          bundle['events'][4]['detail']['actor']['device_signing_key'] =
+              fingerprint;
+        case 'actor':
+          bundle['events'][4]['detail']['actor']['device_signing_key'] =
+              'impostor';
+        case 'approval':
+          bundle['events'][4]['detail']['approval_id'] = 'another approval';
+        case 'gap':
+          (bundle['events'] as List).removeAt(3);
       }
-    },
-  );
+      rehash(bundle);
+      final storage = MemoryAuditStorage();
+      final api = AuditControl(bundle, storage, 'forged-$change');
+      await expectLater(api.historyVerifier.sync(), throwsA(anything));
+      expect(storage.values, isEmpty);
+    }
+  });
 
   test(
     'a display rewrite and failed secure write cannot advance the checkpoint',
@@ -750,89 +742,83 @@ void main() {
     },
   );
 
-  test(
-    'concurrent connection verifiers cannot roll the phone checkpoint backwards',
-    () async {
-      final storage = MemoryAuditStorage();
-      final first = AuditControl(auditFixture(), storage, 'concurrent');
-      final newer = copy(first.bundle);
-      appendEvent(newer);
-      final second = AuditControl(newer, storage, 'concurrent');
-      await Future.wait([
-        first.historyVerifier.sync(),
-        second.historyVerifier.sync(),
-      ]);
-      expect(
-        jsonDecode(
-          storage.values['audit:checkpoint:concurrent']!,
-        )['checkpoint']['sequence'],
-        7,
-      );
-      await expectLater(first.historyVerifier.sync(), throwsStateError);
-      expect(
-        jsonDecode(
-          storage.values['audit:checkpoint:concurrent']!,
-        )['checkpoint']['sequence'],
-        7,
-      );
-    },
-  );
+  test('concurrent connection verifiers cannot roll the phone checkpoint backwards', () async {
+    final storage = MemoryAuditStorage();
+    final first = AuditControl(auditFixture(), storage, 'concurrent');
+    final newer = copy(first.bundle);
+    appendEvent(newer);
+    final second = AuditControl(newer, storage, 'concurrent');
+    await Future.wait([
+      first.historyVerifier.sync(),
+      second.historyVerifier.sync(),
+    ]);
+    expect(
+      jsonDecode(
+        storage.values['audit:checkpoint:concurrent']!,
+      )['checkpoint']['sequence'],
+      7,
+    );
+    await expectLater(first.historyVerifier.sync(), throwsStateError);
+    expect(
+      jsonDecode(
+        storage.values['audit:checkpoint:concurrent']!,
+      )['checkpoint']['sequence'],
+      7,
+    );
+  });
 
-  test(
-    'local receipts precede sending, exclude answers and policy values, and expose unknown outcomes',
-    () async {
-      final storage = MemoryAuditStorage();
-      final device = AuditDevice(storage);
-      final api = AuditControl(auditFixture(), storage, 'receipts');
-      await api.historyVerifier.sync();
-      for (final body in [
-        {
-          'method': 'credential',
-          'challenge_id': 'sudo',
-          'password': 'private-password',
-        },
-        {
-          'method': 'answer_interaction',
-          'challenge_id': 'app',
-          'values': {'secret': 'private-answer'},
-        },
-        {
-          'method': 'save_config',
-          'revision': 'old',
-          'content': 'private-policy-value',
-        },
-      ]) {
-        final proof = await device.sign(
-          'receipts',
-          api.historyVerifier.checkpoint!,
-          body,
-        );
-        expect((await device.receipts('receipts')).last['proof'], proof);
-      }
-      final text = jsonEncode(await device.receipts('receipts'));
-      for (final secret in [
-        'private-password',
-        'private-answer',
-        'private-policy-value',
-      ]) {
-        expect(text, isNot(contains(secret)));
-      }
-      await api.historyVerifier.sync();
-      expect(api.historyVerifier.unrecordedReceipts, 3);
-      final exported = await api.historyVerifier.export(device);
-      expect((exported['device_receipts'] as List).length, 3);
-      final freshDevice = AuditDevice(storage);
-      final again = await freshDevice.sign(
+  test('local receipts precede sending, exclude answers and policy values, and expose unknown outcomes', () async {
+    final storage = MemoryAuditStorage();
+    final device = AuditDevice(storage);
+    final api = AuditControl(auditFixture(), storage, 'receipts');
+    await api.historyVerifier.sync();
+    for (final body in [
+      {
+        'method': 'credential',
+        'challenge_id': 'sudo',
+        'password': 'private-password',
+      },
+      {
+        'method': 'answer_interaction',
+        'challenge_id': 'app',
+        'values': {'secret': 'private-answer'},
+      },
+      {
+        'method': 'save_config',
+        'revision': 'old',
+        'content': 'private-policy-value',
+      },
+    ]) {
+      final proof = await device.sign(
         'receipts',
         api.historyVerifier.checkpoint!,
-        {'method': 'retry', 'request_id': 'old'},
+        body,
       );
-      expect(
-        again['public_key'],
-        (await device.receipts('receipts')).first['proof']['public_key'],
-      );
-    },
-  );
+      expect((await device.receipts('receipts')).last['proof'], proof);
+    }
+    final text = jsonEncode(await device.receipts('receipts'));
+    for (final secret in [
+      'private-password',
+      'private-answer',
+      'private-policy-value',
+    ]) {
+      expect(text, isNot(contains(secret)));
+    }
+    await api.historyVerifier.sync();
+    expect(api.historyVerifier.unrecordedReceipts, 3);
+    final exported = await api.historyVerifier.export(device);
+    expect((exported['device_receipts'] as List).length, 3);
+    final freshDevice = AuditDevice(storage);
+    final again = await freshDevice.sign(
+      'receipts',
+      api.historyVerifier.checkpoint!,
+      {'method': 'retry', 'request_id': 'old'},
+    );
+    expect(
+      again['public_key'],
+      (await device.receipts('receipts')).first['proof']['public_key'],
+    );
+  });
 
   test(
     'concurrent verification failures return to each caller error zone',

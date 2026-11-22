@@ -10,11 +10,13 @@ import 'package:yaml/yaml.dart';
 import 'package:zondd_control/control.dart';
 import 'package:zondd_control/main.dart';
 
+import 'caller.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
 
   for (final persistent in [false, true]) {
     testWidgets(
@@ -81,12 +83,7 @@ void main() {
           );
           if (persistent) {
             final proposalSession = await caller.execute('');
-            final proposalEvents = StreamIterator(
-              proposalSession.stdout
-                  .cast<List<int>>()
-                  .transform(utf8.decoder)
-                  .transform(const LineSplitter()),
-            );
+            final proposalEvents = await callerEvents(proposalSession);
             try {
               proposalSession.stdin.add(
                 Uint8List.fromList(
@@ -133,12 +130,7 @@ void main() {
             }
           }
           session = await caller.execute('');
-          events = StreamIterator(
-            session.stdout
-                .cast<List<int>>()
-                .transform(utf8.decoder)
-                .transform(const LineSplitter()),
-          );
+          events = await callerEvents(session);
           session.stdin.add(
             Uint8List.fromList(
               utf8.encode(
@@ -253,19 +245,24 @@ void main() {
           if (requestId != null && caller != null) {
             try {
               final stop = await caller.execute('');
-              stop.stdin.add(
-                Uint8List.fromList(
-                  utf8.encode(
-                    '${jsonEncode({
-                      'version': 1,
-                      'id': 8,
-                      'body': {'method': 'cancel', 'request_id': requestId},
-                    })}\n',
+              final stopEvents = await callerEvents(stop);
+              try {
+                stop.stdin.add(
+                  Uint8List.fromList(
+                    utf8.encode(
+                      '${jsonEncode({
+                        'version': 1,
+                        'id': 8,
+                        'body': {'method': 'cancel', 'request_id': requestId},
+                      })}\n',
+                    ),
                   ),
-                ),
-              );
-              await stop.stdout.first.timeout(const Duration(seconds: 3));
-              stop.close();
+                );
+                await stopEvents.moveNext().timeout(const Duration(seconds: 3));
+              } finally {
+                await stopEvents.cancel();
+                stop.close();
+              }
             } catch (_) {
               // A completed or disconnected job needs no further cleanup.
             }

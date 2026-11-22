@@ -1,6 +1,6 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -10,11 +10,13 @@ import 'package:zondd_control/control.dart';
 import 'package:zondd_control/history.dart';
 import 'package:zondd_control/main.dart';
 
+import 'caller.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final fixture =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final fixture = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   for (final iroh in [false, true]) {
     testWidgets(
       'signed decisions, native export and tamper detection over ${iroh ? 'Iroh' : 'SSH'}',
@@ -100,12 +102,7 @@ db.commit();undo.unlink()
 ''';
         try {
           session = await caller.execute('');
-          final responses = StreamIterator(
-            session.stdout
-                .cast<List<int>>()
-                .transform(utf8.decoder)
-                .transform(const LineSplitter()),
-          );
+          final responses = await callerEvents(session);
           session.stdin.add(
             Uint8List.fromList(
               utf8.encode(

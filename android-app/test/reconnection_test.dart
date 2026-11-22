@@ -36,42 +36,39 @@ class TestControl implements ControlApi {
 }
 
 void main() {
-  test(
-    'lost mutations are never replayed and concurrent reconnects share a session',
-    () async {
-      final old = TestControl()..lost = true;
-      final next = TestControl();
-      final connecting = Completer<ControlApi>();
-      var attempts = 0;
-      final api = ControlConnection(old, () {
-        attempts++;
-        return connecting.future;
-      });
-      await expectLater(
-        api.request({'method': 'resolve'}),
-        throwsA(isA<ConnectionLost>()),
-      );
-      expect(api.disconnected, isTrue);
-      final first = api.reconnect();
-      final second = api.reconnect();
-      expect(identical(first, second), isTrue);
-      await expectLater(
-        api.request({'method': 'resolve'}),
-        throwsA(isA<ConnectionLost>()),
-      );
-      connecting.complete(next);
-      await first;
-      expect(attempts, 1);
-      expect(old.closes, 1);
-      expect(next.calls, isEmpty);
-      expect(api.disconnected, isFalse);
-      await api.request({'method': 'pending'});
-      expect(next.calls.single['method'], 'pending');
-      await api.close();
-      expect(next.closes, 1);
-      api.dispose();
-    },
-  );
+  test('lost mutations are never replayed and concurrent reconnects share a session', () async {
+    final old = TestControl()..lost = true;
+    final next = TestControl();
+    final connecting = Completer<ControlApi>();
+    var attempts = 0;
+    final api = ControlConnection(old, () {
+      attempts++;
+      return connecting.future;
+    });
+    await expectLater(
+      api.request({'method': 'resolve'}),
+      throwsA(isA<ConnectionLost>()),
+    );
+    expect(api.disconnected, isTrue);
+    final first = api.reconnect();
+    final second = api.reconnect();
+    expect(identical(first, second), isTrue);
+    await expectLater(
+      api.request({'method': 'resolve'}),
+      throwsA(isA<ConnectionLost>()),
+    );
+    connecting.complete(next);
+    await first;
+    expect(attempts, 1);
+    expect(old.closes, 1);
+    expect(next.calls, isEmpty);
+    expect(api.disconnected, isFalse);
+    await api.request({'method': 'pending'});
+    expect(next.calls.single['method'], 'pending');
+    await api.close();
+    expect(next.closes, 1);
+    api.dispose();
+  });
 
   test(
     'late failures from an old session do not break its replacement',

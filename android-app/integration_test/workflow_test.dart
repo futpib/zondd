@@ -1,7 +1,7 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,11 +12,13 @@ import 'package:zondd_control/identities.dart';
 import 'package:zondd_control/ui.dart';
 import 'package:zondd_control/history.dart';
 
+import 'caller.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-  final f =
-      jsonDecode(const String.fromEnvironment('ZONDD_FIXTURE'))
-          as Map<String, dynamic>;
+  final f = jsonDecode(
+    const String.fromEnvironment('ZONDD_FIXTURE'),
+  ) as Map<String, dynamic>;
   testWidgets('manage identities, connections, policy and approvals', (
     tester,
   ) async {
@@ -101,12 +103,7 @@ void main() {
       );
       try {
         final session = await caller.execute('');
-        final events = StreamIterator(
-          session.stdout
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .transform(const LineSplitter()),
-        );
+        final events = await callerEvents(session);
         session.stdin.add(
           Uint8List.fromList(
             utf8.encode(

@@ -93,39 +93,36 @@ void main() {
     );
   });
 
-  test(
-    'provider cancellation and wrong signature algorithms fail closed',
-    () async {
-      final key = OpenKeychainKey(
-        providerPackage: 'provider',
-        providerLabel: 'Provider',
-        keyId: '1',
-        description: 'Key',
-        publicKeyString:
-            'ssh-ed25519 ${base64Encode(_sshFields([utf8.encode('ssh-ed25519'), List<int>.filled(32, 1)]))}',
-      );
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(channel, (_) async {
-        throw PlatformException(code: 'openkeychain_cancelled');
-      });
-      await expectLater(
-        key.createIdentity().sign(Uint8List(1)),
-        throwsA(isA<PlatformException>()),
-      );
-      messenger.setMockMethodCallHandler(
-        channel,
-        (_) async => _sshFields([
-          utf8.encode('ssh-rsa'),
-          [1, 2, 3],
-        ]),
-      );
-      await expectLater(
-        key.createIdentity().sign(Uint8List(1)),
-        throwsStateError,
-      );
-    },
-  );
+  test('provider cancellation and wrong signature algorithms fail closed', () async {
+    final key = OpenKeychainKey(
+      providerPackage: 'provider',
+      providerLabel: 'Provider',
+      keyId: '1',
+      description: 'Key',
+      publicKeyString:
+          'ssh-ed25519 ${base64Encode(_sshFields([utf8.encode('ssh-ed25519'), List<int>.filled(32, 1)]))}',
+    );
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (_) async {
+      throw PlatformException(code: 'openkeychain_cancelled');
+    });
+    await expectLater(
+      key.createIdentity().sign(Uint8List(1)),
+      throwsA(isA<PlatformException>()),
+    );
+    messenger.setMockMethodCallHandler(
+      channel,
+      (_) async => _sshFields([
+        utf8.encode('ssh-rsa'),
+        [1, 2, 3],
+      ]),
+    );
+    await expectLater(
+      key.createIdentity().sign(Uint8List(1)),
+      throwsStateError,
+    );
+  });
 
   test('rejects mismatched and unsupported SSH public keys', () {
     final ed25519Blob = _sshFields([
