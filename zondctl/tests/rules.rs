@@ -237,8 +237,16 @@ fn interactive_review_distinguishes_reusable_grants_from_one_time_approval() {
             && text.contains("approve until revoked"),
         "{text}"
     );
+    let text = text.replace("\r\n", "\n");
+    assert!(
+        text.contains(
+            "rule echo-rule(x: repository-name) {\n  run /usr/bin/printf %s \"${x}\"\n}\n\nApprove"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("\"bound\":"), "{text}");
     master.write_all(b"a\n").unwrap();
-    read_until(&mut master, b"rule_resolved");
+    read_until(&mut master, b"Rule echo-rule: active.");
     let rules = env.request("exec", json!({"method":"rules"}));
     assert_eq!(rules["rules"][0]["status"], "active");
     assert!(rules["rules"][0]["grant_expires_unix_ms"].is_number());
@@ -247,7 +255,7 @@ fn interactive_review_distinguishes_reusable_grants_from_one_time_approval() {
 }
 
 #[test]
-fn interactive_replacement_review_leads_with_one_changed_choice_and_can_expand_full_rule() {
+fn interactive_replacement_review_shows_rule_syntax_with_changes_on_demand() {
     use libzondtest::nix::pty::openpty;
     let env = TestEnv::new();
     let source = r#"type repo = choice(fields=(name, branch)) {
@@ -275,15 +283,29 @@ rule publish(r: repo) { run printf "%s:%s" "${r.name}" "${r.branch}" }"#;
             .stderr(slave),
     );
     let text = String::from_utf8(read_until(&mut master, b"quit [q]: ")).unwrap();
+    let text = text.replace("\r\n", "\n");
+    let start = text
+        .find("type repo = choice")
+        .expect("visible type syntax");
+    let end = text.find("\n\nApprove").expect("approval below the rule");
+    let rendered = libzond::rules::parse(&text[start..end]).expect("valid displayed rule syntax");
+    assert_eq!(
+        serde_json::to_value(rendered).unwrap(),
+        replacement["bound"]["rule"]
+    );
+    assert!(!text.contains("\"bound\":"), "{text}");
+    assert!(!text.contains("1 added, 0 removed, 0 changed."), "{text}");
+    master.write_all(b"c\n").unwrap();
+    let changes = String::from_utf8(read_until(&mut master, b"quit [q]: ")).unwrap();
     assert!(
-        text.contains("1 added, 0 removed, 0 changed.")
-            && text.contains("futpib/EKA2L1")
-            && text.contains("refs/heads/wasm-port"),
-        "{text}"
+        changes.contains("1 added, 0 removed, 0 changed.")
+            && changes.contains("futpib/EKA2L1")
+            && changes.contains("refs/heads/wasm-port"),
+        "{changes}"
     );
     assert!(
-        !text.contains("snakes-telegram") && !text.contains("futpib/zondd"),
-        "{text}"
+        !changes.contains("snakes-telegram") && !changes.contains("futpib/zondd"),
+        "{changes}"
     );
     master.write_all(b"v\n").unwrap();
     let full = String::from_utf8(read_until(&mut master, b"quit [q]: ")).unwrap();
@@ -294,7 +316,7 @@ rule publish(r: repo) { run printf "%s:%s" "${r.name}" "${r.branch}" }"#;
         "{full}"
     );
     master.write_all(b"a\n").unwrap();
-    read_until(&mut master, b"rule_resolved");
+    read_until(&mut master, b"Rule publish: active.");
     let rules = env.request("exec", json!({"method":"rules"}));
     let active = rules["rules"]
         .as_array()

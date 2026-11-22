@@ -939,6 +939,18 @@ async fn run(cli: Cli) -> Result<u8> {
     }
 }
 
+fn terminal_text(text: &str) -> String {
+    let mut rendered = String::new();
+    for character in text.chars() {
+        match character {
+            // Preserve rule syntax and line breaks, but escape terminal controls.
+            '\n' | '\'' | '"' | '\\' => rendered.push(character),
+            _ => rendered.extend(character.escape_debug()),
+        }
+    }
+    rendered
+}
+
 async fn review(cli: &Cli) -> Result<u8> {
     if cli.notices() {
         eprintln!("Receiver: {}", cli.receiver().escape_default());
@@ -971,30 +983,47 @@ async fn review(cli: &Cli) -> Result<u8> {
         }
         idle = false;
         for proposal in proposals {
-            if proposal.replaces.is_some()
-                && let Some(review) = proposal.review.as_ref()
-                && let Ok(review) = serde_json::from_value::<libzond::rules::Review>(review.clone())
-                && review.version == 1
-                && let Some(comparison) = review.sections.first()
-            {
-                println!(
-                    "Rule {} for {}",
-                    serde_json::to_string(&review.title)?,
-                    serde_json::to_string(&proposal.principal)?
-                );
-                println!("{}", serde_json::to_string(&comparison.title)?);
-                for field in &comparison.fields {
-                    println!("{}:", serde_json::to_string(&field.label)?);
-                    for line in field.value.lines() {
-                        println!("  {}", serde_json::to_string(line)?);
-                    }
-                }
-            } else {
-                println!("{}", serde_json::to_string_pretty(&proposal)?);
+            let review = proposal
+                .review
+                .as_ref()
+                .and_then(|value| {
+                    serde_json::from_value::<libzond::rules::Review>(value.clone()).ok()
+                })
+                .filter(|review| review.version == 1);
+            let source = review
+                .as_ref()
+                .and_then(|review| {
+                    review
+                        .sections
+                        .iter()
+                        .find(|s| s.title == "Normalized rule")
+                })
+                .and_then(|section| section.fields.iter().find(|f| f.label == "Definition"))
+                .map(|field| field.value.as_str());
+            println!(
+                "\nRule for principal {} (repeated invocations)",
+                serde_json::to_string(&proposal.principal)?
+            );
+            println!(
+                "Working directory: {}\nHOME: {}",
+                terminal_text(&serde_json::to_string(&proposal.bound.cwd)?),
+                terminal_text(&serde_json::to_string(&proposal.bound.home)?)
+            );
+            if proposal.replaces.is_some() {
+                println!("Replaces the current approved rule.");
             }
+            if source.is_none() {
+                println!("Submitted source (normalized rule unavailable):");
+            }
+            println!("\n{}\n", terminal_text(source.unwrap_or(&proposal.source)));
+            let changes = if proposal.replaces.is_some() {
+                "view changes [c], "
+            } else {
+                ""
+            };
             let decision = loop {
                 print!(
-                    "Approve for 1 hour [a], approve until revoked [p], deny [d], skip [s], view full proposal [v], quit [q]: "
+                    "Approve for 1 hour [a], approve until revoked [p], deny [d], skip [s], {changes}details [v], quit [q]: "
                 );
                 std::io::stdout().flush()?;
                 let answer = tokio::task::spawn_blocking(|| -> std::io::Result<String> {
@@ -1008,7 +1037,31 @@ async fn review(cli: &Cli) -> Result<u8> {
                     "a" => break Some((true, Some(3600))),
                     "p" => break Some((true, None)),
                     "d" => break Some((false, None)),
-                    "v" => println!("{}", serde_json::to_string_pretty(&proposal)?),
+                    "c" if proposal.replaces.is_some() => {
+                        if let Some(comparison) = review.as_ref().and_then(|review| {
+                            review
+                                .sections
+                                .iter()
+                                .find(|s| s.title == "Changes from approved rule")
+                        }) {
+                            println!("{}", terminal_text(&comparison.title));
+                            for field in &comparison.fields {
+                                println!("{}:", terminal_text(&field.label));
+                                for line in field.value.lines() {
+                                    println!("  {}", terminal_text(line));
+                                }
+                            }
+                        } else {
+                            println!(
+                                "{}",
+                                terminal_text(&serde_json::to_string_pretty(&proposal)?)
+                            );
+                        }
+                    }
+                    "v" => println!(
+                        "{}",
+                        terminal_text(&serde_json::to_string_pretty(&proposal)?)
+                    ),
                     "q" | "" => return Ok(0),
                     _ => break None,
                 }
@@ -1026,7 +1079,17 @@ async fn review(cli: &Cli) -> Result<u8> {
                     expires_in_secs,
                 })
                 .await?;
-            println!("{}", serde_json::to_string(&event)?);
+            if let Event::RuleResolved { rule } = &event
+                && !cli.json
+            {
+                println!(
+                    "Rule {}: {}.",
+                    terminal_text(&rule.proposal.bound.rule.name),
+                    terminal_text(&rule.status)
+                );
+            } else {
+                println!("{}", serde_json::to_string(&event)?);
+            }
         }
         for request in requests {
             // JSON escapes terminal control sequences and makes argv boundaries visible.
@@ -1148,6 +1211,16 @@ fn read_interaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rule_display_preserves_syntax_without_terminal_control_characters() {
+        let source = "rule example() {\n  run /usr/bin/printf \"%s\" \"\\\"quoted\\\"\"\n}";
+        assert_eq!(terminal_text(source), source);
+        assert_eq!(
+            terminal_text("\u{1b}[2J\rhidden\u{202e}name\t"),
+            "\\u{1b}[2J\\rhidden\\u{202e}name\\t"
+        );
+    }
 
     #[test]
     fn detach_option_does_not_consume_command_arguments() {

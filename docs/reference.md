@@ -489,15 +489,17 @@ a replacement for its current active grant. Only one pending proposal for that
 name is allowed. The old grant stays usable until the replacement is approved;
 denying, withdrawing or expiring the proposal leaves that grant unchanged.
 
-Replacement review starts with **Changes from approved rule**. It compares the
+Replacement review includes **Changes from approved rule**. It compares the
 resolved definitions: added, removed and changed choice rows, types, parameters,
 executable, arguments, checks, directory effects, privileges and execution
 bindings. Adding one repository/branch choice shows just that row; unchanged
 choices are omitted from the diff. A branch change shows the old and new row.
 Formatting-only edits are identified as having no authorization changes.
 First-time proposals show the complete rule without a replacement diff.
-Android offers **Full proposed rule**, including received source, normalized
-definition and YAML; interactive `zondctl review` offers **view full proposal [v]**.
+Interactive `zondctl review` shows the full normalized rule in its own syntax
+above the approval choices; **view changes [c]** opens a replacement diff and
+**details [v]** opens the full proposal. Android leads with the replacement diff
+and offers **Full proposed rule**, including received source, normalized definition and YAML.
 JSON responses retain the complete proposal and review.
 
 The receiver binds the comparison, proposed definition and exact baseline grant
