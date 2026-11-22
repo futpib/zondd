@@ -1105,8 +1105,11 @@ Tests run as the runner's ordinary user. CI installs test prerequisites and
 starts that user's systemd manager; the daemon and approval tests do not run as
 root. Android E2E uses disposable fixture keys and does not upload its test APK.
 The CLI transport tests and Android app pin `futpib/iroh-ssh` at
-`f7e04ea411b198a334d118675de5e015ae527dae`. The app's native lockfile resolves
+`d908e64d5b4c5a8ca79ab6b87fe561895f229b4b`. The app's native lockfile resolves
 Iroh 1.4.1; Android E2E builds an ephemeral test server from that lockfile.
+The bridge disables UDP segmentation offload on Android to avoid driver EIO
+stalls. The emulator suite checks 4 KiB and 32 KiB policy round trips over both
+SSH and Iroh.
 Android connections require a server with a compatible Iroh wire version.
 Set `ZONDD_ANDROID_HISTORY_FIXTURE` to a retained test-history SQLite database
 to exercise a fresh connection against existing signed events.

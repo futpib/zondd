@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IROH_SSH_REV: f7e04ea411b198a334d118675de5e015ae527dae
+  IROH_SSH_REV: d908e64d5b4c5a8ca79ab6b87fe561895f229b4b
 
 jobs:
   iroh:

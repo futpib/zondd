@@ -1550,7 +1550,7 @@ dependencies = [
 [[package]]
 name = "iroh-ssh"
 version = "0.2.12"
-source = "git+https://github.com/futpib/iroh-ssh?rev=f7e04ea411b198a334d118675de5e015ae527dae#f7e04ea411b198a334d118675de5e015ae527dae"
+source = "git+https://github.com/futpib/iroh-ssh?rev=d908e64d5b4c5a8ca79ab6b87fe561895f229b4b#d908e64d5b4c5a8ca79ab6b87fe561895f229b4b"
 dependencies = [
  "anyhow",
  "ed25519-dalek",

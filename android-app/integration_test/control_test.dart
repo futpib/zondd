@@ -132,6 +132,46 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   for (final iroh in [false, true]) {
+    testWidgets('round-trip large policy saves over ${iroh ? 'Iroh' : 'SSH'}', (
+      tester,
+    ) async {
+      Future<SshControl> open() => SshControl.connect(
+        profile(iroh),
+        (_, fp) async => fp == fixture['fingerprint'],
+      );
+      final api = await open();
+      final original = await api.request({'method': 'read_config'});
+      try {
+        var revision = original['revision'];
+        // Exercise requests and replies spanning multiple transport packets.
+        for (final size in [4096, 32768]) {
+          final content = '${original['content']}\n# ${'x' * size}\n';
+          final saved = await api.request({
+            'method': 'save_config',
+            'revision': revision,
+            'content': content,
+          });
+          revision = saved['revision'];
+          final loaded = await api.request({'method': 'read_config'});
+          expect(loaded['revision'], revision);
+          expect(loaded['content'], content);
+        }
+      } finally {
+        await api.close();
+        final cleanup = await open();
+        try {
+          final current = await cleanup.request({'method': 'read_config'});
+          await cleanup.request({
+            'method': 'save_config',
+            'revision': current['revision'],
+            'content': original['content'],
+          });
+        } finally {
+          await cleanup.close();
+        }
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     testWidgets(
       'reconcile a lost policy-save reply over ${iroh ? 'Iroh' : 'SSH'}',
       (tester) async {

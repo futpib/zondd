@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ed25519-dalek = "3.0.0"
-iroh-ssh = { git = "https://github.com/futpib/iroh-ssh", rev = "f7e04ea411b198a334d118675de5e015ae527dae", version = "0.2.12", default-features = false, features = ["flutter"] }
+iroh-ssh = { git = "https://github.com/futpib/iroh-ssh", rev = "d908e64d5b4c5a8ca79ab6b87fe561895f229b4b", version = "0.2.12", default-features = false, features = ["flutter"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "time"] }
 

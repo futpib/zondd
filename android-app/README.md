@@ -79,7 +79,7 @@ and imported keys remain separate from this credential vault.
 ## Connect
 
 Iroh connections use the pinned bridge:
-`futpib/iroh-ssh` at `f7e04ea411b198a334d118675de5e015ae527dae`
+`futpib/iroh-ssh` at `d908e64d5b4c5a8ca79ab6b87fe561895f229b4b`
 (`iroh-ssh` 0.2.12), with Iroh 1.4.1 in the app's native lockfile. The receiving
 Iroh SSH server must use a compatible wire version; CI tests the server built
 from this same revision.
