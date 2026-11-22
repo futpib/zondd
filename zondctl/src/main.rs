@@ -940,6 +940,11 @@ async fn run(cli: Cli) -> Result<u8> {
 }
 
 async fn review(cli: &Cli) -> Result<u8> {
+    if cli.notices() {
+        eprintln!("Receiver: {}", cli.receiver().escape_default());
+        eprintln!("Checking approval queue. Press Ctrl-C to quit.");
+    }
+    let mut idle = false;
     loop {
         let mut client = cli.connect().await?;
         let Event::Queue {
@@ -957,9 +962,14 @@ async fn review(cli: &Cli) -> Result<u8> {
             && proposals.is_empty()
             && interactions.is_empty()
         {
+            if !idle && cli.notices() {
+                eprintln!("No pending approvals. Waiting for new requests; press Ctrl-C to quit.");
+            }
+            idle = true;
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
+        idle = false;
         for proposal in proposals {
             if proposal.replaces.is_some()
                 && let Some(review) = proposal.review.as_ref()

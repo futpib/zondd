@@ -432,7 +432,6 @@ fn forced_bridge_exits_even_while_ssh_stdin_remains_open() {
 fn review_approves_and_denies_through_a_real_terminal() {
     let env = TestEnv::new();
     for (answer, expected) in [(b"a\n", "completed"), (b"d\n", "rejected")] {
-        let (mut session, _) = env.pending(command("/usr/bin/printf", &["%s", "terminal"]));
         let pty = openpty(None, None).unwrap();
         let mut master = File::from(pty.master);
         let slave = File::from(pty.slave);
@@ -443,9 +442,18 @@ fn review_approves_and_denies_through_a_real_terminal() {
                 .stdout(slave.try_clone().unwrap())
                 .stderr(slave),
         );
+        read_until(
+            &mut master,
+            b"No pending approvals. Waiting for new requests;",
+        );
+        let (mut session, _) = env.pending(command("/usr/bin/printf", &["%s", "terminal"]));
         read_until(&mut master, b"Approve once");
         master.write_all(answer).unwrap();
         assert_eq!(session.event()["type"], expected);
+        read_until(
+            &mut master,
+            b"No pending approvals. Waiting for new requests;",
+        );
         review.signal(Signal::SIGINT);
         assert_eq!(review.wait(Duration::from_secs(5)).code(), Some(130));
     }
