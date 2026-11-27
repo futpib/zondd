@@ -160,17 +160,18 @@ fn application_forms_accept_menu_numbers_and_retry_only_invalid_fields_privately
     );
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let mut client = Client::connect(&env.runtime.join("credential.sock"), "service", SecretString(key)).await.unwrap();
-        for (review, choices, input, expected) in [
-            (false, vec!["1: here", "2: here\x1b[2J", "3: OK"], "3", "3: OK"),
-            (true, vec!["1: here", "2: here", "3: OK"], "3: OK", "3: OK"),
-            (false, vec!["2", "1", "3"], "1", "2"),
+        for (review, choices, input, expected, selected) in [
+            (false, vec!["1: here", "2: here\x1b[2J", "3: OK"], "3", "3: OK", None),
+            (true, vec!["1: here", "2: here", "3: OK"], "3: OK", "3: OK", None),
+            (false, vec!["2", "1", "3"], "1", "2", None),
+            (true, vec!["ibg.Fri.xml", "ibg.Thu.xml", "Reset Default Settings"], "", "ibg.Fri.xml", Some(0)),
         ] {
             let form: Request = serde_json::from_value(json!({
-                "method":"challenge", "origin":"https://example.test", "prompt":"Test form",
+                "method":"challenge", "origin":"https://example.test", "prompt":"Test form\nSecond line\x1b[2J",
                 "fields":[
                     {"id":"password", "label":"Password", "kind":"secret"},
-                    {"id":"action", "label":"Gateway action", "kind":"choice", "choices":choices},
-                    {"id":"optional", "label":"Optional", "kind":"choice", "choices":["One"], "required":false}
+                    {"id":"action", "label":"Gateway action", "kind":"choice", "choices":choices, "selected_index":selected},
+                    {"id":"optional", "label":"Optional", "kind":"choice", "choices":["One"], "required":false, "selected_index":selected}
                 ]
             })).unwrap();
             client.send(form).await.unwrap();
@@ -179,21 +180,32 @@ fn application_forms_accept_menu_numbers_and_retry_only_invalid_fields_privately
             if review { cli.arg("review"); }
             else { cli.args(["interaction", &challenge_id]); }
             let mut terminal = Terminal::spawn(&mut cli);
+            let mut shown = Vec::new();
             if review {
-                read_until(&mut terminal.master, b"quit [q]: ");
+                shown.extend(read_until(&mut terminal.master, b"quit [q]: "));
+                assert!(String::from_utf8_lossy(&shown).contains("Test form\r\nSecond line"));
                 terminal.master.write_all(b"a\n").unwrap();
             }
-            let mut shown = terminal.answer(b"Password (input hidden): ", "test-private-password");
-            let action_prompt = b"Gateway action (choice number; input hidden): ";
+            shown.extend(terminal.answer(b"Password (input hidden): ", "test-private-password"));
+            let action_prompt: &[u8] = if selected.is_some() { b"Choose 1-3 (Enter keeps 1): " } else { b"Choose 1-3: " };
+            if selected.is_none() { shown.extend(terminal.answer(action_prompt, "")); }
             shown.extend(terminal.answer(action_prompt, "test-private-invalid-choice"));
             shown.extend(terminal.answer(action_prompt, "0"));
             shown.extend(terminal.answer(action_prompt, "4"));
             shown.extend(terminal.answer(action_prompt, input));
-            shown.extend(terminal.answer(b"Optional (choice number; input hidden): ", ""));
+            if selected.is_some() {
+                shown.extend(terminal.answer(b"Choose 1-1 (Enter keeps 1): ", "0"));
+            } else {
+                shown.extend(terminal.answer(b"Choose 1-1 (Enter skips): ", ""));
+            }
             shown.extend(read_until(&mut terminal.master, b"credential_answered"));
             assert!(!shown.contains(&0x1b), "terminal control sequence was emitted");
             let shown = String::from_utf8(shown).unwrap();
             assert!(shown.contains("[3]"));
+            assert!(!shown.contains("[3] 3: OK"));
+            assert!(!shown.contains("Application-supplied form:"));
+            assert!(!shown.contains("\"fields\""));
+            if selected.is_some() { assert!(shown.contains("[1] ibg.Fri.xml (current)")); }
             assert!(shown.contains("Invalid answer:"));
             assert!(!shown.contains("test-private-password"));
             assert!(!shown.contains("test-private-invalid-choice"));

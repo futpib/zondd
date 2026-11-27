@@ -1149,15 +1149,19 @@ async fn review(cli: &Cli) -> Result<u8> {
             println!("{}", serde_json::to_string(&event)?);
         }
         for challenge in interactions {
-            println!("{}", serde_json::to_string_pretty(&challenge.recipient)?);
-            print!("Answer application form [a], reject [d], skip [s], quit [q]: ");
+            show_interaction(&challenge);
+            print!("Answer application form [a], reject [d], skip [s], details [v], quit [q]: ");
             std::io::stdout().flush()?;
             let mut line = String::new();
             std::io::stdin().read_line(&mut line)?;
             let values = match line.trim() {
-                "a" => Some(read_interaction(&challenge)?),
+                "a" => Some(read_interaction_fields(&challenge)?),
                 "d" => None,
                 "q" | "" => return Ok(0),
+                "v" => {
+                    println!("{}", serde_json::to_string_pretty(&challenge)?);
+                    continue;
+                }
                 _ => continue,
             };
             let event = cli
@@ -1182,34 +1186,101 @@ fn read_credential(challenge: &libzond::CredentialChallenge) -> Result<SecretStr
 fn read_interaction(
     challenge: &libzond::interaction::Challenge,
 ) -> Result<std::collections::BTreeMap<String, SecretString>> {
+    show_interaction(challenge);
+    read_interaction_fields(challenge)
+}
+
+fn show_interaction(challenge: &libzond::interaction::Challenge) {
     println!(
-        "Configured recipient: {}",
-        serde_json::to_string_pretty(&challenge.recipient)?
+        "\nApplication form: {} ({})",
+        terminal_text(&challenge.recipient.label),
+        terminal_text(&challenge.recipient.name)
     );
     println!(
         "Permitted provider origin: {}",
-        challenge.provider_origin.escape_default()
+        terminal_text(&challenge.provider_origin)
     );
-    println!(
-        "Application-supplied form: {}",
-        serde_json::to_string_pretty(
-            &serde_json::json!({"prompt":challenge.prompt,"fields":challenge.fields,"context":challenge.context})
-        )?
-    );
+    if let Some(context) = challenge.context.as_object() {
+        for (key, value) in context {
+            let value = value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            println!("  {}: {}", terminal_text(key), terminal_text(&value));
+        }
+    } else if !challenge.context.is_null() {
+        println!("Context: {}", terminal_text(&challenge.context.to_string()));
+    }
+    println!("\n{}", terminal_text(&challenge.prompt));
+}
+
+fn selected_choice(field: &libzond::interaction::Field) -> Option<usize> {
+    field
+        .details
+        .get("selected_index")?
+        .as_u64()
+        .and_then(|index| usize::try_from(index).ok())
+        .filter(|&index| index < field.choices.len())
+}
+
+fn choice_label(field: &libzond::interaction::Field, index: usize) -> &str {
+    // Some applications already number every item. Preserve the wire values, but
+    // avoid presenting two competing sets of numbers in the terminal menu.
+    if field
+        .choices
+        .iter()
+        .enumerate()
+        .all(|(i, value)| value.starts_with(&format!("{}: ", i + 1)))
+    {
+        field.choices[index].split_once(": ").unwrap().1
+    } else {
+        &field.choices[index]
+    }
+}
+
+fn read_interaction_fields(
+    challenge: &libzond::interaction::Challenge,
+) -> Result<std::collections::BTreeMap<String, SecretString>> {
     let mut values = std::collections::BTreeMap::new();
     for field in &challenge.fields {
-        for (index, choice) in field.choices.iter().enumerate() {
-            println!("  [{}] {}", index + 1, choice.escape_default());
+        let selected = selected_choice(field);
+        if !field.choices.is_empty() {
+            println!("\n{}", terminal_text(&field.label));
         }
-        let hint = if field.choices.is_empty() {
-            "input hidden"
+        for index in 0..field.choices.len() {
+            let marker = if selected == Some(index) {
+                " (current)"
+            } else {
+                ""
+            };
+            println!(
+                "  [{}] {}{marker}",
+                index + 1,
+                terminal_text(choice_label(field, index))
+            );
+        }
+        let prompt = if field.choices.is_empty() {
+            format!("{} (input hidden): ", terminal_text(&field.label))
         } else {
-            "choice number; input hidden"
+            if !field.required {
+                println!("  [0] Skip this field");
+            }
+            let default = match selected {
+                Some(index) => format!(" (Enter keeps {})", index + 1),
+                None if !field.required => " (Enter skips)".to_owned(),
+                None => String::new(),
+            };
+            format!("Choose 1-{}{default}: ", field.choices.len())
         };
-        let prompt = format!("{} ({hint}): ", field.label.escape_default());
         loop {
             let mut value = SecretString(rpassword::prompt_password(&prompt)?);
-            if !field.choices.is_empty()
+            if value.0.is_empty()
+                && let Some(index) = selected
+            {
+                value = SecretString(field.choices[index].clone());
+            } else if !field.choices.is_empty() && !field.required && value.0 == "0" {
+                value = SecretString(String::new());
+            } else if !field.choices.is_empty()
                 && !value.0.is_empty()
                 && value.0.bytes().all(|byte| byte.is_ascii_digit())
             {
@@ -1240,6 +1311,26 @@ fn read_interaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn choice_defaults_require_a_valid_application_selected_index() {
+        for (index, expected) in [
+            (serde_json::json!(0), Some(0)),
+            (serde_json::json!(1), Some(1)),
+            (serde_json::json!(2), None),
+            (serde_json::json!(-1), None),
+            (serde_json::json!("0"), None),
+            (serde_json::Value::Null, None),
+        ] {
+            let field = serde_json::from_value(serde_json::json!({
+                "id":"option", "label":"Option", "kind":"choice",
+                "choices":["1: Backup", "2: Reset"], "selected_index":index
+            }))
+            .unwrap();
+            assert_eq!(selected_choice(&field), expected);
+            assert_eq!(choice_label(&field, 0), "Backup");
+        }
+    }
 
     #[test]
     fn rule_display_preserves_syntax_without_terminal_control_characters() {
