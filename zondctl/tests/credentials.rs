@@ -11,9 +11,9 @@ use libzondtest::{
     wait_for,
 };
 use std::{
-    fs::File,
+    fs::{self, File, Permissions},
     io::Write,
-    os::unix::process::CommandExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     process::{Child, Command},
 };
 
@@ -53,6 +53,18 @@ impl Terminal {
             status.is_some()
         });
         status.unwrap().code().unwrap()
+    }
+
+    fn answer(&mut self, prompt: &[u8], value: &str) -> Vec<u8> {
+        let shown = read_until(&mut self.master, prompt);
+        wait_for(|| {
+            !tcgetattr(&self.master)
+                .unwrap()
+                .local_flags
+                .contains(LocalFlags::ECHO)
+        });
+        writeln!(self.master, "{value}").unwrap();
+        shown
     }
 }
 
@@ -128,4 +140,78 @@ fn stale_credential_is_rejected_before_reading_a_password() {
     let response = read_until(&mut terminal.master, b"credential not pending");
     assert!(!String::from_utf8_lossy(&response).contains("Sudo password:"));
     assert_eq!(terminal.exit_code(), 125);
+}
+
+#[test]
+fn application_forms_accept_menu_numbers_and_retry_only_invalid_fields_privately() {
+    use libzond::{
+        SecretString,
+        credential::{Event, Request},
+    };
+    use libzondctl::credential::Client;
+
+    let env = TestEnv::new();
+    let key = "a".repeat(64);
+    fs::write(&env.config, format!("{}\n[credential_recipients.service]\nlabel = 'Independent service'\nkey_sha256 = {:?}\nfield_ids = ['password', 'action', 'optional']\norigins = ['https://example.test']\n", env.policy, libzond::config::revision(&key))).unwrap();
+    fs::set_permissions(&env.config, Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        env.request("admin", json!({"method":"reload"}))["type"],
+        "reloaded"
+    );
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut client = Client::connect(&env.runtime.join("credential.sock"), "service", SecretString(key)).await.unwrap();
+        for (review, choices, input, expected) in [
+            (false, vec!["1: here", "2: here\x1b[2J", "3: OK"], "3", "3: OK"),
+            (true, vec!["1: here", "2: here", "3: OK"], "3: OK", "3: OK"),
+            (false, vec!["2", "1", "3"], "1", "2"),
+        ] {
+            let form: Request = serde_json::from_value(json!({
+                "method":"challenge", "origin":"https://example.test", "prompt":"Test form",
+                "fields":[
+                    {"id":"password", "label":"Password", "kind":"secret"},
+                    {"id":"action", "label":"Gateway action", "kind":"choice", "choices":choices},
+                    {"id":"optional", "label":"Optional", "kind":"choice", "choices":["One"], "required":false}
+                ]
+            })).unwrap();
+            client.send(form).await.unwrap();
+            let Event::Opened { challenge_id } = client.receive().await.unwrap().body else { panic!("expected opened"); };
+            let mut cli = env.cli();
+            if review { cli.arg("review"); }
+            else { cli.args(["interaction", &challenge_id]); }
+            let mut terminal = Terminal::spawn(&mut cli);
+            if review {
+                read_until(&mut terminal.master, b"quit [q]: ");
+                terminal.master.write_all(b"a\n").unwrap();
+            }
+            let mut shown = terminal.answer(b"Password (input hidden): ", "test-private-password");
+            let action_prompt = b"Gateway action (choice number; input hidden): ";
+            shown.extend(terminal.answer(action_prompt, "test-private-invalid-choice"));
+            shown.extend(terminal.answer(action_prompt, "0"));
+            shown.extend(terminal.answer(action_prompt, "4"));
+            shown.extend(terminal.answer(action_prompt, input));
+            shown.extend(terminal.answer(b"Optional (choice number; input hidden): ", ""));
+            shown.extend(read_until(&mut terminal.master, b"credential_answered"));
+            assert!(!shown.contains(&0x1b), "terminal control sequence was emitted");
+            let shown = String::from_utf8(shown).unwrap();
+            assert!(shown.contains("[3]"));
+            assert!(shown.contains("Invalid answer:"));
+            assert!(!shown.contains("test-private-password"));
+            assert!(!shown.contains("test-private-invalid-choice"));
+            let Event::Answered { values: Some(values), .. } = client.receive().await.unwrap().body else { panic!("expected answer"); };
+            assert_eq!(values["password"].0, "test-private-password");
+            assert_eq!(values["action"].0, expected);
+            assert_eq!(values["optional"].0, "");
+            client.send(Request::Result { challenge_id, outcome: "succeeded".into() }).await.unwrap();
+            assert!(matches!(client.receive().await.unwrap().body, Event::Recorded { .. }));
+            if !review { assert_eq!(terminal.exit_code(), 0); }
+        }
+    });
+    let audit = env
+        .request("admin", json!({"method":"actions","limit":100}))
+        .to_string();
+    let logs = fs::read_to_string(env.dir.path().join("daemon.log")).unwrap();
+    for text in [audit, logs] {
+        assert!(!text.contains("test-private-password"));
+        assert!(!text.contains("test-private-invalid-choice"));
+    }
 }

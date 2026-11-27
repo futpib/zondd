@@ -22,6 +22,28 @@ fn required() -> bool {
     true
 }
 
+impl Field {
+    pub fn validate_answer(&self, value: &str) -> Result<()> {
+        ensure!(
+            !self.required || !value.is_empty(),
+            "required response field missing"
+        );
+        ensure!(
+            value.len() <= 4096 && !value.contains(['\n', '\r', '\0']),
+            "invalid response field"
+        );
+        ensure!(
+            value.is_empty() || self.choices.is_empty() || self.choices.iter().any(|s| s == value),
+            "response outside field choices"
+        );
+        ensure!(
+            value.is_empty() || self.kind != "confirmation" || matches!(value, "yes" | "no"),
+            "invalid confirmation"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Recipient {
     pub name: String,
@@ -90,22 +112,7 @@ impl Challenge {
         );
         for f in &self.fields {
             let value = values.get(&f.id).map(|s| s.0.as_str()).unwrap_or("");
-            ensure!(
-                !f.required || !value.is_empty(),
-                "required response field missing"
-            );
-            ensure!(
-                value.len() <= 4096 && !value.contains(['\n', '\r', '\0']),
-                "invalid response field"
-            );
-            ensure!(
-                value.is_empty() || f.choices.is_empty() || f.choices.iter().any(|s| s == value),
-                "response outside field choices"
-            );
-            ensure!(
-                value.is_empty() || f.kind != "confirmation" || matches!(value, "yes" | "no"),
-                "invalid confirmation"
-            );
+            f.validate_answer(value)?;
         }
         Ok(())
     }

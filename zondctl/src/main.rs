@@ -1198,11 +1198,40 @@ fn read_interaction(
     );
     let mut values = std::collections::BTreeMap::new();
     for field in &challenge.fields {
-        let prompt = format!("{} (input hidden): ", field.label.escape_default());
-        values.insert(
-            field.id.clone(),
-            SecretString(rpassword::prompt_password(prompt)?),
-        );
+        for (index, choice) in field.choices.iter().enumerate() {
+            println!("  [{}] {}", index + 1, choice.escape_default());
+        }
+        let hint = if field.choices.is_empty() {
+            "input hidden"
+        } else {
+            "choice number; input hidden"
+        };
+        let prompt = format!("{} ({hint}): ", field.label.escape_default());
+        loop {
+            let mut value = SecretString(rpassword::prompt_password(&prompt)?);
+            if !field.choices.is_empty()
+                && !value.0.is_empty()
+                && value.0.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                let choice = value
+                    .0
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| field.choices.get(index));
+                let Some(choice) = choice else {
+                    eprintln!("Choose a number from 1 to {}.", field.choices.len());
+                    continue;
+                };
+                value = SecretString(choice.clone());
+            }
+            if let Err(error) = field.validate_answer(&value.0) {
+                eprintln!("Invalid answer: {error}. Try again.");
+                continue;
+            }
+            values.insert(field.id.clone(), value);
+            break;
+        }
     }
     challenge.validate_answer(&values)?;
     Ok(values)

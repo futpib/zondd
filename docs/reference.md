@@ -843,6 +843,12 @@ workers. Android and `zondctl review` show configured recipient identity separat
 from application-supplied prompts. Answers, including usernames, are excluded
 from history and logs.
 
+In terminal application forms, choice fields display a numbered menu. Enter the
+menu number (starting at 1), or the full nonnumeric choice value. Numeric input
+always selects a menu entry, even when the choice values themselves are numbers.
+Invalid answers re-prompt the same field without discarding earlier answers;
+all input stays hidden.
+
 See the [public protocol, schema, registration and migration guide](../adapters/readme.md).
 The Rust reference client supports pending input and cancellation. Existing pipe
 adapters can use a service-side bridge; the former `credential_adapters` process
